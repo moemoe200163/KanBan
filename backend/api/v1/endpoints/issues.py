@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 router = APIRouter()
@@ -43,8 +43,7 @@ def _seed_initial_issues() -> None:
     if _issues_db:  # Already seeded
         return
 
-    from datetime import datetime
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     seed_data = [
         {"title": "Implement user authentication flow", "status": "done", "priority": "high", "profile": "backend"},
@@ -176,7 +175,7 @@ async def create_issue(request: IssueCreateRequest):
             detail=f"Invalid profile. Valid values: {VALID_PROFILES}"
         )
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
     issue = IssueResponse(
         id=str(uuid.uuid4()),
         key=_generate_issue_key(),
@@ -233,7 +232,7 @@ async def update_issue_status(issue_id: str, status: str):
 
     old_status = issue.status
     issue.status = status
-    issue.updated_at = datetime.utcnow().isoformat() + "Z"
+    issue.updated_at = datetime.now(timezone.utc).isoformat()
 
     # TODO: Trigger webhook for status change
     # This would typically enqueue a webhook task via Redis
