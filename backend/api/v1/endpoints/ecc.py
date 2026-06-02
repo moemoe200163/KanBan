@@ -309,3 +309,64 @@ async def cancel_ecc_job(job_id: str):
     await _save_job_to_db(updated_job)
     
     return updated_job
+
+
+RETRYABLE_TERMINAL_STATUSES = {"failed", "cancelled", "review_required"}
+
+
+@router.post("/ecc/jobs/{job_id}/retry")
+async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks):
+    """Create a new job that re-runs the same payload as `job_id`.
+
+    The source job must be in a retryable terminal state. The new job
+    starts at `queued` and runs through the same safe runner.
+    """
+    source = _jobs.get(job_id)
+    if not source:
+        try:
+            from db import repository as repo
+            row = await repo.get_job(job_id)
+            if row:
+                row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+                source = ECCDispatchJob(**row)
+                _jobs[source.id] = source
+        except Exception:
+            source = None
+    if not source:
+        raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
+
+    if source.status not in RETRYABLE_TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot retry job in '{source.status}' state. "
+                f"Retryable states: {sorted(RETRYABLE_TERMINAL_STATUSES)}"
+            ),
+        )
+
+    now = _utc_now()
+    new_job = ECCDispatchJob(
+        id=f"ecc_{uuid4().hex[:12]}",
+        issue_id=source.issue_id,
+        issue_key=source.issue_key,
+        command=source.command,
+        profile=source.profile,
+        harness=source.harness,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+        message=f"Retried from job {source.id}",
+        events=[
+            ECCJobEvent(
+                timestamp=now,
+                status="queued",
+                message=f"Retried from job {source.id}",
+            )
+        ],
+    )
+    _jobs[new_job.id] = new_job
+    await _save_job_to_db(new_job)
+
+    background_tasks.add_task(_execute_safe_runner, new_job.id)
+
+    return new_job
