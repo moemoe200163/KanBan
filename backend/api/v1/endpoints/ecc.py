@@ -100,10 +100,16 @@ async def _execute_safe_runner(job_id: str) -> None:
 
     for message in safe_events:
         await asyncio.sleep(0.01)
+        # Bail out if the job was cancelled while we were running.
+        if job.status == "cancelled":
+            return
         _transition_job(job, "running", message)
         await _save_job_to_db(job)
         await _broadcast_job_update(job_id, job.model_dump())
 
+    # Final status check before transitioning to review_required.
+    if job.status == "cancelled":
+        return
     _transition_job(job, "review_required", "Safe execution complete; human review required")
     await _save_job_to_db(job)
     await _broadcast_job_update(job_id, job.model_dump())
@@ -231,16 +237,15 @@ async def list_ecc_jobs(
         None,
         description="Filter jobs to a single issue id. Returns all jobs when omitted.",
     ),
+    status: Optional[str] = Query(
+        None,
+        description="Filter jobs by ECC status (queued, running, paused, failed, review_required, completed, cancelled).",
+    ),
 ):
-    """List ECC jobs, optionally filtered to a single issue.
-
-    The repository is the source of truth. The in-memory cache remains the
-    hot path for jobs created during the current process and is refreshed
-    from persisted rows before returning.
-    """
+    """List ECC jobs, optionally filtered to a single issue or a single status."""
     try:
         from db import repository as repo
-        rows = await repo.list_jobs(issue_id)
+        rows = await repo.list_jobs(issue_id=issue_id, status=status)
         jobs = []
         for row in rows:
             row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
@@ -248,8 +253,13 @@ async def list_ecc_jobs(
             _jobs[job.id] = job
             jobs.append(job)
     except Exception:
-        if issue_id:
-            jobs = [j for j in _jobs.values() if j.issue_id == issue_id]
+        if issue_id or status:
+            filtered = list(_jobs.values())
+            if issue_id:
+                filtered = [j for j in filtered if j.issue_id == issue_id]
+            if status:
+                filtered = [j for j in filtered if j.status == status]
+            jobs = filtered
         else:
             jobs = list(_jobs.values())
 
@@ -305,3 +315,64 @@ async def cancel_ecc_job(job_id: str):
     await _save_job_to_db(updated_job)
     
     return updated_job
+
+
+RETRYABLE_TERMINAL_STATUSES = {"failed", "cancelled", "review_required"}
+
+
+@router.post("/ecc/jobs/{job_id}/retry")
+async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks):
+    """Create a new job that re-runs the same payload as `job_id`.
+
+    The source job must be in a retryable terminal state. The new job
+    starts at `queued` and runs through the same safe runner.
+    """
+    source = _jobs.get(job_id)
+    if not source:
+        try:
+            from db import repository as repo
+            row = await repo.get_job(job_id)
+            if row:
+                row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+                source = ECCDispatchJob(**row)
+                _jobs[source.id] = source
+        except Exception:
+            source = None
+    if not source:
+        raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
+
+    if source.status not in RETRYABLE_TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot retry job in '{source.status}' state. "
+                f"Retryable states: {sorted(RETRYABLE_TERMINAL_STATUSES)}"
+            ),
+        )
+
+    now = _utc_now()
+    new_job = ECCDispatchJob(
+        id=f"ecc_{uuid4().hex[:12]}",
+        issue_id=source.issue_id,
+        issue_key=source.issue_key,
+        command=source.command,
+        profile=source.profile,
+        harness=source.harness,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+        message=f"Retried from job {source.id}",
+        events=[
+            ECCJobEvent(
+                timestamp=now,
+                status="queued",
+                message=f"Retried from job {source.id}",
+            )
+        ],
+    )
+    _jobs[new_job.id] = new_job
+    await _save_job_to_db(new_job)
+
+    background_tasks.add_task(_execute_safe_runner, new_job.id)
+
+    return new_job

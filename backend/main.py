@@ -60,6 +60,11 @@ async def lifespan(app: FastAPI):
         from api.v1.endpoints.ecc import load_jobs_from_db
         await load_jobs_from_db()
         logger.info("ECC jobs loaded from database: OK")
+
+        # Seed audit log entries from existing jobs (one-time)
+        audit_seeded = await repo.seed_audit_logs_from_jobs()
+        if audit_seeded:
+            logger.info(f"Audit logs seeded with {audit_seeded} entries")
     except Exception:
         logger.exception("Database initialization failed during startup")
         raise
@@ -322,7 +327,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
@@ -332,6 +337,8 @@ try:
     app.include_router(board.router, prefix="/api/v1", tags=["Board"])
     app.include_router(quality.router, prefix="/api/v1", tags=["Quality"])
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
+    app.include_router(audit.router, prefix="/api/v1", tags=["Audit"])
+    app.include_router(analytics.router, prefix="/api/v1", tags=["Analytics"])
 
     # Mount WebSocket router for ECC job updates at /ws/ecc/jobs
     app.include_router(ws.router, tags=["WebSocket"])

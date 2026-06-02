@@ -905,6 +905,33 @@ export const useBoardStore = defineStore('board', {
       }, 3000 + Math.random() * 2000)
     },
 
+    async dispatchCommand(payload: {
+      issueId: string
+      issueKey: string
+      command: string
+      profile: ECCProfile
+      harness: HarnessType
+    }): Promise<ECCDispatchJob | null> {
+      try {
+        const config = useRuntimeConfig()
+        const job = await $fetch<ECCDispatchJob>(`${config.public.apiBase}/ecc/dispatch`, {
+          method: 'POST',
+          body: {
+            issue_id: payload.issueId,
+            issue_key: payload.issueKey,
+            command: payload.command,
+            profile: payload.profile,
+            harness: payload.harness
+          }
+        })
+        this.fetchJobs()
+        return job
+      } catch (error) {
+        console.warn('[BoardStore] dispatchCommand failed:', error)
+        return null
+      }
+    },
+
     startStreaming(issueId: string, profile: string) {
       // Register this issue as streaming
       if (!this.streamingIssues.includes(issueId)) {
@@ -1512,6 +1539,105 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         this.activeAI_task = null
       } else if (payload.taskId) {
         this.activeAI_task = this.getIssueById(payload.taskId)?.key ?? null
+      }
+    },
+
+    handleJobUpdate(job: ECCDispatchJob) {
+      // Used by the WS path. Same shape as applyECCJobToIssue but
+      // driven by an external push rather than a REST fetch.
+
+      // Once a job is cancelled or completed, ignore stale updates that
+      // would revert its status (e.g. a late-arriving WS push from a
+      // safe-runner that was not stopped promptly).
+      const current = this.jobsById[job.id]
+      if (current && (current.status === 'cancelled' || current.status === 'completed')) {
+        return
+      }
+
+      this.jobsById[job.id] = job
+      const existing = this.jobs.find(j => j.id === job.id)
+      if (existing) {
+        Object.assign(existing, job)
+      } else {
+        this.jobs = [job, ...this.jobs]
+      }
+      const ids = this.jobsForIssue[job.issue_id] ?? []
+      if (!ids.includes(job.id)) {
+        this.jobsForIssue[job.issue_id] = [...ids, job.id]
+      }
+      this.applyECCJobToIssue(
+        this.getIssueById(job.issue_id) ?? this._synthIssue(job),
+        job
+      )
+    },
+
+    _synthIssue(job: ECCDispatchJob): Issue {
+      // When WS pushes a job whose issue has not been loaded yet, we
+      // synthesise a minimal Issue so the rest of the store logic can
+      // run. The real issue will overwrite this once the board loads.
+      return {
+        id: job.issue_id,
+        key: job.issue_key,
+        title: job.issue_key,
+        description: '',
+        status: 'backlog',
+        priority: 'medium',
+        profile: job.profile,
+        labels: [],
+        assigneeId: null,
+        assigneeName: null,
+        assigneeAvatar: null,
+        storyPoints: null,
+        dependencies: [],
+        prUrl: null,
+        ciStatus: null,
+        aiStatus: 'idle',
+        harnessType: job.harness,
+        eccJobId: job.id,
+        eccJobStatus: job.status,
+        eccJobMessage: job.message,
+        eccJobUpdatedAt: job.updated_at,
+        memoryRef: null,
+        activityLog: [],
+        eccLogs: [],
+        prDetails: null,
+        moveStatus: 'idle',
+        moveError: null,
+        createdAt: job.created_at,
+        updatedAt: job.updated_at
+      }
+    },
+
+    async cancelJob(jobId: string): Promise<ECCDispatchJob | null> {
+      try {
+        const config = useRuntimeConfig()
+        const job = await $fetch<ECCDispatchJob>(
+          `${config.public.apiBase}/ecc/jobs/${jobId}/cancel`,
+          { method: 'POST' }
+        )
+        this.handleJobUpdate(job)
+        return job
+      } catch (error) {
+        console.warn('[BoardStore] cancelJob failed:', error)
+        return null
+      }
+    },
+
+    async retryJob(jobId: string): Promise<ECCDispatchJob | null> {
+      try {
+        const config = useRuntimeConfig()
+        const job = await $fetch<ECCDispatchJob>(
+          `${config.public.apiBase}/ecc/jobs/${jobId}/retry`,
+          { method: 'POST' }
+        )
+        this.handleJobUpdate(job)
+        // Kick a fetch so the new job shows up in the global list
+        // immediately (we only mutated the in-place entry above).
+        await this.fetchJobs()
+        return job
+      } catch (error) {
+        console.warn('[BoardStore] retryJob failed:', error)
+        return null
       }
     }
   }

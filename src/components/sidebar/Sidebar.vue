@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  ClipboardList,
   CircleDot,
   Columns3,
   GitPullRequest,
@@ -20,27 +21,42 @@ import {
   ShieldCheck,
   Square,
   Sun,
+  Terminal,
   Webhook
 } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
 const { isDark, toggleDark } = useDarkMode()
+const router = useRouter()
+const route = useRoute()
 const isCollapsed = ref(false)
-const activeNav = ref('board')
 
 const emit = defineEmits<{ collapsed: [value: boolean] }>()
 
 watch(isCollapsed, (val) => emit('collapsed', val), { immediate: true })
 
 const navItems = [
-  { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban' },
-  { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage' },
-  { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners' },
-  { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs' },
-  { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events' },
-  { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow' },
-  { id: 'settings', icon: Settings, label: 'Settings', meta: 'System' }
+  { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban', to: '/' },
+  { id: 'command-center', icon: Terminal, label: 'Command Center', meta: 'ECC', to: '/command-center' },
+  { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
+  { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
+  { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
+  { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
+  { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow', to: '/analytics' },
+  { id: 'activity', icon: ClipboardList, label: 'Activity Log', meta: 'Audit', to: '/activity' },
+  { id: 'settings', icon: Settings, label: 'Settings', meta: 'System', to: '/settings' }
 ]
+
+const activeNav = computed(() => {
+  const path = route.path
+  if (path === '/') return 'board'
+  const match = navItems.find(item => item.to !== '/' && path.startsWith(item.to))
+  return match?.id ?? 'board'
+})
+
+const navigate = (to: string) => {
+  router.push(to)
+}
 
 // Recent jobs feed
 const { start: startRecentJobs, stop: stopRecentJobs } = useRecentJobs()
@@ -167,7 +183,7 @@ const toggleCollapse = () => {
             class="sidebar__nav-item"
             :class="{ 'sidebar__nav-item--active': activeNav === item.id }"
             :title="item.label"
-            @click="activeNav = item.id"
+            @click="navigate(item.to)"
           >
             <component :is="item.icon" :size="18" />
             <span class="sidebar__nav-label" v-show="!isCollapsed">{{ item.label }}</span>
