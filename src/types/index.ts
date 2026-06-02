@@ -25,6 +25,8 @@ export interface ECCJobEvent {
   message: string
 }
 
+export type ExecutionMode = 'safe-runner' | 'api-agent' | 'cli-agent'
+
 export interface ECCDispatchJob {
   id: string
   issue_id: string
@@ -37,6 +39,10 @@ export interface ECCDispatchJob {
   updated_at: string
   message: string | null
   events: ECCJobEvent[]
+  // MVP 2: Provider/Model execution config
+  provider?: string | null
+  model?: string | null
+  execution_mode?: ExecutionMode | null
 }
 
 export interface ECCCommandDraft {
@@ -44,6 +50,9 @@ export interface ECCCommandDraft {
   command: string
   profile: ECCProfile
   harness: HarnessType
+  provider?: string
+  model?: string
+  execution_mode?: ExecutionMode
   note?: string
 }
 

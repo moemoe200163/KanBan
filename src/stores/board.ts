@@ -911,6 +911,9 @@ export const useBoardStore = defineStore('board', {
       command: string
       profile: ECCProfile
       harness: HarnessType
+      provider?: string
+      model?: string
+      execution_mode?: string
     }): Promise<ECCDispatchJob | null> {
       try {
         const config = useRuntimeConfig()
@@ -921,7 +924,10 @@ export const useBoardStore = defineStore('board', {
             issue_key: payload.issueKey,
             command: payload.command,
             profile: payload.profile,
-            harness: payload.harness
+            harness: payload.harness,
+            provider: payload.provider || null,
+            model: payload.model || null,
+            execution_mode: payload.execution_mode || null
           }
         })
         this.fetchJobs()

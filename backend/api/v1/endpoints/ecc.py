@@ -20,7 +20,8 @@ VALID_COMMANDS = {
     "/release-ready --merge",
 }
 VALID_PROFILES = {"frontend", "backend", "security", "refactor", "debug", "general"}
-VALID_HARNESSES = {"claude-code", "codex", "cursor", "opencode", "gemini"}
+VALID_HARNESSES = {"safe-runner", "claude-code", "codex", "cursor", "opencode", "gemini"}
+VALID_EXECUTION_MODES = {"safe-runner", "api-agent", "cli-agent"}
 
 
 class ECCDispatchRequest(BaseModel):
@@ -29,6 +30,10 @@ class ECCDispatchRequest(BaseModel):
     command: str = Field(..., min_length=1)
     profile: str = Field(default="general")
     harness: str = Field(default="claude-code")
+    # MVP 2: Provider/Model execution config
+    provider: Optional[str] = Field(default=None, description="LLM provider id (e.g., openai, anthropic)")
+    model: Optional[str] = Field(default=None, description="Model id (e.g., gpt-4o, claude-sonnet-4-20250514)")
+    execution_mode: Optional[str] = Field(default=None, description="Execution mode: safe-runner, api-agent, cli-agent")
 
 
 ECCJobStatus = Literal["queued", "running", "paused", "failed", "review_required", "completed", "cancelled"]
@@ -52,6 +57,10 @@ class ECCDispatchJob(BaseModel):
     updated_at: str
     message: Optional[str] = None
     events: List[ECCJobEvent] = Field(default_factory=list)
+    # MVP 2: Provider/Model execution config
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    execution_mode: Optional[str] = None
 
 
 class ECCJobStatusUpdate(BaseModel):
@@ -200,7 +209,29 @@ async def dispatch_ecc_command(
     if request.harness not in VALID_HARNESSES:
         raise HTTPException(status_code=400, detail=f"Invalid harness: {request.harness}")
 
+    # MVP 2: Validate execution_mode if provided
+    if request.execution_mode and request.execution_mode not in VALID_EXECUTION_MODES:
+        raise HTTPException(status_code=400, detail=f"Invalid execution_mode: {request.execution_mode}")
+
+    # MVP 2: Determine effective execution mode
+    # Check ALLOW_REAL_LLM_EXECUTION gate
+    allow_real_llm = os.getenv("ALLOW_REAL_LLM_EXECUTION", "false").lower() == "true"
+    effective_execution_mode = request.execution_mode or "safe-runner"
+
+    # If real LLM execution is not allowed, force safe-runner
+    if effective_execution_mode in ("api-agent", "cli-agent") and not allow_real_llm:
+        effective_execution_mode = "safe-runner"
+
     now = _utc_now()
+
+    # Build initial message based on execution mode
+    if effective_execution_mode == "safe-runner":
+        initial_message = "Queued for safe runner execution"
+    elif effective_execution_mode == "api-agent":
+        initial_message = f"Queued for API agent execution (provider={request.provider or 'default'}, model={request.model or 'default'})"
+    else:
+        initial_message = f"Queued for CLI agent execution (harness={request.harness})"
+
     job = ECCDispatchJob(
         id=f"ecc_{uuid4().hex[:12]}",
         issue_id=request.issue_id,
@@ -211,22 +242,37 @@ async def dispatch_ecc_command(
         status="queued",
         created_at=now,
         updated_at=now,
-        message="Queued for local control-plane dispatch",
+        message=initial_message,
         events=[
             ECCJobEvent(
                 timestamp=now,
                 status="queued",
-                message="Queued for local control-plane dispatch",
+                message=initial_message,
             )
         ],
+        # MVP 2: Provider/Model execution config
+        provider=request.provider,
+        model=request.model,
+        execution_mode=effective_execution_mode,
     )
     _jobs[job.id] = job
 
     # Persist to database
     await _save_job_to_db(job)
 
+    # MVP 2: Add event if real execution was blocked
+    if request.execution_mode and request.execution_mode != effective_execution_mode:
+        _transition_job(job, "queued", f"Real execution disabled; using safe runner instead")
+        await _save_job_to_db(job)
+
     # P0 guardrail: dispatch returns immediately and safe runner emits deterministic events.
-    background_tasks.add_task(_execute_safe_runner, job.id)
+    # MVP 2: Use effective execution mode
+    if effective_execution_mode == "safe-runner":
+        background_tasks.add_task(_execute_safe_runner, job.id)
+    else:
+        # For now, all non-safe-runner modes still go through safe runner
+        # This will be replaced with real adapters in P3
+        background_tasks.add_task(_execute_safe_runner, job.id)
 
     return job
 
