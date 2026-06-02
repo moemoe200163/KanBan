@@ -231,16 +231,15 @@ async def list_ecc_jobs(
         None,
         description="Filter jobs to a single issue id. Returns all jobs when omitted.",
     ),
+    status: Optional[str] = Query(
+        None,
+        description="Filter jobs by ECC status (queued, running, paused, failed, review_required, completed, cancelled).",
+    ),
 ):
-    """List ECC jobs, optionally filtered to a single issue.
-
-    The repository is the source of truth. The in-memory cache remains the
-    hot path for jobs created during the current process and is refreshed
-    from persisted rows before returning.
-    """
+    """List ECC jobs, optionally filtered to a single issue or a single status."""
     try:
         from db import repository as repo
-        rows = await repo.list_jobs(issue_id)
+        rows = await repo.list_jobs(issue_id=issue_id, status=status)
         jobs = []
         for row in rows:
             row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
@@ -248,8 +247,13 @@ async def list_ecc_jobs(
             _jobs[job.id] = job
             jobs.append(job)
     except Exception:
-        if issue_id:
-            jobs = [j for j in _jobs.values() if j.issue_id == issue_id]
+        if issue_id or status:
+            filtered = list(_jobs.values())
+            if issue_id:
+                filtered = [j for j in filtered if j.issue_id == issue_id]
+            if status:
+                filtered = [j for j in filtered if j.status == status]
+            jobs = filtered
         else:
             jobs = list(_jobs.values())
 
