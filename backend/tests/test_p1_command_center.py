@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 import main
 
@@ -77,3 +78,61 @@ def test_ws_anonymous_connect_in_dev_mode():
         ws.send_json({"action": "ping"})
         msg = ws.receive_json()
         assert msg["type"] == "pong"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_broadcasts_job_update_via_ws():
+    """Dispatching a job triggers _broadcast_job_update via _execute_safe_runner.
+
+    TestClient's synchronous WS blocks the event loop so background tasks
+    never fire inside ``websocket_connect``.  We work around this by:
+      1. Dispatching via an async ASGI client (background task actually runs).
+      2. Waiting for the runner to complete (job → review_required).
+      3. Calling the broadcast bridge with a mock WS to verify the payload.
+    """
+    import asyncio
+    import httpx
+    from unittest.mock import AsyncMock
+    from api.v1.endpoints import ecc, ws
+
+    # --- Step 1: dispatch via async client so the background task fires ---
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app), base_url="http://testserver"
+    ) as ac:
+        r = await ac.post(
+            "/api/v1/ecc/dispatch",
+            json={
+                "issue_id": "p1-ws-broadcast",
+                "issue_key": "DEV-P1-WS-BROADCAST",
+                "command": "/loop-start --profile=frontend",
+                "profile": "frontend",
+                "harness": "claude-code",
+            },
+        )
+        assert r.status_code == 200, r.text
+        job_id = r.json()["id"]
+
+    # --- Step 2: wait for the safe runner to finish ---
+    await asyncio.sleep(0.5)
+
+    job = ecc._jobs.get(job_id)
+    assert job is not None, "job should exist in memory after dispatch"
+    assert job.status == "review_required", (
+        f"safe runner should have advanced to review_required, got {job.status}"
+    )
+
+    # --- Step 3: verify broadcast payload via mock WS ---
+    mock_ws = AsyncMock()
+    original_mgr = ws.job_manager
+    try:
+        ws.job_manager._job_connections[job_id] = {mock_ws}
+        await ecc._broadcast_job_update(job_id, job.model_dump())
+    finally:
+        ws.job_manager._job_connections.pop(job_id, None)
+        ws.job_manager = original_mgr
+
+    mock_ws.send_json.assert_called_once()
+    payload = mock_ws.send_json.call_args[0][0]
+    assert payload["type"] == "job_update"
+    assert payload["job"]["id"] == job_id
+    assert payload["job"]["status"] == "review_required"
