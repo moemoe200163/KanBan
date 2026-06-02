@@ -1,0 +1,32 @@
+# E2E compose override.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
+#
+# What this changes (vs. base docker-compose.yml):
+#   * Postgres is created with database name `devflow_e2e` instead of
+#     `devflow`. This is the second half of the reset-endpoint double
+#     gate; a developer who accidentally points E2E at the dev DB will
+#     be blocked by the database-name check inside the endpoint.
+#   * Backend gets `E2E=1` so the reset endpoint is wired up.
+#   * Backend's DATABASE_URL is rewritten to point at the `_e2e` DB.
+#
+# This file is an **override**, not a replacement. The base
+# docker-compose.yml remains the canonical definition for dev and CI.
+# No service is duplicated here; we only patch the parts we need.
+
+services:
+  postgres:
+    environment:
+      - POSTGRES_DB=devflow_e2e
+    # Note: base compose already publishes 5432:5432. E2E reuses the
+    # same port so a developer can `psql` into devflow_e2e from the host
+    # for debugging, but the backend reaches it via the docker network.
+
+  backend:
+    environment:
+      - E2E=1
+      - DATABASE_URL=postgresql+asyncpg://devflow:devflow_secret@postgres:5432/devflow_e2e
+    depends_on:
+      postgres:
+        condition: service_healthy

@@ -1,0 +1,119 @@
+services:
+  # Frontend - Nuxt application
+  # NUXT_PUBLIC_API_BASE is consumed by the browser, not by container-to-container
+  # traffic, so it must point at a hostname the *browser on the host* can resolve.
+  # `http://backend:8000` works only inside the docker network -- the browser
+  # cannot resolve it. We use `http://127.0.0.1:8000/api/v1` because the backend
+  # exposes 8000:8000 to the host; this matches the assumption in e2e/board.spec.ts.
+  # If running behind nginx on port 80, set this to `/api/v1` instead.
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend
+      args:
+        - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+    container_name: devflow-frontend
+    ports:
+      - "3010:3010"
+    environment:
+      - NODE_ENV=production
+      - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+      - NITRO_PORT=3010
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - devflow-network
+
+  # Backend - FastAPI control plane.
+  # Persistent state lives in Postgres; lifespan runs Alembic to head on
+  # startup so a fresh `docker compose up` provisions the schema.
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend
+    container_name: devflow-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-devflow-jwt-secret-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRY_HOURS=24
+      - ALLOW_ANONYMOUS_DISPATCH=${ALLOW_ANONYMOUS_DISPATCH:-false}
+      - DATABASE_URL=postgresql+asyncpg://devflow:devflow_secret@postgres:5432/devflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - devflow-network
+
+  # Postgres - the official dev / local production-like database.
+  # Data survives `docker compose down` because of the named volume;
+  # only `docker compose down -v` resets it.
+  postgres:
+    image: postgres:15
+    container_name: devflow-postgres
+    environment:
+      - POSTGRES_DB=devflow
+      - POSTGRES_USER=devflow
+      - POSTGRES_PASSWORD=devflow_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devflow -d devflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - devflow-network
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: devflow-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    networks:
+      - devflow-network
+
+  # Redis (placeholder for future pub/sub and job queue)
+  redis:
+    image: redis:7-alpine
+    container_name: devflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - devflow-network
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  devflow-network:
+    driver: bridge

@@ -245,3 +245,48 @@ export const HARNESS_CONFIGS: HarnessConfig[] = [
   { type: 'opencode', name: 'OpenCode', icon: 'opencode', color: '#8C8279', available: false },
   { type: 'gemini', name: 'Gemini', icon: 'google', color: '#C67B4E', available: false }
 ]
+
+// ============================================================================
+// LLM Provider System
+// ============================================================================
+
+export type LLMAdapterType = 'api-chat' | 'api-responses' | 'cli' | 'local-safe-runner'
+export type LLMCapability = 'chat' | 'code' | 'tool-use' | 'streaming' | 'vision' | 'cli'
+export type LLMProviderStatus = 'configured' | 'missing_key' | 'unhealthy' | 'disabled' | 'unknown'
+
+export interface LLMProvider {
+  id: string
+  name: string
+  adapter: LLMAdapterType
+  enabled: boolean
+  configured: boolean
+  status: LLMProviderStatus
+  defaultModel: string | null
+  capabilities: LLMCapability[]
+  authType: 'api_key' | 'oauth' | 'cli_path' | 'none'
+  authEnvVar: string | null
+  maskedSecret: string | null
+  healthStatus: 'healthy' | 'unhealthy' | 'unknown'
+  lastChecked: string | null
+  errorSummary: string | null
+}
+
+export interface LLMProviderConfig {
+  enabled: boolean
+  defaultModel: string | null
+}
+
+export interface LLMDefaults {
+  providerId: string
+  modelId: string
+  harness: HarnessType
+  maxRuntimeSeconds: number
+  tokenBudget: number | null
+  costBudget: number | null
+  streamingLogs: boolean
+}
+
+export interface LLMModelsResponse {
+  providerId: string
+  models: string[]
+}
