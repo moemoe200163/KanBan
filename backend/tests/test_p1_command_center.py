@@ -66,3 +66,14 @@ def test_retry_rejects_non_terminal_job():
 def test_retry_rejects_missing_job():
     r = client.post("/api/v1/ecc/jobs/ecc_does_not_exist/retry")
     assert r.status_code == 404
+
+
+def test_ws_anonymous_connect_in_dev_mode():
+    # The test env should have ALLOW_ANONYMOUS_WS unset OR "true" by default.
+    # We probe via the WS endpoint by reading the env gate and asserting the
+    # 4001 close is NOT triggered for an unauthenticated connection.
+    with client.websocket_connect("/ws/ecc/jobs?token=dev-anon") as ws:
+        # If we got here, auth was bypassed.
+        ws.send_json({"action": "ping"})
+        msg = ws.receive_json()
+        assert msg["type"] == "pong"
