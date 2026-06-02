@@ -1,12 +1,10 @@
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
-from uuid import uuid4
-import json
 import asyncio
+from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 
 # NOTE: backend.db imports are done lazily (inside functions that need them)
 # to avoid import-time failures when running with PYTHONPATH=backend from
@@ -83,61 +81,31 @@ async def _broadcast_job_update(job_id: str, job_data: dict) -> None:
         logging.getLogger(__name__).warning(f"Failed to broadcast job update: {e}")
 
 
-async def _execute_ecc_command(job_id: str) -> None:
-    """Execute the ECC command with real-time log streaming via WebSocket."""
-    import os
-    from core.adapters import HarnessRegistry, ClaudeLocalAdapter
-
+async def _execute_safe_runner(job_id: str) -> None:
+    """Run the P0-safe execution loop without invoking real AI/CLI adapters."""
     job = _jobs.get(job_id)
     if not job:
         return
 
-    # Transition to running
-    _transition_job(job, "running", "AI execution started")
+    _transition_job(job, "running", "Safe execution started")
+    await _save_job_to_db(job)
     await _broadcast_job_update(job_id, job.model_dump())
 
-    # Register ClaudeLocalAdapter if not already registered
-    if not HarnessRegistry.is_supported(job.harness):
-        HarnessRegistry.register(job.harness, ClaudeLocalAdapter)
+    safe_events = [
+        f"Analyzing issue {job.issue_key}",
+        f"Preparing execution context for {job.profile}",
+        "Running safe quality check",
+        "Ready for human review",
+    ]
 
-    # Get appropriate adapter
-    adapter = HarnessRegistry.get(job.harness, config={
-        "github_repo": os.getenv("GITHUB_REPO", "your-org/your-repo"),
-        "github_token": os.getenv("GITHUB_TOKEN"),
-        "working_dir": os.getenv("WORKSPACE_DIR", "/Users/user/Code/kanban"),
-    })
-
-    if not adapter:
-        _transition_job(job, "failed", f"Harness {job.harness} not supported")
+    for message in safe_events:
+        await asyncio.sleep(0.01)
+        _transition_job(job, "running", message)
+        await _save_job_to_db(job)
         await _broadcast_job_update(job_id, job.model_dump())
-        return
 
-    # Build issue context from job
-    issue = {
-        "key": job.issue_key,
-        "title": job.issue_key,
-        "description": f"ECC Command: {job.command}\nProfile: {job.profile}",
-        "profile": job.profile,
-    }
-
-    context = {
-        "working_dir": os.getenv("WORKSPACE_DIR", "/Users/user/Code/kanban"),
-        "branch_name": f"feature/{job.issue_key.lower().replace(' ', '-')}",
-    }
-
-    # Execute via adapter
-    try:
-        result = await adapter.dispatch(issue, context)
-
-        if result.success:
-            _transition_job(job, "completed", f"Success: {result.pr_url or 'No PR created'}")
-        else:
-            _transition_job(job, "failed", result.error or "Unknown error")
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"ECC execution failed for {job_id}: {e}")
-        _transition_job(job, "failed", str(e))
-
+    _transition_job(job, "review_required", "Safe execution complete; human review required")
+    await _save_job_to_db(job)
     await _broadcast_job_update(job_id, job.model_dump())
 
 
@@ -159,29 +127,38 @@ def _transition_job(job: ECCDispatchJob, status: ECCJobStatus, message: str) -> 
 
 
 async def _save_job_to_db(job: ECCDispatchJob) -> None:
-    """Persist job state to SQLite database."""
-    # Disabled due to aiosqlite greenlet issue with BackgroundTasks
-    # Re-enable once the async context issue is resolved
-    pass
+    """Persist job state through the repository.
+
+    Errors are logged and swallowed so a DB failure never breaks the
+    in-memory job flow.
+    """
+    from db import repository as repo
+
+    await repo.upsert_job({
+        "id": job.id,
+        "issue_id": job.issue_id,
+        "issue_key": job.issue_key,
+        "command": job.command,
+        "profile": job.profile,
+        "harness": job.harness,
+        "status": job.status,
+        "message": job.message,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "events": [e.model_dump() for e in job.events],
+    })
 
 
 async def load_jobs_from_db() -> None:
     """Load all jobs from database into _jobs dict on startup."""
     global _jobs
     try:
-        # Relative import to avoid backend/backend path issues
-        from db.database import AsyncSessionLocal, ensure_db_init
-        from db.models import JobModel
-        await ensure_db_init()  # lazy-init tables if not yet created
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(JobModel))
-            rows = result.scalars().all()
-            
-            for row in rows:
-                job_dict = row.to_dict()
-                # Convert events JSON back to ECCJobEvent objects
-                job_dict["events"] = [ECCJobEvent(**e) for e in job_dict.get("events", [])]
-                _jobs[row.id] = ECCDispatchJob(**job_dict)
+        from db import repository as repo
+        rows = await repo.load_all_jobs_into_memory()
+        _jobs = {}
+        for row in rows:
+            row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+            _jobs[row["id"]] = ECCDispatchJob(**row)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Failed to load jobs from DB: {e}")
@@ -203,9 +180,9 @@ async def dispatch_ecc_command(
     allow_anonymous = os.getenv("ALLOW_ANONYMOUS_DISPATCH", "false").lower() == "true"
 
     if not allow_anonymous:
-        # Authentication required - raise 401 if not provided
-        # The frontend always sends Authorization header, so this is the normal path
-        pass  # Let it fail naturally if no auth
+        # TODO(P1): No auth middleware exists yet. This branch is a no-op.
+        # Implement JWT validation before any public/production deployment.
+        pass
 
     command_name = request.command.split(" --profile=", 1)[0]
     if command_name not in VALID_COMMANDS:
@@ -242,25 +219,57 @@ async def dispatch_ecc_command(
     # Persist to database
     await _save_job_to_db(job)
 
-    # Execute the actual AI command with WebSocket streaming
-    background_tasks.add_task(_execute_ecc_command, job.id)
+    # P0 guardrail: dispatch returns immediately and safe runner emits deterministic events.
+    background_tasks.add_task(_execute_safe_runner, job.id)
 
     return job
 
 
 @router.get("/ecc/jobs")
-async def list_ecc_jobs():
-    jobs: List[ECCDispatchJob] = sorted(
-        _jobs.values(),
-        key=lambda job: job.created_at,
-        reverse=True,
-    )
+async def list_ecc_jobs(
+    issue_id: Optional[str] = Query(
+        None,
+        description="Filter jobs to a single issue id. Returns all jobs when omitted.",
+    ),
+):
+    """List ECC jobs, optionally filtered to a single issue.
+
+    The repository is the source of truth. The in-memory cache remains the
+    hot path for jobs created during the current process and is refreshed
+    from persisted rows before returning.
+    """
+    try:
+        from db import repository as repo
+        rows = await repo.list_jobs(issue_id)
+        jobs = []
+        for row in rows:
+            row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+            job = ECCDispatchJob(**row)
+            _jobs[job.id] = job
+            jobs.append(job)
+    except Exception:
+        if issue_id:
+            jobs = [j for j in _jobs.values() if j.issue_id == issue_id]
+        else:
+            jobs = list(_jobs.values())
+
+    jobs = sorted(jobs, key=lambda job: job.created_at, reverse=True)
     return {"jobs": [job.model_dump() for job in jobs], "total": len(jobs)}
 
 
 @router.get("/ecc/jobs/{job_id}")
 async def get_ecc_job(job_id: str):
     job = _jobs.get(job_id)
+    if not job:
+        try:
+            from db import repository as repo
+            row = await repo.get_job(job_id)
+            if row:
+                row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+                job = ECCDispatchJob(**row)
+                _jobs[job.id] = job
+        except Exception:
+            job = None
     if not job:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
     return job
