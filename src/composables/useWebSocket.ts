@@ -266,6 +266,13 @@ export const useWebSocket = () => {
     send({ action: 'unsubscribe', job_id: jobId })
   }
 
+  // Pipe job_update events into the board store. The listener fires
+  // for every incoming job update, regardless of who subscribed; the
+  // store is the single source of truth for job data.
+  onJobUpdate((job) => {
+    boardStore.handleJobUpdate(job as any)
+  })
+
   // Lifecycle
   onMounted(() => {
     connect()
