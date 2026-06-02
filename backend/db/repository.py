@@ -20,7 +20,14 @@ from uuid import uuid4
 from sqlalchemy import select, func
 
 from db import database as _db
-from db.models import Issue as IssueModel, JobModel, AuditLog
+from db.models import (
+    Issue as IssueModel,
+    JobModel,
+    AuditLog,
+    IssueEvent,
+    IssueComment,
+    IssueArtifact,
+)
 
 
 def _get_sessionmaker():
@@ -54,6 +61,13 @@ __all__ = [
     "seed_audit_logs_from_jobs",
     "list_audit_logs",
     "get_audit_log_stats",
+    # P2: Issue Collaboration Records
+    "list_issue_events",
+    "create_issue_event",
+    "list_issue_comments",
+    "create_issue_comment",
+    "list_issue_artifacts",
+    "create_issue_artifact",
 ]
 
 
@@ -521,3 +535,163 @@ async def get_audit_log_stats() -> dict:
     except Exception as e:
         logger.warning(f"Failed to get audit log stats: {e}")
         return {"total": 0, "byAction": {}, "byResource": {}}
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Events
+# ============================================================================
+
+async def list_issue_events(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return events for an issue, newest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueEvent)
+                .where(IssueEvent.issue_id == issue_id)
+                .order_by(IssueEvent.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue events for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_event(
+    issue_id: str,
+    event_type: str,
+    summary: str,
+    actor_id: Optional[str] = None,
+    actor_name: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> dict:
+    """Create an event for an issue. Returns the created event."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    event = IssueEvent(
+        id=f"evt-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        event_type=event_type,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        summary=summary,
+        details=details or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(event)
+        await session.commit()
+        return event.to_dict()
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Comments
+# ============================================================================
+
+async def list_issue_comments(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return comments for an issue, oldest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueComment)
+                .where(IssueComment.issue_id == issue_id)
+                .order_by(IssueComment.created_at.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue comments for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_comment(
+    issue_id: str,
+    body: str,
+    author_id: Optional[str] = None,
+    author_name: Optional[str] = None,
+    comment_type: str = "comment",
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Create a comment on an issue. Returns the created comment."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    comment = IssueComment(
+        id=f"cmt-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        author_id=author_id,
+        author_name=author_name,
+        body=body,
+        comment_type=comment_type,
+        extra_data=metadata or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(comment)
+        await session.commit()
+        return comment.to_dict()
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Artifacts
+# ============================================================================
+
+async def list_issue_artifacts(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return artifacts for an issue, newest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueArtifact)
+                .where(IssueArtifact.issue_id == issue_id)
+                .order_by(IssueArtifact.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue artifacts for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_artifact(
+    issue_id: str,
+    title: str,
+    artifact_type: str,
+    job_id: Optional[str] = None,
+    source: Optional[str] = None,
+    path_or_url: Optional[str] = None,
+    sensitivity: str = "public",
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_by_id: Optional[str] = None,
+    created_by_name: Optional[str] = None,
+) -> dict:
+    """Create an artifact metadata record. Returns the created artifact."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    artifact = IssueArtifact(
+        id=f"art-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        job_id=job_id,
+        title=title,
+        artifact_type=artifact_type,
+        source=source,
+        path_or_url=path_or_url,
+        sensitivity=sensitivity,
+        summary=summary,
+        extra_data=metadata or {},
+        created_by_id=created_by_id,
+        created_by_name=created_by_name,
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(artifact)
+        await session.commit()
+        return artifact.to_dict()

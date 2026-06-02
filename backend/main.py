@@ -327,12 +327,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(agents.router, prefix="/api/v1", tags=["Agents"])
     app.include_router(issues.router, prefix="/api/v1", tags=["Issues"])
+    app.include_router(issue_collaboration.router, prefix="/api/v1", tags=["Issue Collaboration"])
     app.include_router(ecc.router, prefix="/api/v1", tags=["ECC"])
     app.include_router(board.router, prefix="/api/v1", tags=["Board"])
     app.include_router(quality.router, prefix="/api/v1", tags=["Quality"])

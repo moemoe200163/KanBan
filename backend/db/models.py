@@ -347,3 +347,127 @@ class User(Base):
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "lastLoginAt": self.last_login_at.isoformat() if self.last_login_at else None,
         }
+
+
+# ---------------------------------------------------------------------------
+# P2: Issue Collaboration Records
+# ---------------------------------------------------------------------------
+
+
+class IssueEvent(Base):
+    """
+    IssueEvent records everything that happens to an issue: status changes,
+    handoffs, decisions, command runs, etc.
+
+    Provides a durable audit trail for agent collaboration.
+    """
+    __tablename__ = "issue_events"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    actor_id = Column(String(64), nullable=True)
+    actor_name = Column(String(128), nullable=True)
+    summary = Column(Text, nullable=True)
+    details = Column(JSON, nullable=True, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_issue_events_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "eventType": self.event_type,
+            "actorId": self.actor_id,
+            "actorName": self.actor_name,
+            "summary": self.summary,
+            "details": self.details or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class IssueComment(Base):
+    """
+    IssueComment stores human/agent notes and discussion on issues.
+
+    comment_type can be: 'comment', 'note', 'decision', 'review', 'handoff'
+    """
+    __tablename__ = "issue_comments"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    author_id = Column(String(64), nullable=True, index=True)
+    author_name = Column(String(128), nullable=True)
+    body = Column(Text, nullable=False)
+    comment_type = Column(String(32), nullable=False, default="comment", index=True)
+    extra_data = Column(JSON, nullable=True, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_issue_comments_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "authorId": self.author_id,
+            "authorName": self.author_name,
+            "body": self.body,
+            "commentType": self.comment_type,
+            "metadata": self.extra_data or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class IssueArtifact(Base):
+    """
+    IssueArtifact stores metadata about files, outputs, and evidence
+    linked to issues.
+
+    v1 is metadata-only: no binary storage, no upload pipeline.
+    artifact_type can be: 'file', 'screenshot', 'test_log', 'pr_link',
+    'design_doc', 'diff_summary', 'command_output'
+    sensitivity can be: 'public', 'internal', 'confidential', 'secret'
+    """
+    __tablename__ = "issue_artifacts"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    job_id = Column(String(64), nullable=True, index=True)
+    title = Column(String(512), nullable=False)
+    artifact_type = Column(String(64), nullable=False, index=True)
+    source = Column(String(128), nullable=True)
+    path_or_url = Column(String(1024), nullable=True)
+    sensitivity = Column(String(32), nullable=False, default="public")
+    summary = Column(Text, nullable=True)
+    extra_data = Column(JSON, nullable=True, default=dict)
+    created_by_id = Column(String(64), nullable=True)
+    created_by_name = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_issue_artifacts_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "jobId": self.job_id,
+            "title": self.title,
+            "artifactType": self.artifact_type,
+            "source": self.source,
+            "pathOrUrl": self.path_or_url,
+            "sensitivity": self.sensitivity,
+            "summary": self.summary,
+            "metadata": self.extra_data or {},
+            "createdById": self.created_by_id,
+            "createdByName": self.created_by_name,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
