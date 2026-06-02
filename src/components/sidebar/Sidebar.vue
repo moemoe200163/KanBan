@@ -41,6 +41,7 @@ const navItems = [
   { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
   { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
   { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
+  { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
   { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow', to: '/analytics' },
   { id: 'activity', icon: ClipboardList, label: 'Activity Log', meta: 'Audit', to: '/activity' },
   { id: 'settings', icon: Settings, label: 'Settings', meta: 'System', to: '/settings' }
