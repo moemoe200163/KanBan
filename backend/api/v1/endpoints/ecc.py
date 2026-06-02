@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
-import asyncio
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -91,37 +90,23 @@ async def _broadcast_job_update(job_id: str, job_data: dict) -> None:
 
 
 async def _execute_safe_runner(job_id: str) -> None:
-    """Run the P0-safe execution loop without invoking real AI/CLI adapters."""
-    job = _jobs.get(job_id)
-    if not job:
-        return
+    """Run the P0-safe execution loop without invoking real AI/CLI adapters.
 
-    _transition_job(job, "running", "Safe execution started")
-    await _save_job_to_db(job)
-    await _broadcast_job_update(job_id, job.model_dump())
+    Thin wrapper around the shared :mod:`core.execution.safe_runner`
+    so the dispatch endpoint and the adapter layer both use the same
+    proven path.
+    """
+    from core.execution.safe_runner import SafeRunnerDeps, run_safe_execution
 
-    safe_events = [
-        f"Analyzing issue {job.issue_key}",
-        f"Preparing execution context for {job.profile}",
-        "Running safe quality check",
-        "Ready for human review",
-    ]
-
-    for message in safe_events:
-        await asyncio.sleep(0.01)
-        # Bail out if the job was cancelled while we were running.
-        if job.status == "cancelled":
-            return
-        _transition_job(job, "running", message)
-        await _save_job_to_db(job)
-        await _broadcast_job_update(job_id, job.model_dump())
-
-    # Final status check before transitioning to review_required.
-    if job.status == "cancelled":
-        return
-    _transition_job(job, "review_required", "Safe execution complete; human review required")
-    await _save_job_to_db(job)
-    await _broadcast_job_update(job_id, job.model_dump())
+    await run_safe_execution(
+        job_id,
+        SafeRunnerDeps(
+            jobs=_jobs,
+            transition_job=_transition_job,
+            save_job_to_db=_save_job_to_db,
+            broadcast_job_update=_broadcast_job_update,
+        ),
+    )
 
 
 def _complete_job(job_id: str) -> None:
