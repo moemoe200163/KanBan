@@ -100,10 +100,16 @@ async def _execute_safe_runner(job_id: str) -> None:
 
     for message in safe_events:
         await asyncio.sleep(0.01)
+        # Bail out if the job was cancelled while we were running.
+        if job.status == "cancelled":
+            return
         _transition_job(job, "running", message)
         await _save_job_to_db(job)
         await _broadcast_job_update(job_id, job.model_dump())
 
+    # Final status check before transitioning to review_required.
+    if job.status == "cancelled":
+        return
     _transition_job(job, "review_required", "Safe execution complete; human review required")
     await _save_job_to_db(job)
     await _broadcast_job_update(job_id, job.model_dump())

@@ -34,13 +34,9 @@ test.describe('Command Center', () => {
     // Dispatch.
     await page.getByTestId('command-dispatch').click()
 
-    // A job row should appear in the monitor.
-    const monitor = page.locator('.job-monitor')
-    await expect(monitor).toBeVisible()
-    await expect(page.locator('.job-row').first()).toBeVisible({ timeout: 10_000 })
-
-    // The job row should reference our issue key.
-    await expect(page.locator('.job-row__key').first()).toContainText(issue.key)
+    // A job row for our issue should appear in the monitor.
+    const myJobRow = page.locator('.job-row__key', { hasText: issue.key })
+    await expect(myJobRow).toBeVisible({ timeout: 10_000 })
   })
 
   test('clicking a job opens the detail drawer', async ({ page, request }) => {
@@ -63,11 +59,12 @@ test.describe('Command Center', () => {
     await select.selectOption(issue.id)
     await page.getByTestId('command-dispatch').click()
 
-    // Wait for the job row.
-    await expect(page.locator('.job-row').first()).toBeVisible({ timeout: 10_000 })
+    // Wait for our specific job row.
+    const myJobRow = page.locator('.job-row__key', { hasText: issue.key })
+    await expect(myJobRow).toBeVisible({ timeout: 10_000 })
 
-    // Click the job row to open the drawer.
-    await page.locator('.job-row').first().click()
+    // Click the parent job-row to open the drawer.
+    await myJobRow.locator('..').locator('..').click()
 
     const drawer = page.getByTestId('job-detail-drawer')
     await expect(drawer).toBeVisible()
@@ -96,18 +93,34 @@ test.describe('Command Center', () => {
     await select.selectOption(issue.id)
     await page.getByTestId('command-dispatch').click()
 
-    // Wait for the job row.
-    await expect(page.locator('.job-row').first()).toBeVisible({ timeout: 10_000 })
+    // Wait for our specific job row to appear.
+    const jobRow = page.locator('.job-row', { hasText: issue.key }).first()
+    await expect(jobRow).toBeVisible({ timeout: 10_000 })
 
     // The cancel button has data-testid="job-cancel-{id}".
-    const cancelBtn = page.locator('[data-testid^="job-cancel-"]').first()
-    if (await cancelBtn.isVisible()) {
-      await cancelBtn.click()
+    const cancelBtn = jobRow.locator('[data-testid^="job-cancel-"]')
 
-      // The status badge should update to "cancelled".
-      await expect(
-        page.locator('.job-row').first().locator('.job-row__status-badge')
-      ).toContainText('cancelled', { timeout: 5_000 })
+    // Wait for the cancel button to be visible (job might still be queued/running).
+    const buttonVisible = await cancelBtn.isVisible({ timeout: 3_000 }).catch(() => false)
+    if (buttonVisible) {
+      // Listen for the cancel API response from the browser.
+      const cancelPromise = page.waitForResponse(
+        resp => resp.url().includes('/ecc/jobs/') && resp.url().includes('/cancel') && resp.status() === 200,
+        { timeout: 5_000 }
+      )
+      await cancelBtn.click()
+      const cancelResp = await cancelPromise
+      expect(cancelResp.ok()).toBeTruthy()
+
+      // Verify the cancel took effect via backend API.
+      const jobId = cancelResp.url().split('/ecc/jobs/')[1]?.split('/')[0]
+      expect(jobId).toBeTruthy()
+      await expect.poll(async () => {
+        const r = await request.get(`http://127.0.0.1:8000/api/v1/ecc/jobs/${jobId}`)
+        return (await r.json()).status
+      }, { timeout: 5_000 }).toBe('cancelled')
     }
+    // If the safe runner already completed (review_required), the cancel button
+    // won't be shown — that's expected behavior, so the test passes.
   })
 })

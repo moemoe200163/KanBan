@@ -1545,6 +1545,15 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
     handleJobUpdate(job: ECCDispatchJob) {
       // Used by the WS path. Same shape as applyECCJobToIssue but
       // driven by an external push rather than a REST fetch.
+
+      // Once a job is cancelled or completed, ignore stale updates that
+      // would revert its status (e.g. a late-arriving WS push from a
+      // safe-runner that was not stopped promptly).
+      const current = this.jobsById[job.id]
+      if (current && (current.status === 'cancelled' || current.status === 'completed')) {
+        return
+      }
+
       this.jobsById[job.id] = job
       const existing = this.jobs.find(j => j.id === job.id)
       if (existing) {

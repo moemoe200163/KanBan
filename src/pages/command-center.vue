@@ -2,6 +2,8 @@
 import { onMounted } from 'vue'
 import { useBoardStore } from '~/stores/board'
 import JobDetailDrawer from '~/components/common/JobDetailDrawer.vue'
+import JobMonitor from '~/components/command/JobMonitor.vue'
+import ReviewQueuePanel from '~/components/command/ReviewQueuePanel.vue'
 
 const boardStore = useBoardStore()
 
