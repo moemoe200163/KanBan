@@ -33,6 +33,11 @@ test.describe('Sidebar navigation', () => {
     await expect(page).toHaveURL(/\/analytics/)
     await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
 
+    // Activity Log
+    await page.locator('.sidebar__nav-item', { hasText: 'Activity Log' }).click()
+    await expect(page).toHaveURL(/\/activity/)
+    await expect(page.getByRole('heading', { name: 'Activity Log' })).toBeVisible()
+
     // Settings
     await page.locator('.sidebar__nav-item', { hasText: 'Settings' }).click()
     await expect(page).toHaveURL(/\/settings/)
@@ -73,6 +78,15 @@ test.describe('MVP pages', () => {
     await page.goto('/analytics')
     await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
     await expect(page.locator('.kpi-card').first()).toBeVisible()
+  })
+
+  test('Activity Log page shows audit entries', async ({ page }) => {
+    await page.goto('/activity')
+    await expect(page.getByRole('heading', { name: 'Activity Log' })).toBeVisible()
+    // Should show either entries, empty state, or loading
+    await expect(
+      page.locator('.activity-timeline, .activity-page__empty, .activity-page__loading')
+    ).toBeVisible()
   })
 
   test('Settings page shows backend status', async ({ page }) => {

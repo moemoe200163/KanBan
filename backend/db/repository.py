@@ -15,11 +15,12 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import List, Optional
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from db import database as _db
-from db.models import Issue as IssueModel, JobModel
+from db.models import Issue as IssueModel, JobModel, AuditLog
 
 
 def _get_sessionmaker():
@@ -50,6 +51,9 @@ __all__ = [
     "get_job",
     "list_jobs",
     "load_all_jobs_into_memory",
+    "seed_audit_logs_from_jobs",
+    "list_audit_logs",
+    "get_audit_log_stats",
 ]
 
 
@@ -354,3 +358,166 @@ async def load_all_jobs_into_memory() -> List[dict]:
     except Exception as e:
         logger.warning(f"Failed to load all jobs from DB: {e}")
         return []
+
+
+# ============================================================================
+# Audit Log repository
+# ============================================================================
+
+async def seed_audit_logs_from_jobs() -> int:
+    """Generate audit log entries from existing ECC jobs (one-time seed).
+
+    Creates action entries for each job transition event. Returns the
+    number of entries inserted (0 if already seeded or on error).
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            # Check if audit logs already exist
+            existing = await session.execute(select(func.count(AuditLog.id)))
+            if (existing.scalar() or 0) > 0:
+                return 0
+
+            # Load all jobs to generate audit entries
+            result = await session.execute(select(JobModel))
+            jobs = result.scalars().all()
+
+            now = datetime.now(timezone.utc)
+            count = 0
+            for job in jobs:
+                events = job.events if isinstance(job.events, list) else []
+                for event in events:
+                    entry = AuditLog(
+                        id=f"audit_{uuid4().hex[:12]}",
+                        agent_id=None,
+                        agent_name="system",
+                        action=event.get("status", "unknown"),
+                        resource="ecc_job",
+                        resource_id=job.id,
+                        details={
+                            "issueKey": job.issue_key,
+                            "command": job.command,
+                            "profile": job.profile,
+                            "harness": job.harness,
+                        },
+                        changes={"message": event.get("message", "")},
+                        timestamp=now,
+                    )
+                    session.add(entry)
+                    count += 1
+
+                # Add a dispatch entry for job creation
+                dispatch_entry = AuditLog(
+                    id=f"audit_{uuid4().hex[:12]}",
+                    agent_id=None,
+                    agent_name="user",
+                    action="dispatch",
+                    resource="ecc_job",
+                    resource_id=job.id,
+                    details={
+                        "issueKey": job.issue_key,
+                        "command": job.command,
+                        "profile": job.profile,
+                        "harness": job.harness,
+                    },
+                    changes={"status": job.status},
+                    timestamp=now,
+                )
+                session.add(dispatch_entry)
+                count += 1
+
+            # Add seed issue entries
+            for i, issue_data in enumerate(SEED_ISSUES, start=1):
+                entry = AuditLog(
+                    id=f"audit_{uuid4().hex[:12]}",
+                    agent_id=None,
+                    agent_name="system",
+                    action="created",
+                    resource="issue",
+                    resource_id=f"seed-{i}",
+                    details={
+                        "key": f"DEV-{i:03d}",
+                        "title": issue_data["title"],
+                        "priority": issue_data["priority"],
+                        "profile": issue_data["profile"],
+                    },
+                    changes={"status": issue_data["status"]},
+                    timestamp=now,
+                )
+                session.add(entry)
+                count += 1
+
+            await session.commit()
+            logger.info(f"Seeded {count} audit log entries")
+            return count
+    except Exception as e:
+        logger.warning(f"Failed to seed audit logs: {e}")
+        return 0
+
+
+async def list_audit_logs(
+    action: Optional[str] = None,
+    resource: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[List[dict], int]:
+    """List audit log entries, newest first. Returns (entries, total_count)."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = select(AuditLog)
+            if action:
+                stmt = stmt.where(AuditLog.action == action)
+            if resource:
+                stmt = stmt.where(AuditLog.resource == resource)
+            stmt = stmt.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            count_stmt = select(func.count(AuditLog.id))
+            if action:
+                count_stmt = count_stmt.where(AuditLog.action == action)
+            if resource:
+                count_stmt = count_stmt.where(AuditLog.resource == resource)
+            count_result = await session.execute(count_stmt)
+            total = count_result.scalar() or 0
+
+            return [
+                {
+                    "id": r.id,
+                    "agentId": r.agent_id,
+                    "agentName": r.agent_name,
+                    "action": r.action,
+                    "resource": r.resource,
+                    "resourceId": r.resource_id,
+                    "details": r.details or {},
+                    "changes": r.changes or {},
+                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                }
+                for r in rows
+            ], total
+    except Exception as e:
+        logger.warning(f"Failed to list audit logs: {e}")
+        return [], 0
+
+
+async def get_audit_log_stats() -> dict:
+    """Return aggregated audit log statistics."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            action_stmt = select(AuditLog.action, func.count(AuditLog.id)).group_by(AuditLog.action)
+            action_result = await session.execute(action_stmt)
+            by_action = {row[0]: row[1] for row in action_result.all()}
+
+            resource_stmt = select(AuditLog.resource, func.count(AuditLog.id)).group_by(AuditLog.resource)
+            resource_result = await session.execute(resource_stmt)
+            by_resource = {row[0]: row[1] for row in resource_result.all()}
+
+            total_result = await session.execute(select(func.count(AuditLog.id)))
+            total = total_result.scalar() or 0
+
+            return {"total": total, "byAction": by_action, "byResource": by_resource}
+    except Exception as e:
+        logger.warning(f"Failed to get audit log stats: {e}")
+        return {"total": 0, "byAction": {}, "byResource": {}}
