@@ -1247,7 +1247,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       this.selectedJob = null
     },
 
-    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff') {
+    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration') {
       this.activeDetailTab = tab
     },
 

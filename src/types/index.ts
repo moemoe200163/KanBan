@@ -135,6 +135,47 @@ export interface AuditLogEntry {
   timestamp: string
 }
 
+// P2: Issue Collaboration Records
+
+export interface IssueEvent {
+  id: string
+  issueId: string
+  eventType: string
+  actorId: string | null
+  actorName: string | null
+  summary: string | null
+  details: Record<string, unknown>
+  createdAt: string
+}
+
+export interface IssueComment {
+  id: string
+  issueId: string
+  authorId: string | null
+  authorName: string | null
+  body: string
+  commentType: 'comment' | 'note' | 'decision' | 'review' | 'handoff'
+  metadata: Record<string, unknown>
+  createdAt: string
+  updatedAt: string | null
+}
+
+export interface IssueArtifact {
+  id: string
+  issueId: string
+  jobId: string | null
+  title: string
+  artifactType: 'file' | 'screenshot' | 'test_log' | 'pr_link' | 'design_doc' | 'diff_summary' | 'command_output'
+  source: string | null
+  pathOrUrl: string | null
+  sensitivity: 'public' | 'internal' | 'confidential' | 'secret'
+  summary: string | null
+  metadata: Record<string, unknown>
+  createdById: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
 // Issue Interface
 export interface Issue {
   id: string
@@ -182,7 +223,7 @@ export interface BoardState {
   isLoading: boolean
   selectedIssue: Issue | null
   isDetailOpen: boolean
-  activeDetailTab: 'overview' | 'ecc-logs' | 'diff'
+  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration'
   jobs: ECCDispatchJob[]
   selectedJob: ECCDispatchJob | null
   isLoadingJobs: boolean
