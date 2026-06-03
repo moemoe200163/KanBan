@@ -6,7 +6,10 @@ Data is derived from existing tables (issues, ecc_jobs, audit_logs,
 quality_gate_results) without introducing new storage.
 """
 
-from fastapi import APIRouter
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select, func
 
 from db import database as _db
@@ -15,14 +18,56 @@ from db.models import Issue, JobModel, AuditLog, QualityGateResult
 router = APIRouter()
 
 
+def _parse_iso_datetime(value: str, param_name: str) -> datetime:
+    """Parse an ISO 8601 string into a datetime. Raises 422 on failure.
+
+    If the string has no timezone info, it is treated as UTC.
+    """
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid ISO 8601 value for {param_name}: {value!r}",
+        )
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _validate_date_range(
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+) -> None:
+    """Raise 422 if date_from is after date_to."""
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be before date_to",
+        )
+
+
 @router.get("/analytics/stats")
-async def get_analytics_stats():
+async def get_analytics_stats(
+    date_from: Optional[str] = Query(None, description="ISO 8601 start time (inclusive)"),
+    date_to: Optional[str] = Query(None, description="ISO 8601 end time (inclusive)"),
+):
     """Return computed dashboard KPIs."""
     try:
+        # Parse and validate date parameters
+        parsed_from = _parse_iso_datetime(date_from, "date_from") if date_from else None
+        parsed_to = _parse_iso_datetime(date_to, "date_to") if date_to else None
+        _validate_date_range(parsed_from, parsed_to)
+
         await _db.ensure_db_init()
         async with _db.AsyncSessionLocal() as session:
-            # --- Issue stats ---
-            issue_result = await session.execute(select(Issue))
+            # --- Issue stats (filter by Issue.created_at) ---
+            issue_stmt = select(Issue)
+            if parsed_from:
+                issue_stmt = issue_stmt.where(Issue.created_at >= parsed_from)
+            if parsed_to:
+                issue_stmt = issue_stmt.where(Issue.created_at <= parsed_to)
+            issue_result = await session.execute(issue_stmt)
             issues = issue_result.scalars().all()
 
             total_issues = len(issues)
@@ -38,9 +83,29 @@ async def get_analytics_stats():
             for issue in issues:
                 by_profile[issue.profile or "general"] = by_profile.get(issue.profile or "general", 0) + 1
 
-            # --- Job stats ---
+            # --- Job stats (filter by JobModel.created_at, a string column) ---
+            # JobModel.created_at is stored as String(32), so we filter in Python
+            # after fetching all rows. This matches the existing analytics pattern.
             job_result = await session.execute(select(JobModel))
-            jobs = job_result.scalars().all()
+            all_jobs = job_result.scalars().all()
+
+            if parsed_from or parsed_to:
+                jobs = []
+                for job in all_jobs:
+                    try:
+                        job_created = datetime.fromisoformat(job.created_at)
+                        if job_created.tzinfo is None:
+                            job_created = job_created.replace(tzinfo=timezone.utc)
+                        if parsed_from and job_created < parsed_from:
+                            continue
+                        if parsed_to and job_created > parsed_to:
+                            continue
+                        jobs.append(job)
+                    except (ValueError, TypeError):
+                        # Keep jobs with unparseable dates to avoid silent data loss
+                        jobs.append(job)
+            else:
+                jobs = all_jobs
 
             total_jobs = len(jobs)
             jobs_by_status = {}
@@ -51,8 +116,13 @@ async def get_analytics_stats():
             for job in jobs:
                 jobs_by_profile[job.profile] = jobs_by_profile.get(job.profile, 0) + 1
 
-            # --- Quality gate stats ---
-            qg_result = await session.execute(select(QualityGateResult))
+            # --- Quality gate stats (filter by QualityGateResult.verified_at) ---
+            qg_stmt = select(QualityGateResult)
+            if parsed_from:
+                qg_stmt = qg_stmt.where(QualityGateResult.verified_at >= parsed_from)
+            if parsed_to:
+                qg_stmt = qg_stmt.where(QualityGateResult.verified_at <= parsed_to)
+            qg_result = await session.execute(qg_stmt)
             qg_rows = qg_result.scalars().all()
 
             total_qg = len(qg_rows)
@@ -62,8 +132,13 @@ async def get_analytics_stats():
                 coverages = [float(r.actual_coverage) for r in qg_rows if r.actual_coverage]
                 avg_coverage = sum(coverages) / len(coverages) if coverages else 0.0
 
-            # --- Audit log stats ---
-            audit_result = await session.execute(select(func.count(AuditLog.id)))
+            # --- Audit log stats (filter by AuditLog.timestamp) ---
+            audit_stmt = select(func.count(AuditLog.id))
+            if parsed_from:
+                audit_stmt = audit_stmt.where(AuditLog.timestamp >= parsed_from)
+            if parsed_to:
+                audit_stmt = audit_stmt.where(AuditLog.timestamp <= parsed_to)
+            audit_result = await session.execute(audit_stmt)
             total_audit = audit_result.scalar() or 0
 
             # --- Computed KPIs ---
@@ -83,7 +158,6 @@ async def get_analytics_stats():
             for job in jobs:
                 if job.status in ("completed", "failed", "cancelled"):
                     try:
-                        from datetime import datetime
                         created = datetime.fromisoformat(job.created_at)
                         updated = datetime.fromisoformat(job.updated_at)
                         cycle_times.append((updated - created).total_seconds())
@@ -124,6 +198,8 @@ async def get_analytics_stats():
                     "inReview": review,
                 },
             }
+    except HTTPException:
+        raise
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Failed to get analytics stats: {e}")
