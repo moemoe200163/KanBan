@@ -144,15 +144,13 @@ def test_snake_full_handoff_chain(fresh_db):
     assert "job" in h1_dispatched
     assert h1_dispatched["job"]["id"].startswith("ecc_")
     h1_completed = _complete_handoff(issue_id, h1["id"], {
-        "diff_summary": "Created snake game component",
-        "changed_files": ["src/pages/games/snake.vue"],
+        "acceptance_criteria": ["Snake game is playable", "Score is displayed"],
     })
     assert h1_completed["status"] == "completed"
 
     # --- Step 2: frontend → qa (frontend requires diff_summary + screenshots) ---
     h2 = _create_handoff(issue_id, "frontend", {
         "diff_summary": "Snake game ready for QA",
-        "changed_files": ["src/pages/games/snake.vue"],
     })
     h2_accepted = _accept_handoff(issue_id, h2["id"])
     assert h2_accepted["status"] == "accepted"
@@ -179,14 +177,14 @@ def test_snake_full_handoff_chain(fresh_db):
     # --- Step 4: review → delivery (review requires reviewer + decision + approver) ---
     h4 = _create_handoff(issue_id, "review", {
         "reviewer": "user",
-        "decision": "approved",
+        "decision": "approve",
         "approver": "user",
     })
     h4_accepted = _accept_handoff(issue_id, h4["id"])
     assert h4_accepted["status"] == "accepted"
     h4_completed = _complete_handoff(issue_id, h4["id"], {
         "reviewer": "user",
-        "decision": "approved",
+        "decision": "approve",
     })
     assert h4_completed["status"] == "completed"
 

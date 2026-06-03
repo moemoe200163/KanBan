@@ -43,7 +43,9 @@ def test_worker_lane_holds_all_required_fields():
     assert lane.key == "qa"
     assert lane.retry_policy == "exponential"
     assert lane.human_approval_required is True
-    assert lane.required_completion_fields == ["test_results", "coverage_pct"]
+    assert lane.required_completion_fields == [
+        "test_results", "coverage_pct", "approver"
+    ]
 
 
 from core.kanban_protocol.lanes import WORKER_LANES

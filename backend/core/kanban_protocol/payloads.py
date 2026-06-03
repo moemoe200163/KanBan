@@ -31,11 +31,13 @@ class TriagePayload(CompletionPayloadBase):
 
 class ProductPayload(CompletionPayloadBase):
     acceptance_criteria: list[str] = Field(..., min_length=1)
+    approver: str = Field(..., min_length=1)
 
 
 class ArchitectPayload(CompletionPayloadBase):
     design_notes: str = Field(..., min_length=1, max_length=10000)
     interfaces: list[str] = Field(..., min_length=1)
+    approver: str = Field(..., min_length=1)
 
 
 class FrontendPayload(CompletionPayloadBase):
@@ -51,15 +53,18 @@ class BackendPayload(CompletionPayloadBase):
 class QaPayload(CompletionPayloadBase):
     test_results: str = Field(..., min_length=1, max_length=4000)
     coverage_pct: int = Field(..., ge=0, le=100)
+    approver: str = Field(..., min_length=1)
 
 
 class ReviewPayload(CompletionPayloadBase):
     reviewer: str = Field(..., min_length=1, max_length=128)
     decision: Literal["approve", "reject", "request_changes"]
+    approver: str = Field(..., min_length=1)
 
 
 class DeliveryPayload(CompletionPayloadBase):
     release_notes: str = Field(..., min_length=1, max_length=20000)
+    approver: str = Field(..., min_length=1)
 
 
 LANE_PAYLOADS: dict[str, type[BaseModel]] = {

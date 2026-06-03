@@ -252,7 +252,7 @@ async def test_complete_rejects_when_required_fields_missing(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={},  # missing test_results and coverage_pct
+        payload={"approver": "alice"},  # test_results and coverage_pct missing
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -272,7 +272,7 @@ async def test_complete_succeeds_with_all_required_fields(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={"test_results": "ok", "coverage_pct": 95},
+        payload={"test_results": "ok", "coverage_pct": 95, "approver": "alice"},
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -292,7 +292,7 @@ async def test_complete_merges_existing_and_new_payload(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={"test_results": "ok"},  # coverage_pct missing
+        payload={"test_results": "ok", "approver": "alice"},  # coverage_pct missing
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -303,8 +303,9 @@ async def test_complete_merges_existing_and_new_payload(fresh_db):
     )
     assert completed["payload"]["test_results"] == "ok"   # preserved (existing)
     assert completed["payload"]["coverage_pct"] == 95     # added (caller)
+    assert completed["payload"]["approver"] == "alice"    # preserved (existing)
     # declared-only — no rogue keys leak through
-    assert set(completed["payload"].keys()) == {"test_results", "coverage_pct"}
+    assert set(completed["payload"].keys()) == {"test_results", "coverage_pct", "approver"}
 
 
 @pytest.mark.asyncio

@@ -74,17 +74,33 @@ class TestTriagePayload:
 
 class TestProductPayload:
     def test_valid(self):
-        m = ProductPayload(acceptance_criteria=["User can click submit"])
+        m = ProductPayload(
+            acceptance_criteria=["User can click submit"],
+            approver="alice",
+        )
         assert m.acceptance_criteria == ["User can click submit"]
+        assert m.approver == "alice"
 
     def test_empty_list_rejected(self):
         with pytest.raises(ValidationError) as exc:
-            ProductPayload(acceptance_criteria=[])
+            ProductPayload(acceptance_criteria=[], approver="alice")
         assert exc.value.errors()[0]["type"] == "too_short"
+
+    def test_missing_approver(self):
+        with pytest.raises(ValidationError) as exc:
+            ProductPayload(acceptance_criteria=["x"])
+        assert exc.value.errors()[0]["loc"] == ("approver",)
+        assert exc.value.errors()[0]["type"] == "missing"
+
+    def test_approver_whitespace_only(self):
+        with pytest.raises(ValidationError):
+            ProductPayload(acceptance_criteria=["x"], approver="   ")
 
     def test_extra_field_rejected(self):
         with pytest.raises(ValidationError):
-            ProductPayload(acceptance_criteria=["x"], extra="bad")
+            ProductPayload(
+                acceptance_criteria=["x"], approver="alice", extra="bad"
+            )
 
 
 # ---- ArchitectPayload ------------------------------------------------------
@@ -94,27 +110,35 @@ class TestArchitectPayload:
         m = ArchitectPayload(
             design_notes="use ESM modules",
             interfaces=["GET /api/v1/lanes"],
+            approver="alice",
         )
         assert m.design_notes == "use ESM modules"
         assert m.interfaces == ["GET /api/v1/lanes"]
+        assert m.approver == "alice"
 
     def test_missing_interfaces(self):
         with pytest.raises(ValidationError) as exc:
-            ArchitectPayload(design_notes="x")
+            ArchitectPayload(design_notes="x", approver="alice")
         assert exc.value.errors()[0]["loc"] == ("interfaces",)
+        assert exc.value.errors()[0]["type"] == "missing"
+
+    def test_missing_approver(self):
+        with pytest.raises(ValidationError) as exc:
+            ArchitectPayload(design_notes="x", interfaces=["y"])
+        assert exc.value.errors()[0]["loc"] == ("approver",)
         assert exc.value.errors()[0]["type"] == "missing"
 
     def test_max_length_design_notes(self):
         with pytest.raises(ValidationError) as exc:
             ArchitectPayload(
-                design_notes="x" * 10001, interfaces=["y"]
+                design_notes="x" * 10001, interfaces=["y"], approver="alice"
             )
         assert exc.value.errors()[0]["type"] == "string_too_long"
 
     def test_extra_field_rejected(self):
         with pytest.raises(ValidationError):
             ArchitectPayload(
-                design_notes="x", interfaces=["y"], bogus=1
+                design_notes="x", interfaces=["y"], approver="alice", bogus=1
             )
 
 
@@ -173,23 +197,24 @@ class TestBackendPayload:
 
 class TestQaPayload:
     def test_valid(self):
-        m = QaPayload(test_results="ok", coverage_pct=95)
+        m = QaPayload(test_results="ok", coverage_pct=95, approver="alice")
         assert m.coverage_pct == 95
+        assert m.approver == "alice"
 
     def test_coverage_above_max(self):
         with pytest.raises(ValidationError) as exc:
-            QaPayload(test_results="ok", coverage_pct=150)
+            QaPayload(test_results="ok", coverage_pct=150, approver="alice")
         assert exc.value.errors()[0]["loc"] == ("coverage_pct",)
         assert exc.value.errors()[0]["type"] == "less_than_equal"
 
     def test_coverage_below_min(self):
         with pytest.raises(ValidationError) as exc:
-            QaPayload(test_results="ok", coverage_pct=-1)
+            QaPayload(test_results="ok", coverage_pct=-1, approver="alice")
         assert exc.value.errors()[0]["type"] == "greater_than_equal"
 
     def test_coverage_wrong_type(self):
         with pytest.raises(ValidationError) as exc:
-            QaPayload(test_results="ok", coverage_pct="not_an_int")
+            QaPayload(test_results="ok", coverage_pct="not_an_int", approver="alice")
         # Pydantic 2 coerces parseable strings ("99") to int, so we use a
         # non-parseable value to trigger int_parsing.
         assert exc.value.errors()[0]["loc"] == ("coverage_pct",)
@@ -197,13 +222,19 @@ class TestQaPayload:
 
     def test_missing_coverage_pct(self):
         with pytest.raises(ValidationError) as exc:
-            QaPayload(test_results="ok")
+            QaPayload(test_results="ok", approver="alice")
         assert exc.value.errors()[0]["loc"] == ("coverage_pct",)
+
+    def test_missing_approver(self):
+        with pytest.raises(ValidationError) as exc:
+            QaPayload(test_results="ok", coverage_pct=50)
+        assert exc.value.errors()[0]["loc"] == ("approver",)
+        assert exc.value.errors()[0]["type"] == "missing"
 
     def test_extra_field_rejected(self):
         with pytest.raises(ValidationError):
             QaPayload(
-                test_results="ok", coverage_pct=50, surprise="bad"
+                test_results="ok", coverage_pct=50, approver="alice", surprise="bad"
             )
 
 
@@ -211,32 +242,43 @@ class TestQaPayload:
 
 class TestReviewPayload:
     def test_valid_approve(self):
-        m = ReviewPayload(reviewer="alice", decision="approve")
+        m = ReviewPayload(reviewer="alice", decision="approve", approver="alice")
         assert m.decision == "approve"
+        assert m.approver == "alice"
 
     def test_valid_request_changes(self):
-        m = ReviewPayload(reviewer="bob", decision="request_changes")
+        m = ReviewPayload(reviewer="bob", decision="request_changes", approver="bob")
         assert m.decision == "request_changes"
 
     def test_invalid_decision(self):
         with pytest.raises(ValidationError) as exc:
-            ReviewPayload(reviewer="x", decision="yes")
+            ReviewPayload(reviewer="x", decision="yes", approver="alice")
         assert exc.value.errors()[0]["loc"] == ("decision",)
         assert exc.value.errors()[0]["type"] == "literal_error"
 
     def test_whitespace_only_reviewer(self):
         with pytest.raises(ValidationError):
-            ReviewPayload(reviewer="  ", decision="approve")
+            ReviewPayload(reviewer="  ", decision="approve", approver="alice")
+
+    def test_whitespace_only_approver(self):
+        with pytest.raises(ValidationError):
+            ReviewPayload(reviewer="alice", decision="approve", approver="   ")
+
+    def test_missing_approver(self):
+        with pytest.raises(ValidationError) as exc:
+            ReviewPayload(reviewer="x", decision="approve")
+        assert exc.value.errors()[0]["loc"] == ("approver",)
+        assert exc.value.errors()[0]["type"] == "missing"
 
     def test_max_length_reviewer(self):
         with pytest.raises(ValidationError) as exc:
-            ReviewPayload(reviewer="x" * 129, decision="approve")
+            ReviewPayload(reviewer="x" * 129, decision="approve", approver="alice")
         assert exc.value.errors()[0]["type"] == "string_too_long"
 
     def test_extra_field_rejected(self):
         with pytest.raises(ValidationError):
             ReviewPayload(
-                reviewer="x", decision="approve", stealth="bad"
+                reviewer="x", decision="approve", approver="alice", stealth="bad"
             )
 
 
@@ -244,22 +286,29 @@ class TestReviewPayload:
 
 class TestDeliveryPayload:
     def test_valid(self):
-        m = DeliveryPayload(release_notes="shipped v1.0")
+        m = DeliveryPayload(release_notes="shipped v1.0", approver="alice")
         assert m.release_notes == "shipped v1.0"
+        assert m.approver == "alice"
 
     def test_missing_release_notes(self):
         with pytest.raises(ValidationError) as exc:
-            DeliveryPayload()
+            DeliveryPayload(approver="alice")
         assert exc.value.errors()[0]["loc"] == ("release_notes",)
+
+    def test_missing_approver(self):
+        with pytest.raises(ValidationError) as exc:
+            DeliveryPayload(release_notes="x")
+        assert exc.value.errors()[0]["loc"] == ("approver",)
+        assert exc.value.errors()[0]["type"] == "missing"
 
     def test_max_length_release_notes(self):
         with pytest.raises(ValidationError) as exc:
-            DeliveryPayload(release_notes="x" * 20001)
+            DeliveryPayload(release_notes="x" * 20001, approver="alice")
         assert exc.value.errors()[0]["type"] == "string_too_long"
 
     def test_extra_field_rejected(self):
         with pytest.raises(ValidationError):
-            DeliveryPayload(release_notes="x", oops=1)
+            DeliveryPayload(release_notes="x", approver="alice", oops=1)
 
 
 # ---- Registry integrity ----------------------------------------------------
