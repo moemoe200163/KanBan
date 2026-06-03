@@ -158,3 +158,190 @@ def test_get_handoff_rejects_wrong_issue_id(fresh_db):
         f"/api/v1/boards/board-default/issues/wrong-issue/handoffs/{handoff['id']}"
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Accept endpoint
+# ---------------------------------------------------------------------------
+
+def test_accept_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/accept",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["acceptedBy"] == "bob"
+
+
+def test_accept_handoff_rejects_wrong_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Accept once -> accepted
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    # Second accept should fail (status is now "accepted", not "pending")
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/accept",
+        json={"actor": "carol"},
+    )
+    assert response.status_code == 422
+
+
+def test_accept_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/accept",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Dispatch endpoint
+# ---------------------------------------------------------------------------
+
+def test_dispatch_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
+        json={"issueKey": "DEV-100", "profile": "frontend", "actor": "bob"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["handoff"]["status"] == "in_progress"
+    assert body["job"]["status"] == "queued"
+
+
+def test_dispatch_handoff_rejects_wrong_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Handoff is still "pending" — dispatch requires "accepted"
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
+        json={"issueKey": "DEV-100", "profile": "frontend"},
+    )
+    assert response.status_code == 422
+
+
+def test_dispatch_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/dispatch",
+        json={"issueKey": "DEV-100", "profile": "frontend"},
+    )
+    assert response.status_code == 422
+
+
+def test_dispatch_handoff_requires_approval(fresh_db):
+    """Lane requires human_approval but no approver in payload -> 422."""
+    import asyncio
+    svc = HandoffService()
+    # "product" lane has human_approval_required=True
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="product",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
+        json={"issueKey": "DEV-100", "profile": "general", "actor": "bob"},
+    )
+    assert response.status_code == 422
+    assert "human approval" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Complete endpoint
+# ---------------------------------------------------------------------------
+
+def test_complete_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    # complete accepts "in_progress" or "accepted"; frontend requires
+    # diff_summary and screenshots.
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={
+            "actor": "bob",
+            "payload": {"diff_summary": "done", "screenshots": []},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["completedBy"] == "bob"
+
+
+def test_complete_handoff_rejects_wrong_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Handoff is "pending" — complete only accepts "in_progress" or "accepted"
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"payload": {"diff_summary": "done", "screenshots": []}},
+    )
+    assert response.status_code == 422
+
+
+def test_complete_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/complete",
+        json={"payload": {"diff_summary": "done", "screenshots": []}},
+    )
+    assert response.status_code == 422

@@ -5,7 +5,12 @@ from fastapi import APIRouter, HTTPException
 
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
-from core.kanban_protocol.schemas import HandoffCreateRequest
+from core.kanban_protocol.schemas import (
+    HandoffActorRequest,
+    HandoffCompleteRequest,
+    HandoffCreateRequest,
+    HandoffDispatchRequest,
+)
 from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
 
@@ -68,3 +73,69 @@ async def get_handoff(board_id: str, issue_id: str, handoff_id: str):
             status_code=404, detail=f"Handoff '{handoff_id}' not found"
         )
     return handoff
+
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/accept"
+)
+async def accept_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffActorRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        return await _svc.accept(handoff_id, actor=body.actor)
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/dispatch"
+)
+async def dispatch_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffDispatchRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        return await _svc.dispatch(
+            handoff_id=handoff_id,
+            issue_key=body.issueKey,
+            profile=body.profile,
+            actor=body.actor,
+        )
+    except (ValueError, ScopeDeniedError, PermissionError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/complete"
+)
+async def complete_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffCompleteRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        return await _svc.complete(
+            handoff_id=handoff_id,
+            actor=body.actor,
+            payload=body.payload,
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))

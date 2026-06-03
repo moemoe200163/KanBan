@@ -23,6 +23,12 @@ class HandoffCompleteRequest(BaseModel):
     payload: Optional[dict] = None  # if provided, merged into the existing payload
 
 
+class HandoffDispatchRequest(BaseModel):
+    issueKey: str = Field(..., min_length=1, max_length=32)
+    profile: str = Field(..., min_length=1, max_length=32)
+    actor: Optional[str] = Field(default=None, max_length=128)
+
+
 class HandoffBlockRequest(BaseModel):
     actor: Optional[str] = Field(default=None, max_length=128)
     blockReason: str = Field(..., min_length=1, max_length=4000)
