@@ -224,7 +224,7 @@ export interface BoardState {
   isLoading: boolean
   selectedIssue: Issue | null
   isDetailOpen: boolean
-  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration'
+  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs'
   jobs: ECCDispatchJob[]
   selectedJob: ECCDispatchJob | null
   isLoadingJobs: boolean
