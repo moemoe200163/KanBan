@@ -12,6 +12,15 @@ const activeFilter = ref<string | null>(null)
 const page = ref(0)
 const pageSize = 30
 
+const dateFrom = ref('')
+const dateTo = ref('')
+const searchQuery = ref('')
+
+function toISOString(local: string): string {
+  if (!local) return ''
+  return local.length === 16 ? local + ':00Z' : local + 'Z'
+}
+
 const actionFilters = [
   { value: null, label: 'All' },
   { value: 'dispatch', label: 'Dispatch' },
@@ -29,6 +38,12 @@ const fetchLogs = async () => {
     params.set('limit', String(pageSize))
     params.set('offset', String(page.value * pageSize))
     if (activeFilter.value) params.set('action', activeFilter.value)
+    if (dateFrom.value) params.set('date_from', toISOString(dateFrom.value))
+    if (dateTo.value) {
+      const to = toISOString(dateTo.value)
+      params.set('date_to', to.replace('Z', '') + 'T23:59:59Z')
+    }
+    if (searchQuery.value) params.set('q', searchQuery.value)
 
     const res = await fetch(`${apiBase}/audit-logs?${params}`)
     if (res.ok) {
@@ -49,6 +64,29 @@ watch(activeFilter, () => {
   page.value = 0
   fetchLogs()
 })
+
+let searchDebounce: ReturnType<typeof setTimeout> | null = null
+watch(searchQuery, () => {
+  if (searchDebounce) clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(() => {
+    page.value = 0
+    fetchLogs()
+  }, 350)
+})
+
+watch([dateFrom, dateTo], () => {
+  page.value = 0
+  fetchLogs()
+})
+
+const clearAll = () => {
+  dateFrom.value = ''
+  dateTo.value = ''
+  searchQuery.value = ''
+  activeFilter.value = null
+  page.value = 0
+  fetchLogs()
+}
 
 const totalPages = computed(() => Math.ceil(total.value / pageSize))
 
@@ -115,6 +153,14 @@ const formatDetails = (entry: AuditLogEntry) => {
         {{ f.label }}
       </button>
       <span class="filter-count">{{ total }} events</span>
+    </div>
+
+    <!-- Date range & search toolbar -->
+    <div class="activity-page__search-bar">
+      <input type="datetime-local" v-model="dateFrom" class="search-input" placeholder="From" />
+      <input type="datetime-local" v-model="dateTo" class="search-input" placeholder="To" />
+      <input type="text" v-model="searchQuery" class="search-input search-input--text" placeholder="Search..." />
+      <button class="filter-btn" @click="clearAll">Clear</button>
     </div>
 
     <!-- Loading -->
@@ -205,6 +251,17 @@ const formatDetails = (entry: AuditLogEntry) => {
 .filter-count {
   margin-left: auto; color: var(--muted); font-size: 0.8125rem; font-family: var(--font-mono);
 }
+
+.activity-page__search-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.search-input {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--hairline);
+  background: transparent; color: var(--ink); font-size: 0.8125rem;
+  font-family: var(--font-mono); transition: border-color 150ms;
+}
+.search-input:focus { outline: none; border-color: var(--primary); }
+.search-input--text { min-width: 160px; }
 
 .activity-page__loading,
 .activity-page__empty {
