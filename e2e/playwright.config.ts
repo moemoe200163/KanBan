@@ -24,7 +24,13 @@ export default defineConfig({
     cwd: '..',
     url: 'http://127.0.0.1:3010',
     reuseExistingServer: !isCI,
-    timeout: 120_000
+    timeout: 120_000,
+    // Enable window.__DEVFLOW_E2E__ in the preview bundle so the
+    // dependency-graph spec can drive store actions that have no UI
+    // affordance yet. See src/plugins/e2e-store-hook.client.ts.
+    env: {
+      NUXT_PUBLIC_E2E: '1'
+    }
   },
   projects: [
     {

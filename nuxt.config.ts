@@ -8,7 +8,11 @@ export default defineNuxtConfig({
   srcDir: 'src/',
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8000/api/v1'
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8000/api/v1',
+      // Defaults to '0'. When '1', src/plugins/e2e-store-hook.client.ts
+      // exposes window.__DEVFLOW_E2E__ for Playwright. Production
+      // builds without this flag ship a no-op plugin.
+      e2e: process.env.NUXT_PUBLIC_E2E || '0'
     }
   },
   css: ['~/assets/css/main.css'],
