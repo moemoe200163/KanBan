@@ -58,3 +58,48 @@ class HandoffService:
             actor_field="accepted_by",
             actor_value=actor,
         )
+
+    async def dispatch(
+        self,
+        *,
+        handoff_id: str,
+        issue_key: str,
+        profile: str,
+        actor: Optional[str],
+    ) -> dict:
+        from core.kanban_protocol.orchestrator import create_job_for_handoff
+
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] != "accepted":
+            raise ValueError(
+                f"Cannot dispatch handoff in status '{current['status']}'; "
+                "only 'accepted' handoffs can be dispatched"
+            )
+
+        lane = get_lane(current["toLane"])
+        payload = current.get("payload") or {}
+
+        if lane.human_approval_required and not payload.get("approver"):
+            raise PermissionError(
+                f"Lane '{lane.key}' requires human approval; "
+                "payload must include an 'approver' field before dispatch"
+            )
+
+        job = await create_job_for_handoff(
+            handoff_id=handoff_id,
+            issue_id=current["issueId"],
+            issue_key=issue_key,
+            to_lane=lane.key,
+            profile=profile,
+            actor=actor,
+        )
+
+        updated = await repo.update_issue_handoff(
+            handoff_id,
+            status="in_progress",
+            actor_field="dispatched_by",
+            actor_value=actor,
+        )
+        return {"handoff": updated, "job": job}

@@ -138,3 +138,73 @@ async def test_accept_raises_when_handoff_missing(fresh_db):
     svc = HandoffService()
     with pytest.raises(ValueError, match="not found"):
         await svc.accept("h_doesnotexist", actor="bob")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_creates_ecc_job_and_moves_to_in_progress(fresh_db):
+    from db import repository as repo
+
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "wip"},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+
+    # Seed an Issue row alongside the fresh-db parent so dispatch has a
+    # realistic record. `upsert_issue` preserves the existing key, so
+    # the original `TEST-1` stays put; dispatch uses the `issue_key`
+    # argument we pass in directly.
+    await repo.upsert_issue({
+        "id": "issue-1",
+        "key": "DEV-001",
+        "title": "test",
+        "description": "",
+        "status": "in_progress",
+    })
+
+    result = await svc.dispatch(
+        handoff_id=handoff["id"],
+        issue_key="DEV-001",
+        profile="frontend",
+        actor="bob",
+    )
+    assert result["handoff"]["status"] == "in_progress"
+    assert result["handoff"]["dispatchedBy"] == "bob"
+    assert result["job"]["id"].startswith("ecc_")
+    assert result["job"]["harness"] == "safe-runner"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_when_approval_required_and_missing(fresh_db):
+    from db import repository as repo
+
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="qa",  # qa requires human approval
+        payload={},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    await repo.upsert_issue({
+        "id": "issue-1",
+        "key": "DEV-002",
+        "title": "t",
+        "description": "",
+        "status": "in_progress",
+    })
+    with pytest.raises(PermissionError) as exc_info:
+        await svc.dispatch(
+            handoff_id=handoff["id"],
+            issue_key="DEV-002",
+            profile="general",
+            actor="bob",
+        )
+    assert "approval" in str(exc_info.value).lower()

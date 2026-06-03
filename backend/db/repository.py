@@ -804,3 +804,49 @@ async def update_issue_handoff(
         await session.commit()
         await session.refresh(row)
     return row.to_dict()
+
+
+async def create_ecc_job_safe_runner(
+    *,
+    issue_id: str,
+    issue_key: str,
+    command: str,
+    profile: str,
+    harness: str,
+    handoff_id: Optional[str] = None,
+) -> dict:
+    """Create a JobModel row that runs through the P0 safe runner.
+
+    Used by the Kanban Protocol dispatch path so handoffs always produce
+    a queued job without invoking real Claude/Codex execution by
+    default. The actor is captured in the audit message rather than on
+    the JobModel itself (the model has no actor column).
+    """
+    job_id = f"ecc_{uuid4().hex[:12]}"
+    now = _utc_now()
+    row = JobModel(
+        id=job_id,
+        board_id="board-default",
+        issue_id=issue_id,
+        issue_key=issue_key,
+        command=command,
+        profile=profile,
+        harness=harness,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+        message=f"Created by Kanban Protocol handoff {handoff_id or '<unknown>'}",
+        events=[
+            {
+                "timestamp": now,
+                "status": "queued",
+                "message": "Job created by Kanban Protocol dispatch",
+            }
+        ],
+    )
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()
