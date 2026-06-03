@@ -124,8 +124,18 @@ async function submitCompletion() {
       'user'
     )
     cancelCompletion()
-  } catch (err) {
-    completionError.value = (err as Error)?.message || 'Failed to complete handoff'
+  } catch (err: any) {
+    // Structured 422 from P1.5 typed payload validation.
+    const detail = err?.data?.detail
+    if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+      const items = detail.errors.map(
+        (e: any) => `${e.loc.join('.')}: ${e.msg}`
+      )
+      completionError.value = `${detail.message} — ${items.join('; ')}`
+    } else {
+      completionError.value =
+        err?.data?.detail || err?.message || 'Failed to complete handoff'
+    }
   } finally {
     isCompleting.value = false
   }
