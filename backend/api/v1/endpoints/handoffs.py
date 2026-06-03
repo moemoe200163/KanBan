@@ -7,9 +7,12 @@ from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
 from core.kanban_protocol.schemas import (
     HandoffActorRequest,
+    HandoffBlockRequest,
+    HandoffCommentRequest,
     HandoffCompleteRequest,
     HandoffCreateRequest,
     HandoffDispatchRequest,
+    HandoffPreviewResponse,
 )
 from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
@@ -88,6 +91,15 @@ async def accept_handoff(
     issue = await repo.get_issue(issue_id)
     if not issue:
         raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
     try:
         return await _svc.accept(handoff_id, actor=body.actor)
     except (ValueError, ScopeDeniedError) as exc:
@@ -107,10 +119,19 @@ async def dispatch_handoff(
     issue = await repo.get_issue(issue_id)
     if not issue:
         raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
     try:
         return await _svc.dispatch(
             handoff_id=handoff_id,
-            issue_key=body.issueKey,
+            issue_key=issue["key"],  # authoritative, not body.issueKey
             profile=body.profile,
             actor=body.actor,
         )
@@ -131,6 +152,15 @@ async def complete_handoff(
     issue = await repo.get_issue(issue_id)
     if not issue:
         raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
     try:
         return await _svc.complete(
             handoff_id=handoff_id,

@@ -211,7 +211,7 @@ def test_accept_handoff_not_found(fresh_db):
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/accept",
         json={"actor": "bob"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ def test_dispatch_handoff_not_found(fresh_db):
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/dispatch",
         json={"issueKey": "DEV-100", "profile": "frontend"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
 
 
 def test_dispatch_handoff_requires_approval(fresh_db):
@@ -344,4 +344,78 @@ def test_complete_handoff_not_found(fresh_db):
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/complete",
         json={"payload": {"diff_summary": "done", "screenshots": []}},
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Ownership validation — wrong issue_id with valid handoff
+# ---------------------------------------------------------------------------
+
+def _create_second_issue(session_maker):
+    """Seed a second issue so ownership-mismatch tests hit the guard, not the issue check."""
+    import asyncio
+    from db.models import Issue as IssueModel
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    async def _seed():
+        async with session_maker() as session:
+            session.add(IssueModel(
+                id="issue-api-2",
+                key="DEV-101",
+                title="second issue",
+                description="",
+                status="backlog",
+                priority="medium",
+                board_id="board-default",
+                created_at=now,
+                updated_at=now,
+            ))
+            await session.commit()
+    asyncio.run(_seed())
+
+
+def test_accept_handoff_wrong_issue_returns_404(fresh_db, monkeypatch):
+    """Accept with a valid handoff but wrong issue_id should 404."""
+    from db import database as db_module
+    _create_second_issue(db_module.AsyncSessionLocal)
+
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Use the handoff id but a different (valid) issue_id.
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/accept",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 404
+
+
+def test_dispatch_handoff_wrong_issue_returns_404(fresh_db, monkeypatch):
+    """Dispatch with a valid handoff but wrong issue_id should 404."""
+    from db import database as db_module
+    _create_second_issue(db_module.AsyncSessionLocal)
+
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    # Use the handoff id but a different (valid) issue_id.
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/dispatch",
+        json={"issueKey": "DEV-100", "profile": "frontend", "actor": "bob"},
+    )
+    assert response.status_code == 404
