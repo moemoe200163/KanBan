@@ -46,3 +46,45 @@ def test_worker_lane_holds_all_required_fields():
     assert lane.retry_policy == "exponential"
     assert lane.human_approval_required is True
     assert lane.required_completion_fields == ["test_results", "coverage_pct"]
+
+
+from core.kanban_protocol.lanes import WORKER_LANES
+
+
+EXPECTED_LANES = {
+    "triage",
+    "product",
+    "architect",
+    "frontend",
+    "backend",
+    "qa",
+    "review",
+    "delivery",
+}
+
+
+def test_worker_lanes_registry_contains_eight_lanes():
+    assert set(WORKER_LANES.keys()) == EXPECTED_LANES
+    for key, lane in WORKER_LANES.items():
+        assert lane.key == key
+        assert lane.display_name
+        assert lane.allowed_commands
+        assert lane.default_provider
+        assert lane.default_model
+        assert lane.timeout_seconds > 0
+        assert lane.retry_max >= 0
+        assert isinstance(lane.human_approval_required, bool)
+
+
+def test_qa_lane_requires_human_approval():
+    assert WORKER_LANES["qa"].human_approval_required is True
+
+
+def test_frontend_lane_allows_only_frontend_profile():
+    assert WORKER_LANES["frontend"].allowed_profiles == ["frontend"]
+
+
+def test_lane_next_lanes_reference_existing_lanes():
+    for key, lane in WORKER_LANES.items():
+        for nxt in lane.next_lanes:
+            assert nxt in WORKER_LANES, f"{key} -> {nxt} not in registry"
