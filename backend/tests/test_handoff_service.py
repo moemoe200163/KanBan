@@ -439,3 +439,50 @@ async def test_create_rejects_denied_key_nested_in_subdict(fresh_db):
             created_by="alice",
         )
     assert "sandbox_egress" in exc_info.value.offending_keys
+
+
+@pytest.mark.asyncio
+async def test_block_reason_preserved_across_non_block_updates(fresh_db):
+    """Regression: update_issue_handoff used to unconditionally clear block_reason.
+
+    Before the fix, any call to update_issue_handoff that didn't pass block_reason
+    (accept, complete, etc.) would silently set it to None, wiping a stored reason.
+    """
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="backend",
+        payload={"diff_summary": "x", "test_results": "ok"},
+        created_by="alice",
+    )
+
+    # Accept → accepted
+    await svc.accept(h["id"], actor="alice")
+
+    # Block with a reason
+    blocked = await svc.block(handoff_id=h["id"], actor="bob", reason="needs review")
+    assert blocked["blockReason"] == "needs review"
+
+    # Unblock clears the reason explicitly
+    unblocked = await svc.unblock(handoff_id=h["id"], actor="bob")
+    assert unblocked["blockReason"] is None
+
+    # Accept again — must NOT re-introduce a stale block_reason
+    await svc.accept(h["id"], actor="alice")
+
+    # Block again with a new reason
+    blocked2 = await svc.block(handoff_id=h["id"], actor="carol", reason="second block")
+    assert blocked2["blockReason"] == "second block"
+
+    # Unblock
+    await svc.unblock(handoff_id=h["id"], actor="carol")
+
+    # Accept + Complete — block_reason should remain None (not "second block")
+    await svc.accept(h["id"], actor="alice")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="alice",
+        payload={"diff_summary": "v2", "test_results": "pass"},
+    )
+    assert completed["blockReason"] is None
