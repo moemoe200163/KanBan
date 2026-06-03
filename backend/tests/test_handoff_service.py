@@ -280,3 +280,25 @@ async def test_complete_succeeds_with_all_required_fields(fresh_db):
     assert completed["status"] == "completed"
     assert completed["completedBy"] == "bob"
     assert completed["completedAt"] is not None
+
+
+@pytest.mark.asyncio
+async def test_complete_merges_existing_and_new_payload(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="qa",
+        payload={"test_results": "ok"},  # coverage_pct missing
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=handoff["id"],
+        actor="bob",
+        payload={"coverage_pct": 95, "extra_meta": "x"},
+    )
+    assert completed["payload"]["test_results"] == "ok"   # preserved
+    assert completed["payload"]["coverage_pct"] == 95     # added
+    assert completed["payload"]["extra_meta"] == "x"      # added

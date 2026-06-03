@@ -116,7 +116,8 @@ class HandoffService:
             raise ValueError(f"Handoff '{handoff_id}' not found")
         if current["status"] not in ("in_progress", "accepted"):
             raise ValueError(
-                f"Cannot complete handoff in status '{current['status']}'"
+                f"Cannot complete handoff in status '{current['status']}'; "
+                "only 'in_progress' or 'accepted' handoffs can be completed"
             )
 
         lane = get_lane(current["toLane"])
