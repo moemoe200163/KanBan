@@ -2,6 +2,7 @@ import pytest
 
 from core.kanban_protocol.handoff import HandoffService
 from core.kanban_protocol.lanes import WORKER_LANES
+from core.kanban_protocol.scope_guard import ScopeDeniedError
 
 
 @pytest.fixture
@@ -389,3 +390,37 @@ async def test_cancel_rejected_from_cancelled_state(fresh_db):
     await svc.cancel(handoff_id=handoff["id"], actor="bob")
     with pytest.raises(ValueError):
         await svc.cancel(handoff_id=handoff["id"], actor="bob")
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_payload_with_denied_keys(fresh_db):
+    svc = HandoffService()
+    with pytest.raises(ScopeDeniedError):
+        await svc.create(
+            issue_id="issue-1",
+            board_id="board-default",
+            from_lane=None,
+            to_lane="frontend",
+            payload={"sandbox_egress": "10.0.0.0/8"},
+            created_by="alice",
+        )
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_payload_with_denied_keys(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "ok", "screenshots": "ok"},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    with pytest.raises(ScopeDeniedError):
+        await svc.complete(
+            handoff_id=handoff["id"],
+            actor="bob",
+            payload={"iptables_rules": "ACCEPT"},
+        )

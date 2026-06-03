@@ -7,6 +7,7 @@ from typing import Optional
 
 from db import repository as repo
 from core.kanban_protocol.lanes import get_lane
+from core.kanban_protocol.scope_guard import ScopeDeniedError, check_payload
 
 
 def _new_id() -> str:
@@ -32,6 +33,9 @@ class HandoffService:
             get_lane(to_lane)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
+
+        # Refuse out-of-scope payload keys (archived security work, etc.).
+        check_payload(payload or {})
 
         return await repo.create_issue_handoff(
             id=_new_id(),
@@ -132,6 +136,9 @@ class HandoffService:
             raise ValueError(
                 f"Cannot complete handoff: missing required fields {missing}"
             )
+
+        # Refuse out-of-scope payload keys (archived security work, etc.).
+        check_payload(merged_payload)
 
         return await repo.update_issue_handoff(
             handoff_id,
