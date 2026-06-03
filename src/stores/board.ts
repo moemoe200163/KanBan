@@ -39,6 +39,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-20T08:00:00Z',
     updatedAt: '2026-05-28T14:00:00Z'
   },
@@ -99,6 +100,7 @@ const generateMockIssues = (): Issue[] => ([
     },
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-25T08:00:00Z',
     updatedAt: '2026-05-30T10:00:05Z'
   },
@@ -130,6 +132,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-26T08:00:00Z',
     updatedAt: '2026-05-29T14:00:00Z'
   },
@@ -163,6 +166,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-26T08:00:00Z',
     updatedAt: '2026-05-29T14:05:00Z'
   },
@@ -220,6 +224,7 @@ const generateMockIssues = (): Issue[] => ([
     },
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-27T08:00:00Z',
     updatedAt: '2026-05-29T16:01:00Z'
   },
@@ -252,6 +257,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   },
@@ -290,6 +296,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-29T09:15:05Z'
   },
@@ -319,6 +326,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   },
@@ -348,6 +356,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   }
@@ -1345,6 +1354,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           prDetails: null,
           moveStatus: 'idle',
           moveError: null,
+          handoffs: [],
           createdAt: job.created_at,
           updatedAt: job.updated_at
         })
@@ -1432,6 +1442,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           prDetails: null,
           moveStatus: 'idle',
           moveError: null,
+          handoffs: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }
@@ -1609,6 +1620,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         prDetails: null,
         moveStatus: 'idle',
         moveError: null,
+        handoffs: [],
         createdAt: job.created_at,
         updatedAt: job.updated_at
       }

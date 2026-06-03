@@ -205,6 +205,7 @@ export interface Issue {
   prDetails: PRDetails | null
   moveStatus: MoveStatus
   moveError: string | null
+  handoffs: Handoff[]
   createdAt: string
   updatedAt: string
 }
@@ -295,6 +296,85 @@ export const HARNESS_CONFIGS: HarnessConfig[] = [
   { type: 'opencode', name: 'OpenCode', icon: 'opencode', color: '#8C8279', available: false },
   { type: 'gemini', name: 'Gemini', icon: 'google', color: '#C67B4E', available: false }
 ]
+
+// ============================================================================
+// Kanban Protocol — Handoff Types
+// ============================================================================
+
+export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled'
+
+export type RetryPolicy = 'none' | 'fixed' | 'exponential'
+
+export interface Handoff {
+  id: string
+  boardId: string
+  issueId: string
+  fromLane: string | null
+  toLane: string
+  status: HandoffStatus
+  payload: Record<string, unknown>
+  blockReason: string | null
+  createdBy: string | null
+  acceptedBy: string | null
+  dispatchedBy: string | null
+  completedBy: string | null
+  cancelledBy: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
+
+export interface WorkerLane {
+  key: string
+  displayName: string
+  description: string
+  allowedProfiles: string[]
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+  nextLanes: string[]
+  humanApprovalRequired: boolean
+}
+
+export interface HandoffPreview {
+  handoffId: string
+  toLane: string
+  displayName: string
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  presentFields: string[]
+  missingFields: string[]
+  nextLanes: string[]
+  humanApprovalRequired: boolean
+  hasApprover: boolean
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+}
+
+export interface HandoffCreateRequest {
+  fromLane?: string | null
+  toLane: string
+  payload?: Record<string, unknown>
+  createdBy?: string | null
+}
+
+export interface HandoffDispatchRequest {
+  issueKey: string
+  profile: string
+  actor?: string | null
+}
+
+export interface HandoffBlockRequest {
+  actor?: string | null
+  blockReason: string
+}
 
 // ============================================================================
 // LLM Provider System
