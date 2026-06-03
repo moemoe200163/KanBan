@@ -335,10 +335,15 @@ async def get_job(job_id: str) -> Optional[dict]:
         return None
 
 
-async def list_jobs(issue_id: Optional[str] = None, status: Optional[str] = None) -> List[dict]:
-    """List all jobs, optionally filtered by issue_id and/or status.
+async def list_jobs(
+    issue_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[dict]:
+    """List jobs, optionally filtered by issue_id, status, and/or limit.
 
     Sorted by created_at DESC (newest first) for stable ordering.
+    When *limit* is set, only that many rows are returned.
     """
     try:
         await _ensure_init()()
@@ -349,6 +354,8 @@ async def list_jobs(issue_id: Optional[str] = None, status: Optional[str] = None
             if status:
                 stmt = stmt.where(JobModel.status == status)
             stmt = stmt.order_by(JobModel.created_at.desc())
+            if limit:
+                stmt = stmt.limit(limit)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [_job_model_to_dict(r) for r in rows]

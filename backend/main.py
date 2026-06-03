@@ -344,6 +344,10 @@ try:
     app.include_router(llm.router, prefix="/api/v1", tags=["LLM"])
     app.include_router(handoffs.router, prefix="/api/v1", tags=["Kanban Protocol"])
 
+    # Dev management endpoints (stats always available; reset self-gates on dev mode)
+    from api.v1.endpoints import dev
+    app.include_router(dev.router, prefix="/api/v1", tags=["Dev"])
+
     # Mount WebSocket router for ECC job updates at /ws/ecc/jobs
     app.include_router(ws.router, tags=["WebSocket"])
 

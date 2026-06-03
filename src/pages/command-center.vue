@@ -4,6 +4,7 @@ import { useBoardStore } from '~/stores/board'
 import JobDetailDrawer from '~/components/common/JobDetailDrawer.vue'
 import JobMonitor from '~/components/command/JobMonitor.vue'
 import ReviewQueuePanel from '~/components/command/ReviewQueuePanel.vue'
+import DevStats from '~/components/command/DevStats.vue'
 
 const boardStore = useBoardStore()
 
@@ -31,6 +32,7 @@ onMounted(async () => {
         <ReviewQueuePanel class="command-center__review" />
       </div>
       <div class="command-center__col command-center__col--right">
+        <DevStats />
         <JobMonitor />
       </div>
     </div>

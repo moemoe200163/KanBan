@@ -292,11 +292,17 @@ async def list_ecc_jobs(
         None,
         description="Filter jobs by ECC status (queued, running, paused, failed, review_required, completed, cancelled).",
     ),
+    limit: Optional[int] = Query(
+        None,
+        description="Maximum number of jobs to return. Defaults to all.",
+        ge=1,
+        le=500,
+    ),
 ):
     """List ECC jobs, optionally filtered to a single issue or a single status."""
     try:
         from db import repository as repo
-        rows = await repo.list_jobs(issue_id=issue_id, status=status)
+        rows = await repo.list_jobs(issue_id=issue_id, status=status, limit=limit)
         jobs = []
         for row in rows:
             row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
@@ -315,6 +321,8 @@ async def list_ecc_jobs(
             jobs = list(_jobs.values())
 
     jobs = sorted(jobs, key=lambda job: job.created_at, reverse=True)
+    if limit:
+        jobs = jobs[:limit]
     return {"jobs": [job.model_dump() for job in jobs], "total": len(jobs)}
 
 
