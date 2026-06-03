@@ -424,3 +424,18 @@ async def test_complete_rejects_payload_with_denied_keys(fresh_db):
             actor="bob",
             payload={"iptables_rules": "ACCEPT"},
         )
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_denied_key_nested_in_subdict(fresh_db):
+    svc = HandoffService()
+    with pytest.raises(ScopeDeniedError) as exc_info:
+        await svc.create(
+            issue_id="issue-1",
+            board_id="board-default",
+            from_lane=None,
+            to_lane="frontend",
+            payload={"meta": {"sandbox_egress": "10.0.0.0/8"}},
+            created_by="alice",
+        )
+    assert "sandbox_egress" in exc_info.value.offending_keys

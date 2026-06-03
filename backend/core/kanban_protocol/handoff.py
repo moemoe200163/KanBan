@@ -7,7 +7,7 @@ from typing import Optional
 
 from db import repository as repo
 from core.kanban_protocol.lanes import get_lane
-from core.kanban_protocol.scope_guard import ScopeDeniedError, check_payload
+from core.kanban_protocol.scope_guard import check_payload
 
 
 def _new_id() -> str:
