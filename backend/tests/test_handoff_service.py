@@ -208,3 +208,36 @@ async def test_dispatch_rejects_when_approval_required_and_missing(fresh_db):
             actor="bob",
         )
     assert "approval" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_raises_when_handoff_missing(fresh_db):
+    svc = HandoffService()
+    with pytest.raises(ValueError, match="not found"):
+        await svc.dispatch(
+            handoff_id="h_doesnotexist",
+            issue_key="DEV-001",
+            profile="frontend",
+            actor="bob",
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_non_accepted_handoff(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    )
+    # Skip accept — handoff is still "pending"
+    with pytest.raises(ValueError, match="only 'accepted' handoffs"):
+        await svc.dispatch(
+            handoff_id=handoff["id"],
+            issue_key="DEV-001",
+            profile="frontend",
+            actor="bob",
+        )
