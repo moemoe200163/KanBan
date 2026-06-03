@@ -1,7 +1,7 @@
 """Kanban Protocol — Handoff API."""
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
@@ -111,16 +111,32 @@ async def dispatch_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffDispatchRequest,
+    background_tasks: BackgroundTasks,
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         issue = await repo.get_issue(issue_id)
-        return await _svc.dispatch(
+        result = await _svc.dispatch(
             handoff_id=handoff_id,
             issue_key=issue["key"],  # authoritative, not body.issueKey
             profile=body.profile,
             actor=body.actor,
         )
+
+        # Auto-start safe runner for the created job.
+        # _svc.dispatch creates a DB row via create_job_for_handoff;
+        # we now also register it in the in-memory ecc._jobs registry
+        # and kick off the safe-runner background task.
+        job_data = result.get("job")
+        if job_data and job_data.get("id"):
+            from api.v1.endpoints.ecc import (
+                _execute_safe_runner,
+                _register_job_from_db,
+            )
+            await _register_job_from_db(job_data["id"])
+            background_tasks.add_task(_execute_safe_runner, job_data["id"])
+
+        return result
     except (ValueError, ScopeDeniedError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

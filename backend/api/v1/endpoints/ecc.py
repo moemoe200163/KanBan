@@ -165,6 +165,26 @@ async def load_jobs_from_db() -> None:
         _jobs = {}
 
 
+async def _register_job_from_db(job_id: str) -> None:
+    """Load a single job from DB into the in-memory _jobs registry.
+
+    Called by the handoff dispatch path so that a job created via
+    ``create_job_for_handoff`` is visible to the safe-runner before
+    the background task starts.
+    """
+    if job_id in _jobs:
+        return  # already registered
+    try:
+        from db import repository as repo
+        row = await repo.get_job(job_id)
+        if row:
+            row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
+            _jobs[row["id"]] = ECCDispatchJob(**row)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to register job {job_id}: {e}")
+
+
 @router.post("/ecc/dispatch")
 async def dispatch_ecc_command(
     request: ECCDispatchRequest,

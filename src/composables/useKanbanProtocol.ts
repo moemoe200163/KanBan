@@ -39,11 +39,13 @@ export function useKanbanProtocol(issueId: string) {
   }
 
   function listHandoffs(): Promise<{ handoffs: Handoff[]; total: number }> {
-    return $fetch(base.value)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ($fetch as any)(base.value)
   }
 
   function getHandoff(handoffId: string): Promise<Handoff> {
-    return $fetch(`${base.value}/${handoffId}`)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ($fetch as any)(`${base.value}/${handoffId}`)
   }
 
   // ---- state transitions ----
@@ -104,7 +106,8 @@ export function useKanbanProtocol(issueId: string) {
   // ---- preview ----
 
   function previewHandoff(handoffId: string): Promise<HandoffPreview> {
-    return $fetch(`${base.value}/${handoffId}/preview`)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ($fetch as any)(`${base.value}/${handoffId}/preview`)
   }
 
   return {
