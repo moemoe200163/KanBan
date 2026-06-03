@@ -5,8 +5,14 @@ idempotent on read; transitions raise ``ValueError`` on illegal moves.
 """
 from typing import Optional
 
+from pydantic import ValidationError
+
 from db import repository as repo
 from core.kanban_protocol.lanes import get_lane
+from core.kanban_protocol.payloads import (
+    LANE_PAYLOADS,
+    PayloadValidationError,
+)
 from core.kanban_protocol.scope_guard import check_payload
 
 
@@ -125,20 +131,27 @@ class HandoffService:
             )
 
         lane = get_lane(current["toLane"])
-        merged_payload = dict(current.get("payload") or {})
-        if payload:
-            merged_payload.update(payload)
-        missing = [
-            field for field in lane.required_completion_fields
-            if field not in merged_payload
-        ]
-        if missing:
-            raise ValueError(
-                f"Cannot complete handoff: missing required fields {missing}"
-            )
+        existing = current.get("payload") or {}
+        caller = payload or {}
+        final_payload = {**existing, **caller}
 
-        # Refuse out-of-scope payload keys (archived security work, etc.).
-        check_payload(merged_payload)
+        # Guardrail #1: scope guard runs FIRST so denied keys are not silently
+        # dropped by Pydantic's `extra="forbid"`.
+        check_payload(final_payload)
+
+        payload_model = LANE_PAYLOADS[lane.key]
+        try:
+            validated = payload_model.model_validate(final_payload)
+        except ValidationError as exc:
+            raise PayloadValidationError(
+                lane=lane.key,
+                errors=[
+                    {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+                    for e in exc.errors()
+                ],
+            ) from exc
+
+        merged_payload = validated.model_dump(mode="json")
 
         return await repo.update_issue_handoff(
             handoff_id,

@@ -258,9 +258,10 @@ async def test_complete_rejects_when_required_fields_missing(fresh_db):
     await svc.accept(handoff["id"], actor="bob")
     with pytest.raises(ValueError) as exc_info:
         await svc.complete(handoff_id=handoff["id"], actor="bob", payload=None)
-    msg = str(exc_info.value)
-    assert "test_results" in msg
-    assert "coverage_pct" in msg
+    # Pydantic v2 returns structured errors; field names live in errors[].loc
+    error_locs = [tuple(e["loc"]) for e in exc_info.value.errors]
+    assert ("test_results",) in error_locs
+    assert ("coverage_pct",) in error_locs
 
 
 @pytest.mark.asyncio
@@ -298,11 +299,12 @@ async def test_complete_merges_existing_and_new_payload(fresh_db):
     completed = await svc.complete(
         handoff_id=handoff["id"],
         actor="bob",
-        payload={"coverage_pct": 95, "extra_meta": "x"},
+        payload={"coverage_pct": 95},
     )
-    assert completed["payload"]["test_results"] == "ok"   # preserved
-    assert completed["payload"]["coverage_pct"] == 95     # added
-    assert completed["payload"]["extra_meta"] == "x"      # added
+    assert completed["payload"]["test_results"] == "ok"   # preserved (existing)
+    assert completed["payload"]["coverage_pct"] == 95     # added (caller)
+    # declared-only — no rogue keys leak through
+    assert set(completed["payload"].keys()) == {"test_results", "coverage_pct"}
 
 
 @pytest.mark.asyncio
@@ -367,7 +369,7 @@ async def test_cancel_rejected_from_completed_state(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="frontend",
-        payload={"diff_summary": "ok", "screenshots": "ok"},
+        payload={"diff_summary": "ok", "screenshots": ["ok"]},
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -390,6 +392,34 @@ async def test_cancel_rejected_from_cancelled_state(fresh_db):
     await svc.cancel(handoff_id=handoff["id"], actor="bob")
     with pytest.raises(ValueError):
         await svc.cancel(handoff_id=handoff["id"], actor="bob")
+
+
+@pytest.mark.asyncio
+async def test_scope_guard_fires_before_pydantic_for_denied_keys(fresh_db):
+    """Guardrail #1: scope guard must run BEFORE Pydantic validation.
+
+    If Pydantic's `extra="forbid"` ran first it would silently drop
+    out-of-scope keys, and `check_payload` would never see them. This
+    test pins the order.
+    """
+    from core.kanban_protocol.scope_guard import ScopeDeniedError
+
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "ok"},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    with pytest.raises(ScopeDeniedError):
+        await svc.complete(
+            handoff_id=handoff["id"],
+            actor="bob",
+            payload={"sandbox_egress": "1.1.1.1"},
+        )
 
 
 @pytest.mark.asyncio
