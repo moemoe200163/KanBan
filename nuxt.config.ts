@@ -15,5 +15,13 @@ export default defineNuxtConfig({
   tailwindcss: {
     cssPath: '~/assets/css/tailwind.css',
     configPath: 'tailwind.config.ts'
+  },
+  // Server-side redirects. Running these in a setup script (the old
+  // ``navigateTo('/agents?tab=roles')`` approach) only fired after the
+  // SPA shell was already mounted, so the browser saw a blank /agents/roles
+  // URL for a frame. Nitro handles the redirect before any HTML ships.
+  routeRules: {
+    '/agents/roles': { redirect: '/agents?tab=roles' },
+    '/lanes': { redirect: '/agents?tab=lanes' }
   }
 })

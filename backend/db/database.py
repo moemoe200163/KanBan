@@ -121,14 +121,33 @@ def _run_alembic_upgrade_head() -> None:
     command.upgrade(cfg, "head")
 
 
+def _is_e2e_sqlite_target() -> bool:
+    """Return True when this process is targeting a test/automation SQLite db.
+
+    E2E databases (any SQLite file whose name contains ``_e2e``) must drop
+    and recreate tables on init so the schema always matches the current
+    model. ``create_all(checkfirst=True)`` is a no-op when the table
+    already exists, which leaves stale schemas in place when models gain
+    new columns (the classic "no such column: issues.board_id" failure).
+    """
+    if is_postgres():
+        return False
+    if os.getenv("E2E") != "1":
+        return False
+    return "_e2e" in (DATABASE_URL.rsplit("/", 1)[-1] or "")
+
+
 async def init_db() -> None:
     """Initialize the database schema.
 
     - **Postgres**: run Alembic migrations to ``head`` so the schema is
       versioned and reproducible across environments.
-    - **SQLite**: fall back to ``Base.metadata.create_all`` for fast
-      test setup. Tests still go through this entry point unless they
-      bypass lifespan management (see ``backend/tests/test_persistence.py``).
+    - **E2E SQLite** (``_e2e`` db name, ``E2E=1``): drop and recreate all
+      tables so the schema always matches the current model. The data
+      is then re-seeded by the caller (``seed_if_empty``).
+    - **SQLite (default)**: fall back to ``Base.metadata.create_all`` for
+      fast test setup. Tests still go through this entry point unless
+      they bypass lifespan management (see ``backend/tests/test_persistence.py``).
 
     Idempotent via the module-level ``_db_initialized`` flag.
     """
@@ -152,6 +171,10 @@ async def init_db() -> None:
         from db.models import Base
 
         async with engine.begin() as conn:
+            if _is_e2e_sqlite_target():
+                # Drop first so newly-added columns take effect on the
+                # next ``create_all`` call.
+                await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(
                 lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True)
             )

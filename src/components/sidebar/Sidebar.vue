@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleDot,
   ClipboardList,
   Columns3,
   GitPullRequest,
