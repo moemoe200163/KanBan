@@ -20,7 +20,14 @@ from uuid import uuid4
 from sqlalchemy import select, func
 
 from db import database as _db
-from db.models import Issue as IssueModel, JobModel, AuditLog
+from db.models import (
+    Issue as IssueModel,
+    JobModel,
+    AuditLog,
+    IssueEvent,
+    IssueComment,
+    IssueArtifact,
+)
 
 
 def _get_sessionmaker():
@@ -54,6 +61,13 @@ __all__ = [
     "seed_audit_logs_from_jobs",
     "list_audit_logs",
     "get_audit_log_stats",
+    # P2: Issue Collaboration Records
+    "list_issue_events",
+    "create_issue_event",
+    "list_issue_comments",
+    "create_issue_comment",
+    "list_issue_artifacts",
+    "create_issue_artifact",
 ]
 
 
@@ -521,3 +535,318 @@ async def get_audit_log_stats() -> dict:
     except Exception as e:
         logger.warning(f"Failed to get audit log stats: {e}")
         return {"total": 0, "byAction": {}, "byResource": {}}
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Events
+# ============================================================================
+
+async def list_issue_events(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return events for an issue, newest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueEvent)
+                .where(IssueEvent.issue_id == issue_id)
+                .order_by(IssueEvent.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue events for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_event(
+    issue_id: str,
+    event_type: str,
+    summary: str,
+    actor_id: Optional[str] = None,
+    actor_name: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> dict:
+    """Create an event for an issue. Returns the created event."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    event = IssueEvent(
+        id=f"evt-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        event_type=event_type,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        summary=summary,
+        details=details or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(event)
+        await session.commit()
+        return event.to_dict()
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Comments
+# ============================================================================
+
+async def list_issue_comments(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return comments for an issue, oldest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueComment)
+                .where(IssueComment.issue_id == issue_id)
+                .order_by(IssueComment.created_at.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue comments for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_comment(
+    issue_id: str,
+    body: str,
+    author_id: Optional[str] = None,
+    author_name: Optional[str] = None,
+    comment_type: str = "comment",
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Create a comment on an issue. Returns the created comment."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    comment = IssueComment(
+        id=f"cmt-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        author_id=author_id,
+        author_name=author_name,
+        body=body,
+        comment_type=comment_type,
+        extra_data=metadata or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(comment)
+        await session.commit()
+        return comment.to_dict()
+
+
+# ============================================================================
+# P2: Issue Collaboration Records - Artifacts
+# ============================================================================
+
+async def list_issue_artifacts(issue_id: str, limit: int = 100) -> List[dict]:
+    """Return artifacts for an issue, newest first."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueArtifact)
+                .where(IssueArtifact.issue_id == issue_id)
+                .order_by(IssueArtifact.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue artifacts for {issue_id}: {e}")
+        return []
+
+
+async def create_issue_artifact(
+    issue_id: str,
+    title: str,
+    artifact_type: str,
+    job_id: Optional[str] = None,
+    source: Optional[str] = None,
+    path_or_url: Optional[str] = None,
+    sensitivity: str = "public",
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_by_id: Optional[str] = None,
+    created_by_name: Optional[str] = None,
+) -> dict:
+    """Create an artifact metadata record. Returns the created artifact."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    artifact = IssueArtifact(
+        id=f"art-{uuid4().hex[:12]}",
+        issue_id=issue_id,
+        job_id=job_id,
+        title=title,
+        artifact_type=artifact_type,
+        source=source,
+        path_or_url=path_or_url,
+        sensitivity=sensitivity,
+        summary=summary,
+        extra_data=metadata or {},
+        created_by_id=created_by_id,
+        created_by_name=created_by_name,
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(artifact)
+        await session.commit()
+        return artifact.to_dict()
+
+
+# ============================================================================
+# IssueHandoff — Kanban Protocol
+# ============================================================================
+
+async def create_issue_handoff(
+    *,
+    id: str,
+    board_id: str,
+    issue_id: str,
+    from_lane: Optional[str],
+    to_lane: str,
+    payload: Optional[dict],
+    created_by: Optional[str],
+) -> dict:
+    """Insert a new IssueHandoff in 'pending' status and return its dict form."""
+    from db.models import IssueHandoff
+
+    row = IssueHandoff(
+        id=id,
+        board_id=board_id,
+        issue_id=issue_id,
+        from_lane=from_lane,
+        to_lane=to_lane,
+        status="pending",
+        payload=payload or {},
+        created_by=created_by,
+    )
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()
+
+
+async def get_issue_handoff(handoff_id: str) -> Optional[dict]:
+    from db.models import IssueHandoff
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(IssueHandoff, handoff_id)
+            return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get issue handoff {handoff_id}: {e}")
+        return None
+
+
+async def list_issue_handoffs(
+    *,
+    issue_id: str,
+    board_id: str,
+    limit: int = 100,
+) -> list[dict]:
+    from sqlalchemy import select
+    from db.models import IssueHandoff
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueHandoff)
+                .where(IssueHandoff.issue_id == issue_id)
+                .where(IssueHandoff.board_id == board_id)
+                .order_by(IssueHandoff.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue handoffs for {issue_id}/{board_id}: {e}")
+        return []
+
+
+async def update_issue_handoff(
+    handoff_id: str,
+    *,
+    status: str,
+    block_reason: Optional[str] = None,
+    payload: Optional[dict] = None,
+    actor_field: Optional[str] = None,
+    actor_value: Optional[str] = None,
+    set_completed_at: bool = False,
+) -> Optional[dict]:
+    """Update a handoff's status and optional audit fields."""
+    from datetime import datetime, timezone
+    from db.models import IssueHandoff
+
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(IssueHandoff, handoff_id)
+        if not row:
+            return None
+        row.status = status
+        if block_reason is not None:
+            row.block_reason = block_reason
+        if payload is not None:
+            row.payload = payload
+        if actor_field and actor_value is not None:
+            setattr(row, actor_field, actor_value)
+        if set_completed_at:
+            row.completed_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()
+
+
+async def create_ecc_job_safe_runner(
+    *,
+    issue_id: str,
+    issue_key: str,
+    command: str,
+    profile: str,
+    harness: str,
+    handoff_id: Optional[str] = None,
+) -> dict:
+    """Create a JobModel row that runs through the P0 safe runner.
+
+    Used by the Kanban Protocol dispatch path so handoffs always produce
+    a queued job without invoking real Claude/Codex execution by
+    default. The actor is captured in the audit message rather than on
+    the JobModel itself (the model has no actor column).
+    """
+    job_id = f"ecc_{uuid4().hex[:12]}"
+    now = _utc_now()
+    row = JobModel(
+        id=job_id,
+        board_id="board-default",
+        issue_id=issue_id,
+        issue_key=issue_key,
+        command=command,
+        profile=profile,
+        harness=harness,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+        message=f"Created by Kanban Protocol handoff {handoff_id or '<unknown>'}",
+        events=[
+            {
+                "timestamp": now,
+                "status": "queued",
+                "message": "Job created by Kanban Protocol dispatch",
+            }
+        ],
+    )
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()

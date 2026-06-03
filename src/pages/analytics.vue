@@ -16,9 +16,61 @@ interface AnalyticsData {
 
 const stats = ref<AnalyticsData | null>(null)
 
+const dateFrom = ref('')
+const dateTo = ref('')
+const activePreset = ref<string | null>('7d')
+
+const datePresets = [
+  { value: '1d', label: 'Last 24h', days: 1 },
+  { value: '7d', label: 'Last 7 days', days: 7 },
+  { value: '30d', label: 'Last 30 days', days: 30 },
+  { value: null, label: 'All time', days: null },
+]
+
+function toISOString(local: string): string {
+  if (!local) return ''
+  return local.length === 16 ? local + ':00Z' : local + 'Z'
+}
+
+function applyPreset(preset: { value: string | null; days: number | null }) {
+  activePreset.value = preset.value
+  if (preset.days == null) {
+    dateFrom.value = ''
+    dateTo.value = ''
+  } else {
+    const now = new Date()
+    const from = new Date(now)
+    from.setDate(from.getDate() - preset.days)
+    dateFrom.value = from.toISOString().slice(0, 16)
+    dateTo.value = now.toISOString().slice(0, 16)
+  }
+  fetchStats()
+}
+
+function clearAnalyticsFilters() {
+  applyPreset(datePresets.find(p => p.value === '7d')!)
+}
+
+const currentRangeLabel = computed(() => {
+  if (!dateFrom.value && !dateTo.value) return ''
+  const fmt = (iso: string) => {
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
+      d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  }
+  const from = dateFrom.value ? fmt(dateFrom.value) : '...'
+  const to = dateTo.value ? fmt(dateTo.value) : '...'
+  return `${from} \u2014 ${to}`
+})
+
 const fetchStats = async () => {
   try {
-    const res = await fetch(`${apiBase}/analytics/stats`)
+    const params = new URLSearchParams()
+    if (dateFrom.value) params.set('date_from', toISOString(dateFrom.value))
+    if (dateTo.value) params.set('date_to', toISOString(dateTo.value))
+    const qs = params.toString()
+    const url = qs ? `${apiBase}/analytics/stats?${qs}` : `${apiBase}/analytics/stats`
+    const res = await fetch(url)
     if (res.ok) stats.value = await res.json()
   } catch {
     // fallback to board store
@@ -28,7 +80,7 @@ const fetchStats = async () => {
 onMounted(() => {
   if (!boardStore.columns.length) boardStore.fetchBoard()
   boardStore.fetchJobs()
-  fetchStats()
+  applyPreset(datePresets.find(p => p.value === '7d')!)
 })
 
 // Fallback computed values from board store (used if API fails)
@@ -117,6 +169,27 @@ const priorityStats = computed(() => {
         <p>Board stats, job metrics, and AI performance KPIs</p>
       </div>
     </header>
+
+    <!-- Date range toolbar -->
+    <div class="analytics-page__toolbar">
+      <div class="analytics-page__presets">
+        <button
+          v-for="p in datePresets"
+          :key="p.value ?? 'all'"
+          class="filter-btn"
+          :class="{ 'filter-btn--active': activePreset === p.value }"
+          @click="applyPreset(p)"
+        >
+          {{ p.label }}
+        </button>
+      </div>
+      <div class="analytics-page__date-inputs">
+        <input type="datetime-local" v-model="dateFrom" class="search-input" @change="activePreset = null" />
+        <input type="datetime-local" v-model="dateTo" class="search-input" @change="activePreset = null" />
+        <button class="filter-btn" @click="clearAnalyticsFilters">Clear</button>
+      </div>
+      <div v-if="currentRangeLabel" class="analytics-page__range-label">{{ currentRangeLabel }}</div>
+    </div>
 
     <div class="analytics-page__grid">
       <!-- Enhanced KPI Cards -->
@@ -307,4 +380,32 @@ const priorityStats = computed(() => {
 .profile-row__count { flex: 0 0 30px; text-align: right; font-family: var(--font-mono); font-size: 0.8125rem; font-weight: 600; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.analytics-page__toolbar {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.analytics-page__presets {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.analytics-page__date-inputs {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.filter-btn {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--hairline);
+  background: transparent; color: var(--muted); font-size: 0.8125rem; font-weight: 600;
+  cursor: pointer; transition: all 150ms;
+}
+.filter-btn:hover { border-color: var(--primary); color: var(--ink); }
+.filter-btn--active {
+  background: var(--primary); color: var(--on-primary); border-color: var(--primary);
+}
+.search-input {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--hairline);
+  background: transparent; color: var(--ink); font-size: 0.8125rem;
+  font-family: var(--font-mono); transition: border-color 150ms;
+}
+.search-input:focus { outline: none; border-color: var(--primary); }
+.analytics-page__range-label {
+  color: var(--muted); font-size: 0.75rem; font-family: var(--font-mono);
+}
 </style>

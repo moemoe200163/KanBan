@@ -104,6 +104,30 @@ Do not prioritize these until P0 and P1 are verified:
 
 Adapter classes may remain in the repo, but P0 dispatch must not depend on the full adapter system being complete.
 
+## Scope Guardrails
+
+DevFlow is a Kanban + LLM execution control plane. The following features are **out of scope** unless the user explicitly requests them:
+
+**Do NOT add:**
+- SecurityWeb / pentest tooling
+- BGP / network security features
+- Sandbox firewall / egress policy (iptables, ipset, sandbox-egress)
+- Retention cleanup services
+- Admin key management console
+- API key rotation UI
+
+**Next milestones (in order):**
+1. Kanban board + issue management
+2. Command Center (dispatch, live logs, job status)
+3. LLM Adapter layer (provider/model/execution_mode)
+4. Job/Logs infrastructure
+5. Review Queue
+6. Delivery Orchestrator
+
+Completed spike work (admin keys, retention, sandbox egress) lives on
+`archive/security-scope-spike-2026-06-03` — do not merge into mainline
+without explicit user approval.
+
 ## Development Commands
 
 Frontend:
