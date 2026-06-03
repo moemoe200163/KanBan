@@ -695,3 +695,104 @@ async def create_issue_artifact(
         session.add(artifact)
         await session.commit()
         return artifact.to_dict()
+
+
+# ============================================================================
+# IssueHandoff — Kanban Protocol
+# ============================================================================
+
+async def create_issue_handoff(
+    *,
+    id: str,
+    board_id: str,
+    issue_id: str,
+    from_lane: Optional[str],
+    to_lane: str,
+    payload: Optional[dict],
+    created_by: Optional[str],
+) -> dict:
+    """Insert a new IssueHandoff in 'pending' status and return its dict form."""
+    from db.database import AsyncSessionLocal
+    from db.models import IssueHandoff
+
+    row = IssueHandoff(
+        id=id,
+        board_id=board_id,
+        issue_id=issue_id,
+        from_lane=from_lane,
+        to_lane=to_lane,
+        status="pending",
+        payload=payload or {},
+        created_by=created_by,
+    )
+    async with AsyncSessionLocal() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()
+
+
+async def get_issue_handoff(handoff_id: str) -> Optional[dict]:
+    from db.database import AsyncSessionLocal
+    from db.models import IssueHandoff
+
+    async with AsyncSessionLocal() as session:
+        row = await session.get(IssueHandoff, handoff_id)
+    return row.to_dict() if row else None
+
+
+async def list_issue_handoffs(
+    *,
+    issue_id: str,
+    board_id: str,
+    limit: int = 100,
+) -> list[dict]:
+    from sqlalchemy import select
+    from db.database import AsyncSessionLocal
+    from db.models import IssueHandoff
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(IssueHandoff)
+            .where(IssueHandoff.issue_id == issue_id)
+            .where(IssueHandoff.board_id == board_id)
+            .order_by(IssueHandoff.created_at.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+    return [r.to_dict() for r in rows]
+
+
+async def update_issue_handoff(
+    handoff_id: str,
+    *,
+    status: str,
+    block_reason: Optional[str] = None,
+    payload: Optional[dict] = None,
+    actor_field: Optional[str] = None,
+    actor_value: Optional[str] = None,
+    set_completed_at: bool = False,
+) -> Optional[dict]:
+    """Update a handoff's status and optional audit fields."""
+    from datetime import datetime, timezone
+    from db.database import AsyncSessionLocal
+    from db.models import IssueHandoff
+
+    async with AsyncSessionLocal() as session:
+        row = await session.get(IssueHandoff, handoff_id)
+        if not row:
+            return None
+        row.status = status
+        if block_reason is not None:
+            row.block_reason = block_reason
+        if payload is not None:
+            row.payload = payload
+        if actor_field and actor_value is not None:
+            setattr(row, actor_field, actor_value)
+        if set_completed_at:
+            row.completed_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+    return row.to_dict()
