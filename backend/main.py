@@ -344,7 +344,7 @@ try:
     app.include_router(llm.router, prefix="/api/v1", tags=["LLM"])
     app.include_router(handoffs.router, prefix="/api/v1", tags=["Kanban Protocol"])
 
-    # Dev management endpoints (stats always available; reset self-gates on dev mode)
+    # Dev management endpoints (stats + reset self-gate on dev mode; 404 in production)
     from api.v1.endpoints import dev
     app.include_router(dev.router, prefix="/api/v1", tags=["Dev"])
 
