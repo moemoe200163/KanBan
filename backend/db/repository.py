@@ -739,7 +739,7 @@ async def get_issue_handoff(handoff_id: str) -> Optional[dict]:
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
             row = await session.get(IssueHandoff, handoff_id)
-        return row.to_dict() if row else None
+            return row.to_dict() if row else None
     except Exception as e:
         logger.warning(f"Failed to get issue handoff {handoff_id}: {e}")
         return None
@@ -766,7 +766,7 @@ async def list_issue_handoffs(
             )
             result = await session.execute(stmt)
             rows = result.scalars().all()
-        return [r.to_dict() for r in rows]
+            return [r.to_dict() for r in rows]
     except Exception as e:
         logger.warning(f"Failed to list issue handoffs for {issue_id}/{board_id}: {e}")
         return []
