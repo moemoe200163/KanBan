@@ -1,7 +1,7 @@
 # DevFlow 前端全按钮验收报告
 
 **日期**: 2026-06-03
-**分支**: main (c73d323)
+**分支**: main (9fbfcb6)
 **执行者**: Claude Code + Playwright
 
 > **2026-06-03 二次复验**: 报告原 PARTIAL 项（P6 Review Queue、P1 /agents/roles 重定向）
@@ -9,6 +9,11 @@
 > sidebar icon / nuxt 路由）+ `c73d323`（review queue 过滤），E2E 套件
 > desktop 16 passed + mobile 12 passed = 28 passed，0 failed。详细修复路径与
 > 复测输出见「P6 章节」与文末「修复后复测汇总」。
+>
+> **2026-06-03 三次复验（npm script 路径）**: 走 `npm run e2e`（含 Playwright
+> `webServer` 自动 build + preview）再跑一遍，**28 passed / 6 skipped / 0 failed，
+> 8.5s**。与 `npx playwright test` 直跑结果完全一致，验证 npm script 入口可用，
+> 修复在真实构建产物上稳定。
 
 ---
 
@@ -338,6 +343,28 @@ Running 17 tests using 4 workers
 | 测试 Issue | DEV-009 "Explain GNN with AI Kanban Bot" | backlog → done |
 | ECC Job | ecc_1d297c2abe23 | queued → running → review_required |
 | Handoff | h_fbd46fa3baa24544 | triage → product, accepted |
+
+### `npm run e2e` 入口二次确认
+
+为排除「直跑 `npx playwright` 走通而 npm script 入口隐藏坏掉」的可能，
+再走 `npm run e2e` 一次（该入口会触发 Playwright `webServer` 配置 → `npm run build && npm run preview`）：
+
+```bash
+DATABASE_URL="sqlite+aiosqlite:///./devflow_e2e.db" E2E=1 npm run e2e
+```
+
+输出尾部：
+
+```
+Running 34 tests using 4 workers
+  ✓  28 passed
+  -   6 skipped
+  28 passed (8.5s)
+```
+
+与 `npx playwright test` 直跑（28 passed, 6 skipped, 0 failed）结果完全一致，
+说明 `package.json` 的 `e2e` 入口、Playwright `webServer` 自动 build/preview
+链路、CI 调用面都是绿的。
 
 ---
 
