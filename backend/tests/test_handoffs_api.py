@@ -419,3 +419,307 @@ def test_dispatch_handoff_wrong_issue_returns_404(fresh_db, monkeypatch):
         json={"issueKey": "DEV-100", "profile": "frontend", "actor": "bob"},
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Block endpoint
+# ---------------------------------------------------------------------------
+
+def test_block_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/block",
+        json={"actor": "bob", "blockReason": "waiting on design"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "blocked"
+    assert body["blockReason"] == "waiting on design"
+
+
+def test_block_handoff_rejects_terminal_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.cancel(handoff_id=handoff["id"], actor="alice"))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/block",
+        json={"actor": "bob", "blockReason": "too late"},
+    )
+    assert response.status_code == 422
+
+
+def test_block_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/block",
+        json={"actor": "bob", "blockReason": "missing"},
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Unblock endpoint
+# ---------------------------------------------------------------------------
+
+def test_unblock_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.block(
+        handoff_id=handoff["id"], actor="bob", reason="blocked for review"
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/unblock",
+        json={"actor": "carol"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["blockReason"] is None
+
+
+def test_unblock_handoff_rejects_wrong_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Handoff is still "pending" — unblock requires "blocked"
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/unblock",
+        json={"actor": "carol"},
+    )
+    assert response.status_code == 422
+
+
+def test_unblock_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/unblock",
+        json={"actor": "carol"},
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Cancel endpoint
+# ---------------------------------------------------------------------------
+
+def test_cancel_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/cancel",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "cancelled"
+    assert body["cancelledBy"] == "bob"
+
+
+def test_cancel_handoff_rejects_terminal_state(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.cancel(handoff_id=handoff["id"], actor="alice"))
+    # Second cancel should fail (already cancelled)
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/cancel",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 422
+
+
+def test_cancel_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/cancel",
+        json={"actor": "bob"},
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Comment endpoint
+# ---------------------------------------------------------------------------
+
+def test_comment_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/comment",
+        json={
+            "body": "Looks good, proceeding",
+            "authorId": "user-1",
+            "authorName": "Alice",
+            "commentType": "handoff",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["body"] == "Looks good, proceeding"
+    assert body["authorId"] == "user-1"
+    assert body["commentType"] == "handoff"
+
+
+def test_comment_handoff_not_found(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/comment",
+        json={"body": "orphan comment"},
+    )
+    assert response.status_code == 404
+
+
+def test_comment_handoff_wrong_issue_returns_404(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    from db import database as db_module
+    _create_second_issue(db_module.AsyncSessionLocal)
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/comment",
+        json={"body": "wrong issue"},
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Preview endpoint
+# ---------------------------------------------------------------------------
+
+def test_preview_handoff_happy_path(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "added button"},
+        created_by="alice",
+    ))
+    response = client.get(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/preview"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["handoffId"] == handoff["id"]
+    assert body["toLane"] == "frontend"
+    assert body["displayName"] == "Frontend"
+    assert body["defaultProvider"] == "claude-code"
+    assert body["defaultModel"] == "claude-3-5-sonnet"
+    assert "diff_summary" in body["allowedCommands"] or isinstance(body["allowedCommands"], list)
+    # frontend requires diff_summary and screenshots
+    assert body["requiredCompletionFields"] == ["diff_summary", "screenshots"]
+    assert body["presentFields"] == ["diff_summary"]
+    assert body["missingFields"] == ["screenshots"]
+    assert body["humanApprovalRequired"] is False
+    assert body["hasApprover"] is False
+    assert body["timeoutSeconds"] == 1800
+    assert body["retryPolicy"] == "fixed"
+    assert body["retryMax"] == 1
+
+
+def test_preview_handoff_with_approver(fresh_db):
+    """Preview should set hasApprover=True when payload contains 'approver'."""
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="product",
+        payload={"approver": "lead-dev"},
+        created_by="alice",
+    ))
+    response = client.get(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/preview"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["humanApprovalRequired"] is True
+    assert body["hasApprover"] is True
+    assert body["toLane"] == "product"
+
+
+def test_preview_handoff_not_found(fresh_db):
+    response = client.get(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/preview"
+    )
+    assert response.status_code == 404
+
+
+def test_preview_handoff_wrong_issue_returns_404(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    from db import database as db_module
+    _create_second_issue(db_module.AsyncSessionLocal)
+    response = client.get(
+        f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/preview"
+    )
+    assert response.status_code == 404

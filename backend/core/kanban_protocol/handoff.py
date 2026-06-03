@@ -18,6 +18,12 @@ def _new_id() -> str:
 class HandoffService:
     """Pure status-machine layer. Persistence lives in ``db.repository``."""
 
+    async def _load_or_404(self, handoff_id: str) -> dict:
+        handoff = await repo.get_issue_handoff(handoff_id)
+        if not handoff:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        return handoff
+
     async def create(
         self,
         *,

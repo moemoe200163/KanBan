@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
+from core.kanban_protocol.lanes import get_lane
 from core.kanban_protocol.schemas import (
     HandoffActorRequest,
     HandoffBlockRequest,
@@ -169,3 +170,190 @@ async def complete_handoff(
         )
     except (ValueError, ScopeDeniedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Block endpoint
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/block"
+)
+async def block_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffBlockRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    try:
+        return await _svc.block(
+            handoff_id=handoff_id,
+            actor=body.actor,
+            reason=body.blockReason,
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Unblock endpoint
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/unblock"
+)
+async def unblock_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffActorRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    try:
+        return await _svc.unblock(
+            handoff_id=handoff_id,
+            actor=body.actor,
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Cancel endpoint
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/cancel"
+)
+async def cancel_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffActorRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    try:
+        return await _svc.cancel(
+            handoff_id=handoff_id,
+            actor=body.actor,
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Comment endpoint
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/comment",
+    status_code=201,
+)
+async def comment_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffCommentRequest,
+):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    return await repo.create_issue_comment(
+        issue_id=issue_id,
+        body=body.body,
+        author_id=body.authorId,
+        author_name=body.authorName,
+        comment_type=body.commentType,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Preview endpoint
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/preview"
+)
+async def preview_handoff(board_id: str, issue_id: str, handoff_id: str):
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    lane = get_lane(handoff["toLane"])
+    payload = handoff.get("payload") or {}
+    required = lane.required_completion_fields
+    present_fields = [f for f in required if f in payload]
+    missing_fields = [f for f in required if f not in payload]
+    return HandoffPreviewResponse(
+        handoffId=handoff["id"],
+        toLane=lane.key,
+        displayName=lane.display_name,
+        defaultProvider=lane.default_provider,
+        defaultModel=lane.default_model,
+        allowedCommands=lane.allowed_commands,
+        requiredCompletionFields=required,
+        presentFields=present_fields,
+        missingFields=missing_fields,
+        nextLanes=lane.next_lanes,
+        humanApprovalRequired=lane.human_approval_required,
+        hasApprover=bool("approver" in payload),
+        timeoutSeconds=lane.timeout_seconds,
+        retryPolicy=lane.retry_policy,
+        retryMax=lane.retry_max,
+    )
