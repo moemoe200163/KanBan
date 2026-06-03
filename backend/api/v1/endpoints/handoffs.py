@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
 from core.kanban_protocol.schemas import HandoffCreateRequest
+from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
 
 router = APIRouter()
@@ -39,7 +40,7 @@ async def create_handoff(
             payload=body.payload,
             created_by=body.createdBy,
         )
-    except ValueError as exc:
+    except (ValueError, ScopeDeniedError) as exc:
         # Service-layer validation (unknown lane, scope-denied payload)
         # is a client error, not a server error.
         raise HTTPException(status_code=422, detail=str(exc))
@@ -54,11 +55,15 @@ async def list_handoffs(board_id: str, issue_id: str):
     return {"handoffs": handoffs, "total": len(handoffs)}
 
 
-@router.get("/boards/{board_id}/handoffs/{handoff_id}")
-async def get_handoff(board_id: str, handoff_id: str):
+@router.get("/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}")
+async def get_handoff(board_id: str, issue_id: str, handoff_id: str):
     _check_board(board_id)
     handoff = await repo.get_issue_handoff(handoff_id)
-    if not handoff or handoff["boardId"] != board_id:
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
         raise HTTPException(
             status_code=404, detail=f"Handoff '{handoff_id}' not found"
         )

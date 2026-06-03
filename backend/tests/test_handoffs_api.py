@@ -117,7 +117,7 @@ def test_get_one_handoff(fresh_db):
         created_by="alice",
     ))
     response = client.get(
-        f"/api/v1/boards/board-default/handoffs/{handoff['id']}"
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}"
     )
     assert response.status_code == 200
     assert response.json()["id"] == handoff["id"]
@@ -126,5 +126,35 @@ def test_get_one_handoff(fresh_db):
 def test_unknown_board_id_returns_404(fresh_db):
     response = client.get(
         "/api/v1/boards/some-other-board/issues/issue-api-1/handoffs"
+    )
+    assert response.status_code == 404
+
+
+def test_create_handoff_rejects_denied_payload_key(fresh_db):
+    response = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
+        json={
+            "toLane": "frontend",
+            "payload": {"sandbox_egress": "open"},
+        },
+    )
+    assert response.status_code == 422
+    assert "Scope denied" in response.json()["detail"]
+
+
+def test_get_handoff_rejects_wrong_issue_id(fresh_db):
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    ))
+    # Request with a mismatched issue_id should return 404.
+    response = client.get(
+        f"/api/v1/boards/board-default/issues/wrong-issue/handoffs/{handoff['id']}"
     )
     assert response.status_code == 404
