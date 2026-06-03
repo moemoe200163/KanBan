@@ -723,3 +723,77 @@ def test_preview_handoff_wrong_issue_returns_404(fresh_db):
         f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/preview"
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 7: structured 422 response shape for /complete endpoint
+# ---------------------------------------------------------------------------
+
+import asyncio
+from typing import Optional
+
+
+def _create_and_accept(to_lane: str, initial_payload: Optional[dict] = None) -> dict:
+    """Helper for the new tests: create a handoff and accept it via the service."""
+    create = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
+        json={"toLane": to_lane, "payload": initial_payload or {}},
+    )
+    assert create.status_code == 201, create.text
+    handoff = create.json()
+    asyncio.run(HandoffService().accept(handoff["id"], actor="bob"))
+    return handoff
+
+
+def test_complete_returns_structured_422_on_type_error(fresh_db):
+    """coverage_pct: 'abc' must trigger the typed 422 with detail.lane='qa'."""
+    handoff = _create_and_accept("qa", initial_payload={"test_results": "ok"})
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {"test_results": "ok", "coverage_pct": "abc"}},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "detail" in body
+    assert isinstance(body["detail"], dict)
+    assert body["detail"]["lane"] == "qa"
+    assert body["detail"]["message"].startswith("Validation failed for lane 'qa'")
+    assert isinstance(body["detail"]["errors"], list)
+    assert any(
+        e["loc"] == ["coverage_pct"] for e in body["detail"]["errors"]
+    )
+
+
+def test_complete_returns_422_with_per_field_loc(fresh_db):
+    """Multiple bad fields should all appear in detail.errors[].loc."""
+    handoff = _create_and_accept("qa")
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {}},  # both required fields missing
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["detail"]["lane"] == "qa"
+    locs = {tuple(e["loc"]) for e in body["detail"]["errors"]}
+    assert ("test_results",) in locs
+    assert ("coverage_pct",) in locs
+
+
+def test_complete_existing_422_value_error_unchanged(fresh_db):
+    """Legacy ValueError path (status check) still returns a string detail."""
+    # Create a handoff but DO NOT accept it — completion must 422 with
+    # a string detail (legacy ValueError), not the new structured dict.
+    create = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
+        json={"toLane": "frontend", "payload": {"diff_summary": "x"}},
+    )
+    assert create.status_code == 201
+    handoff = create.json()
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {"diff_summary": "x"}},
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, str)
+    assert "cannot complete" in detail.lower()
