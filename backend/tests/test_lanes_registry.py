@@ -10,7 +10,6 @@ def test_worker_lane_is_immutable():
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=frontend"],
-        required_completion_fields=["diff_summary"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
@@ -35,7 +34,6 @@ def test_worker_lane_holds_all_required_fields():
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/quality-gate --verify"],
-        required_completion_fields=["test_results", "coverage_pct"],
         timeout_seconds=3600,
         retry_policy="exponential",
         retry_max=2,
@@ -88,3 +86,13 @@ def test_lane_next_lanes_reference_existing_lanes():
     for key, lane in WORKER_LANES.items():
         for nxt in lane.next_lanes:
             assert nxt in WORKER_LANES, f"{key} -> {nxt} not in registry"
+
+
+def test_required_completion_fields_matches_payload_schema():
+    """Regression: required_completion_fields must mirror the schema."""
+    from core.kanban_protocol.payloads import LANE_PAYLOADS
+    for key, lane in WORKER_LANES.items():
+        expected = list(LANE_PAYLOADS[key].model_fields.keys())
+        assert lane.required_completion_fields == expected, (
+            f"Lane '{key}' list out of sync with {LANE_PAYLOADS[key].__name__}"
+        )

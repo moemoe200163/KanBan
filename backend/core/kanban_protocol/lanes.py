@@ -14,12 +14,21 @@ class WorkerLane:
     default_provider: str                         # e.g. "claude-code"
     default_model: str                            # e.g. "claude-3-5-sonnet"
     allowed_commands: List[str]
-    required_completion_fields: List[str]
     timeout_seconds: int
     retry_policy: RetryPolicy
     retry_max: int
     next_lanes: List[str]
     human_approval_required: bool
+
+
+@property
+def required_completion_fields(self) -> List[str]:
+    """Derived from LANE_PAYLOADS schema — single source of truth."""
+    from core.kanban_protocol.payloads import LANE_PAYLOADS
+    return list(LANE_PAYLOADS[self.key].model_fields.keys())
+
+
+WorkerLane.required_completion_fields = required_completion_fields
 
 
 WORKER_LANES: dict[str, WorkerLane] = {
@@ -31,7 +40,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=general"],
-        required_completion_fields=["lane_recommendation", "summary"],
         timeout_seconds=900,
         retry_policy="none",
         retry_max=0,
@@ -46,7 +54,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=general"],
-        required_completion_fields=["acceptance_criteria"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
@@ -61,7 +68,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=backend"],
-        required_completion_fields=["design_notes", "interfaces"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
@@ -76,7 +82,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=frontend"],
-        required_completion_fields=["diff_summary", "screenshots"],
         timeout_seconds=1800,
         retry_policy="fixed",
         retry_max=1,
@@ -91,7 +96,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=backend"],
-        required_completion_fields=["diff_summary", "test_results"],
         timeout_seconds=1800,
         retry_policy="fixed",
         retry_max=1,
@@ -106,7 +110,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/quality-gate --verify"],
-        required_completion_fields=["test_results", "coverage_pct"],
         timeout_seconds=3600,
         retry_policy="exponential",
         retry_max=2,
@@ -121,7 +124,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/harness-pause"],
-        required_completion_fields=["reviewer", "decision"],
         timeout_seconds=86400,
         retry_policy="none",
         retry_max=0,
@@ -136,7 +138,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/release-ready --merge"],
-        required_completion_fields=["release_notes"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
