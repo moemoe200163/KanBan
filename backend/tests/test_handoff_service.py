@@ -241,3 +241,42 @@ async def test_dispatch_rejects_non_accepted_handoff(fresh_db):
             profile="frontend",
             actor="bob",
         )
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_when_required_fields_missing(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="qa",
+        payload={},  # missing test_results and coverage_pct
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    with pytest.raises(ValueError) as exc_info:
+        await svc.complete(handoff_id=handoff["id"], actor="bob", payload=None)
+    msg = str(exc_info.value)
+    assert "test_results" in msg
+    assert "coverage_pct" in msg
+
+
+@pytest.mark.asyncio
+async def test_complete_succeeds_with_all_required_fields(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="qa",
+        payload={"test_results": "ok", "coverage_pct": 95},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=handoff["id"], actor="bob", payload=None
+    )
+    assert completed["status"] == "completed"
+    assert completed["completedBy"] == "bob"
+    assert completed["completedAt"] is not None

@@ -103,3 +103,40 @@ class HandoffService:
             actor_value=actor,
         )
         return {"handoff": updated, "job": job}
+
+    async def complete(
+        self,
+        *,
+        handoff_id: str,
+        actor: Optional[str],
+        payload: Optional[dict],
+    ) -> dict:
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] not in ("in_progress", "accepted"):
+            raise ValueError(
+                f"Cannot complete handoff in status '{current['status']}'"
+            )
+
+        lane = get_lane(current["toLane"])
+        merged_payload = dict(current.get("payload") or {})
+        if payload:
+            merged_payload.update(payload)
+        missing = [
+            field for field in lane.required_completion_fields
+            if field not in merged_payload
+        ]
+        if missing:
+            raise ValueError(
+                f"Cannot complete handoff: missing required fields {missing}"
+            )
+
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="completed",
+            payload=merged_payload,
+            actor_field="completed_by",
+            actor_value=actor,
+            set_completed_at=True,
+        )
