@@ -2,7 +2,7 @@
 import { useBoardStore } from '~/stores/board'
 import { useRecentJobs } from '~/composables/useRecentJobs'
 import type { ECCJobStatus } from '~/types'
-import { Activity, CheckCircle2, Clock, Eye, Loader2, Square, XCircle } from 'lucide-vue-next'
+import { Activity, CheckCircle2, Clock, Eye, Loader2, Sparkles, Square, XCircle } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
 const { jobs: recentJobs, isLoading, start, stop } = useRecentJobs({ refreshMs: 4000, limit: 50 })
@@ -56,6 +56,10 @@ const getStatusColor = (status: ECCJobStatus): string => {
 const handleOpenJob = (job: typeof recentJobs.value[0]) => {
   boardStore.openJob(job)
 }
+
+const clearFilter = () => {
+  statusFilter.value = 'all'
+}
 </script>
 
 <template>
@@ -85,9 +89,26 @@ const handleOpenJob = (job: typeof recentJobs.value[0]) => {
       <span>Loading jobs...</span>
     </div>
 
-    <div v-else-if="!filteredJobs.length" class="runs-page__empty">
-      <Activity :size="32" />
+    <div v-else-if="!recentJobs.length" class="runs-page__empty runs-page__empty--guide">
+      <Sparkles :size="36" class="runs-page__empty-icon" />
+      <p>No runs yet</p>
+      <span class="runs-page__empty-hint">
+        Dispatch a job from the Command Center to see it appear here.
+      </span>
+      <NuxtLink to="/command-center" class="runs-page__empty-cta">
+        Go to Command Center
+      </NuxtLink>
+    </div>
+
+    <div v-else-if="!filteredJobs.length" class="runs-page__empty runs-page__empty--guide">
+      <Activity :size="32" class="runs-page__empty-icon" />
       <p>No jobs match this filter</p>
+      <span class="runs-page__empty-hint">
+        Try a different status, or clear the filter to see every run.
+      </span>
+      <button class="runs-page__empty-cta" @click="clearFilter">
+        Show all
+      </button>
     </div>
 
     <div v-else class="runs-page__list">
@@ -141,6 +162,16 @@ const handleOpenJob = (job: typeof recentJobs.value[0]) => {
 .runs-page__filter:hover:not(.runs-page__filter--active) { border-color: var(--primary); color: var(--ink); }
 .runs-page__empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 60px; color: var(--muted); }
 .runs-page__empty p { color: var(--ink); font-weight: 600; }
+.runs-page__empty--guide { gap: 10px; }
+.runs-page__empty-icon { color: var(--muted); opacity: 0.6; }
+.runs-page__empty-hint { color: var(--muted); font-size: 0.8125rem; max-width: 360px; text-align: center; line-height: 1.5; }
+.runs-page__empty-cta {
+  margin-top: 8px; padding: 8px 18px; border-radius: 8px;
+  background: var(--primary); color: var(--on-primary);
+  font-size: 0.8125rem; font-weight: 600; text-decoration: none;
+  border: 1px solid var(--primary); cursor: pointer; transition: opacity 150ms;
+}
+.runs-page__empty-cta:hover { opacity: 0.88; }
 .runs-page__list { display: flex; flex-direction: column; gap: 6px; }
 .run-row {
   display: flex; align-items: center; gap: 12px;

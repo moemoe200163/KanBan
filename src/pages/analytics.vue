@@ -63,7 +63,11 @@ const currentRangeLabel = computed(() => {
   return `${from} \u2014 ${to}`
 })
 
+const isLoadingStats = ref(false)
+const hasFetchedStats = ref(false)
+
 const fetchStats = async () => {
+  isLoadingStats.value = true
   try {
     const params = new URLSearchParams()
     if (dateFrom.value) params.set('date_from', toISOString(dateFrom.value))
@@ -74,6 +78,9 @@ const fetchStats = async () => {
     if (res.ok) stats.value = await res.json()
   } catch {
     // fallback to board store
+  } finally {
+    isLoadingStats.value = false
+    hasFetchedStats.value = true
   }
 }
 
@@ -158,6 +165,16 @@ const priorityStats = computed(() => {
   if (!stats.value?.issues.byPriority) return []
   return Object.entries(stats.value.issues.byPriority).sort((a, b) => b[1] - a[1])
 })
+
+// True when there's nothing to report on: the API didn't return data, the
+// board store has no columns, and the job list is empty. We only show the
+// page-level empty state after the initial fetch settles, otherwise a
+// freshly-mounted page would flash "no data" before the network response.
+const isPageEmpty = computed(() => {
+  if (!hasFetchedStats.value || isLoadingStats.value) return false
+  if (stats.value) return false
+  return totalIssues.value === 0 && jobStats.value.total === 0
+})
 </script>
 
 <template>
@@ -191,7 +208,19 @@ const priorityStats = computed(() => {
       <div v-if="currentRangeLabel" class="analytics-page__range-label">{{ currentRangeLabel }}</div>
     </div>
 
-    <div class="analytics-page__grid">
+    <div v-if="isPageEmpty" class="analytics-page__empty">
+      <BarChart3 :size="40" class="analytics-page__empty-icon" />
+      <p>No analytics yet</p>
+      <span class="analytics-page__empty-hint">
+        Board stats, job metrics, and AI performance will appear here once
+        your team starts dispatching jobs.
+      </span>
+      <NuxtLink to="/command-center" class="analytics-page__empty-cta">
+        Go to Command Center
+      </NuxtLink>
+    </div>
+
+    <div v-else class="analytics-page__grid">
       <!-- Enhanced KPI Cards -->
       <div class="kpi-row">
         <div class="kpi-card">
@@ -408,4 +437,20 @@ const priorityStats = computed(() => {
 .analytics-page__range-label {
   color: var(--muted); font-size: 0.75rem; font-family: var(--font-mono);
 }
+
+.analytics-page__empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 80px 20px; text-align: center; color: var(--muted);
+  background: var(--surface-card); border: 1px solid var(--hairline); border-radius: 12px;
+}
+.analytics-page__empty-icon { color: var(--muted); opacity: 0.6; }
+.analytics-page__empty p { color: var(--ink); font-weight: 600; font-size: 1rem; }
+.analytics-page__empty-hint { color: var(--muted); font-size: 0.8125rem; max-width: 400px; line-height: 1.5; }
+.analytics-page__empty-cta {
+  margin-top: 8px; padding: 8px 18px; border-radius: 8px;
+  background: var(--primary); color: var(--on-primary);
+  font-size: 0.8125rem; font-weight: 600; text-decoration: none;
+  border: 1px solid var(--primary); cursor: pointer; transition: opacity 150ms;
+}
+.analytics-page__empty-cta:hover { opacity: 0.88; }
 </style>
