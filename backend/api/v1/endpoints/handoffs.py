@@ -15,6 +15,7 @@ from core.kanban_protocol.schemas import (
     HandoffDispatchRequest,
     HandoffPreviewResponse,
 )
+from core.kanban_protocol.payloads import PayloadValidationError
 from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
 
@@ -156,6 +157,15 @@ async def complete_handoff(
             handoff_id=handoff_id,
             actor=body.actor,
             payload=body.payload,
+        )
+    except PayloadValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Validation failed for lane '{exc.lane}'",
+                "lane": exc.lane,
+                "errors": exc.errors,
+            },
         )
     except (ValueError, ScopeDeniedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
