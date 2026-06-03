@@ -302,3 +302,74 @@ async def test_complete_merges_existing_and_new_payload(fresh_db):
     assert completed["payload"]["test_results"] == "ok"   # preserved
     assert completed["payload"]["coverage_pct"] == 95     # added
     assert completed["payload"]["extra_meta"] == "x"      # added
+
+
+@pytest.mark.asyncio
+async def test_block_rejects_empty_reason(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    )
+    with pytest.raises(ValueError):
+        await svc.block(handoff_id=handoff["id"], actor="bob", reason="")
+
+
+@pytest.mark.asyncio
+async def test_block_and_unblock_round_trip(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    )
+    blocked = await svc.block(
+        handoff_id=handoff["id"], actor="bob", reason="CI red"
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["blockReason"] == "CI red"
+    # unblock returns to the last non-terminal state (pending by default).
+    restored = await svc.unblock(handoff_id=handoff["id"], actor="bob")
+    assert restored["status"] == "pending"
+    assert restored["blockReason"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_allowed_from_non_terminal_state(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    cancelled = await svc.cancel(handoff_id=handoff["id"], actor="bob")
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["cancelledBy"] == "bob"
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejected_from_completed_state(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "ok", "screenshots": "ok"},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    await svc.complete(handoff_id=handoff["id"], actor="bob", payload=None)
+    with pytest.raises(ValueError):
+        await svc.cancel(handoff_id=handoff["id"], actor="bob")

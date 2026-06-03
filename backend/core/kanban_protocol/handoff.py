@@ -141,3 +141,51 @@ class HandoffService:
             actor_value=actor,
             set_completed_at=True,
         )
+
+    async def block(self, *, handoff_id: str, actor: Optional[str], reason: str) -> dict:
+        if not reason or not reason.strip():
+            raise ValueError("block_reason must be a non-empty string")
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] in ("completed", "cancelled"):
+            raise ValueError(
+                f"Cannot block handoff in terminal status '{current['status']}'"
+            )
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="blocked",
+            block_reason=reason,
+        )
+
+    async def unblock(self, *, handoff_id: str, actor: Optional[str]) -> dict:
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] != "blocked":
+            raise ValueError(
+                f"Cannot unblock handoff in status '{current['status']}'"
+            )
+        # MVP: return to the last non-blocked state. Without history
+        # tracking, the safe assumption is that we came from 'pending'
+        # or 'accepted'. We pick 'pending' so the human re-evaluates.
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="pending",
+            block_reason=None,
+        )
+
+    async def cancel(self, *, handoff_id: str, actor: Optional[str]) -> dict:
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] in ("completed", "cancelled"):
+            raise ValueError(
+                f"Cannot cancel handoff in terminal status '{current['status']}'"
+            )
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="cancelled",
+            actor_field="cancelled_by",
+            actor_value=actor,
+        )
