@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * /lanes — Redirect to /agents/roles (backward compatibility)
+ * /lanes — Redirect to /agents?tab=roles (backward compatibility)
  */
-navigateTo('/agents/roles')
+navigateTo('/agents?tab=roles')
 </script>
