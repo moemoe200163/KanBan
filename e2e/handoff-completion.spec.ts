@@ -122,3 +122,26 @@ test.describe('Handoff completion with required fields', () => {
     await expect(page.getByText('Completed')).toHaveCount(0)
   })
 })
+
+test('Backend rejects bad coverage_pct with structured 422 (P1.5 regression)', async ({ request, isMobile }) => {
+  test.skip(isMobile, 'desktop-only API regression')
+
+  const title = `E2E qa bad coverage ${Date.now()}`
+  const issue = await createIssue(request, { title, status: 'backlog', profile: 'general' })
+  const handoff = await createAcceptedHandoff(request, issue.id, 'qa')
+
+  // The lane requires test_results + coverage_pct. Sending coverage_pct
+  // out of range exercises the typed contract end-to-end.
+  const response = await request.post(
+    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
+    { data: { actor: 'e2e', payload: { test_results: 'ok', coverage_pct: 150 } } }
+  )
+  expect(response.status()).toBe(422)
+  const body = await response.json()
+  expect(body.detail).toBeTruthy()
+  expect(body.detail.lane).toBe('qa')
+  expect(Array.isArray(body.detail.errors)).toBe(true)
+  expect(body.detail.errors.some(
+    (e: any) => Array.isArray(e.loc) && e.loc[0] === 'coverage_pct'
+  )).toBe(true)
+})
