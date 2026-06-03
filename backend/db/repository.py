@@ -712,7 +712,6 @@ async def create_issue_handoff(
     created_by: Optional[str],
 ) -> dict:
     """Insert a new IssueHandoff in 'pending' status and return its dict form."""
-    from db.database import AsyncSessionLocal
     from db.models import IssueHandoff
 
     row = IssueHandoff(
@@ -725,7 +724,8 @@ async def create_issue_handoff(
         payload=payload or {},
         created_by=created_by,
     )
-    async with AsyncSessionLocal() as session:
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
         session.add(row)
         await session.commit()
         await session.refresh(row)
@@ -733,12 +733,16 @@ async def create_issue_handoff(
 
 
 async def get_issue_handoff(handoff_id: str) -> Optional[dict]:
-    from db.database import AsyncSessionLocal
     from db.models import IssueHandoff
 
-    async with AsyncSessionLocal() as session:
-        row = await session.get(IssueHandoff, handoff_id)
-    return row.to_dict() if row else None
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(IssueHandoff, handoff_id)
+        return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get issue handoff {handoff_id}: {e}")
+        return None
 
 
 async def list_issue_handoffs(
@@ -748,20 +752,24 @@ async def list_issue_handoffs(
     limit: int = 100,
 ) -> list[dict]:
     from sqlalchemy import select
-    from db.database import AsyncSessionLocal
     from db.models import IssueHandoff
 
-    async with AsyncSessionLocal() as session:
-        stmt = (
-            select(IssueHandoff)
-            .where(IssueHandoff.issue_id == issue_id)
-            .where(IssueHandoff.board_id == board_id)
-            .order_by(IssueHandoff.created_at.desc())
-            .limit(limit)
-        )
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
-    return [r.to_dict() for r in rows]
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueHandoff)
+                .where(IssueHandoff.issue_id == issue_id)
+                .where(IssueHandoff.board_id == board_id)
+                .order_by(IssueHandoff.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+        return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list issue handoffs for {issue_id}/{board_id}: {e}")
+        return []
 
 
 async def update_issue_handoff(
@@ -776,10 +784,10 @@ async def update_issue_handoff(
 ) -> Optional[dict]:
     """Update a handoff's status and optional audit fields."""
     from datetime import datetime, timezone
-    from db.database import AsyncSessionLocal
     from db.models import IssueHandoff
 
-    async with AsyncSessionLocal() as session:
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
         row = await session.get(IssueHandoff, handoff_id)
         if not row:
             return None
