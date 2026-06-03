@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * LaneMatrix — grid view of the 8 Kanban Protocol worker lanes.
+ * AgentRoleMatrix — grid view of the 8 Kanban Protocol agent roles.
  *
- * Shows each lane's display name, status, allowed profiles, and
- * whether a handoff is currently active in that lane.
+ * Shows each role's display name, status, allowed profiles, and
+ * whether a handoff is currently active in that role.
  */
 
 import type { WorkerLane, Handoff } from '~/types'

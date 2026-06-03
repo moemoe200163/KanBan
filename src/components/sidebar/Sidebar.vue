@@ -38,9 +38,9 @@ watch(isCollapsed, (val) => emit('collapsed', val), { immediate: true })
 const navItems = [
   { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban', to: '/' },
   { id: 'command-center', icon: Terminal, label: 'Command Center', meta: 'ECC', to: '/command-center' },
-  { id: 'lanes', icon: CircleDot, label: 'Lanes', meta: 'Protocol', to: '/lanes' },
-  { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
+  { id: 'agent-roles', icon: CircleDot, label: 'Agent Roles', meta: 'Routing', to: '/agents/roles' },
   { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
+  { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
   { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
   { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
   { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow', to: '/analytics' },

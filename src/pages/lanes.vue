@@ -1,66 +1,6 @@
 <script setup lang="ts">
 /**
- * /lanes — Kanban Protocol worker lane overview page.
- *
- * Displays the LaneMatrix grid showing all 8 worker lanes, their
- * status, and active handoff counts.
+ * /lanes — Redirect to /agents/roles (backward compatibility)
  */
-
-import { useBoardStore } from '~/stores/board'
-import type { WorkerLane, Handoff } from '~/types'
-
-const boardStore = useBoardStore()
-const lanes = ref<WorkerLane[]>([])
-const handoffs = ref<Handoff[]>([])
-
-onMounted(async () => {
-  const config = useRuntimeConfig()
-
-  // Fetch lanes and active handoffs in parallel
-  const [lanesRes, boardRes] = await Promise.allSettled([
-    $fetch<{ lanes: WorkerLane[] }>(`${config.public.apiBase}/lanes`),
-    boardStore.fetchBoard(),
-  ])
-
-  if (lanesRes.status === 'fulfilled') {
-    lanes.value = lanesRes.value.lanes
-  }
-
-  // Collect all non-terminal handoffs from all issues
-  const allIssues = boardStore.columns.flatMap(c => c.issues)
-  const handoffResults = await Promise.allSettled(
-    allIssues.map(async (issue) => {
-      const res = await $fetch<{ handoffs: Handoff[] }>(
-        `${config.public.apiBase}/boards/board-default/issues/${issue.id}/handoffs`,
-      )
-      return res.handoffs
-    }),
-  )
-
-  handoffs.value = handoffResults
-    .filter((r): r is PromiseFulfilledResult<Handoff[]> => r.status === 'fulfilled')
-    .flatMap(r => r.value)
-})
+navigateTo('/agents/roles')
 </script>
-
-<template>
-  <div class="p-6 max-w-5xl mx-auto space-y-6">
-    <div>
-      <h1 class="text-lg font-medium text-zinc-200">Worker Lanes</h1>
-      <p class="text-sm text-zinc-500 mt-1">
-        Kanban Protocol agent routing lanes. Each lane defines allowed
-        profiles, completion requirements, and approval policies.
-      </p>
-    </div>
-
-    <LaneMatrix
-      v-if="lanes.length > 0"
-      :lanes="lanes"
-      :handoffs="handoffs"
-    />
-
-    <p v-else class="text-sm text-zinc-600 italic">
-      Loading lanes from backend...
-    </p>
-  </div>
-</template>

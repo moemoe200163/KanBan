@@ -114,7 +114,7 @@ async function handleCancel(handoffId: string) {
         v-model="targetLane"
         class="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-500"
       >
-        <option value="" disabled>Select target lane</option>
+        <option value="" disabled>Select target role</option>
         <option
           v-for="lane in lanes"
           :key="lane.key"
