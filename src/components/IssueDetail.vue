@@ -3,6 +3,8 @@ import { useBoardStore } from '~/stores/board'
 import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
 import type { ECCLogEntry } from '~/types'
 import { Bot, FileText, X } from 'lucide-vue-next'
+import IssueCollaborationTab from './IssueCollaborationTab.vue'
+import HandoffSection from './lane/HandoffSection.vue'
 
 const boardStore = useBoardStore()
 
@@ -54,7 +56,7 @@ const close = () => {
   boardStore.closeDetail()
 }
 
-const setTab = (tab: 'overview' | 'ecc-logs' | 'diff') => {
+const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs') => {
   boardStore.setDetailTab(tab)
 }
 
@@ -239,6 +241,21 @@ onUnmounted(() => {
               Diff / PR
               <span v-if="issue.prDetails" class="issue-detail__tab-badge issue-detail__tab-badge--accent">
                 PR #{{ issue.prDetails.number }}
+              </span>
+            </button>
+            <button
+              :class="['issue-detail__tab', { 'issue-detail__tab--active': activeTab === 'collaboration' }]"
+              @click="setTab('collaboration')"
+            >
+              Notes
+            </button>
+            <button
+              :class="['issue-detail__tab', { 'issue-detail__tab--active': activeTab === 'handoffs' }]"
+              @click="setTab('handoffs')"
+            >
+              Handoffs
+              <span v-if="issue.handoffs?.length" class="issue-detail__tab-badge">
+                {{ issue.handoffs.length }}
               </span>
             </button>
           </div>
@@ -579,6 +596,14 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <!-- Collaboration Tab -->
+            <div v-if="activeTab === 'collaboration'" class="issue-detail__tab-pane">
+              <IssueCollaborationTab :issue-id="issue.id" />
+            </div>
+            <div v-if="activeTab === 'handoffs'" class="issue-detail__tab-pane">
+              <HandoffSection />
             </div>
           </div>
         </div>

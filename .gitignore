@@ -26,3 +26,7 @@ devflow_e2e.db
 .mypy_cache/
 .DS_Store
 .playwright-mcp/
+.venv/
+venv/
+*.egg-info/
+.claude/

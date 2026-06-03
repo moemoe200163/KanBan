@@ -2,6 +2,7 @@
 import { useBoardStore } from '~/stores/board'
 import { useDarkMode } from '~/composables/useDarkMode'
 import { useRecentJobs } from '~/composables/useRecentJobs'
+import { useI18n } from '~/composables/useI18n'
 import {
   Activity,
   BarChart3,
@@ -11,7 +12,6 @@ import {
   ChevronRight,
   Circle,
   ClipboardList,
-  CircleDot,
   Columns3,
   GitPullRequest,
   ListChecks,
@@ -27,6 +27,7 @@ import {
 
 const boardStore = useBoardStore()
 const { isDark, toggleDark } = useDarkMode()
+const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const isCollapsed = ref(false)
@@ -35,22 +36,22 @@ const emit = defineEmits<{ collapsed: [value: boolean] }>()
 
 watch(isCollapsed, (val) => emit('collapsed', val), { immediate: true })
 
-const navItems = [
-  { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban', to: '/' },
-  { id: 'command-center', icon: Terminal, label: 'Command Center', meta: 'ECC', to: '/command-center' },
-  { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
-  { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
-  { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
-  { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
-  { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow', to: '/analytics' },
-  { id: 'activity', icon: ClipboardList, label: 'Activity Log', meta: 'Audit', to: '/activity' },
-  { id: 'settings', icon: Settings, label: 'Settings', meta: 'System', to: '/settings' }
-]
+const navItems = computed(() => [
+  { id: 'board', icon: Columns3, label: t('sidebar.board'), meta: 'Kanban', to: '/' },
+  { id: 'command-center', icon: Terminal, label: t('sidebar.commandCenter'), meta: 'ECC', to: '/command-center' },
+  { id: 'agents', icon: Bot, label: t('sidebar.agents'), meta: 'Runners', to: '/agents' },
+  { id: 'backlog', icon: ListChecks, label: t('sidebar.backlog'), meta: 'Triage', to: '/backlog' },
+  { id: 'runs', icon: Activity, label: t('sidebar.runs'), meta: 'Logs', to: '/runs' },
+  { id: 'webhooks', icon: Webhook, label: t('sidebar.webhooks'), meta: 'Events', to: '/settings/webhooks' },
+  { id: 'analytics', icon: BarChart3, label: t('sidebar.analytics'), meta: 'Flow', to: '/analytics' },
+  { id: 'activity', icon: ClipboardList, label: t('sidebar.activityLog'), meta: 'Audit', to: '/activity' },
+  { id: 'settings', icon: Settings, label: t('sidebar.settings'), meta: 'System', to: '/settings' }
+])
 
 const activeNav = computed(() => {
   const path = route.path
   if (path === '/') return 'board'
-  const match = navItems.find(item => item.to !== '/' && path.startsWith(item.to))
+  const match = navItems.value.find(item => item.to !== '/' && path.startsWith(item.to))
   return match?.id ?? 'board'
 })
 
@@ -163,7 +164,7 @@ const toggleCollapse = () => {
       </div>
       <div class="sidebar__brand-copy" v-show="!isCollapsed">
         <strong>DevFlow</strong>
-        <span>AI Control Plane</span>
+        <span>{{ t('sidebar.controlPlane') }}</span>
       </div>
     </div>
 
@@ -175,7 +176,7 @@ const toggleCollapse = () => {
     <div class="sidebar__content">
       <!-- Navigation -->
       <section class="sidebar__section">
-        <p class="sidebar__eyebrow" v-show="!isCollapsed">Workspace</p>
+        <p class="sidebar__eyebrow" v-show="!isCollapsed">{{ t('sidebar.workspace') }}</p>
         <nav class="sidebar__nav" aria-label="Primary">
           <button
             v-for="item in navItems"
@@ -194,26 +195,26 @@ const toggleCollapse = () => {
 
       <!-- Control Plane Status -->
       <section class="sidebar__section">
-        <h3 class="sidebar__heading" v-show="!isCollapsed">Control Plane</h3>
+        <h3 class="sidebar__heading" v-show="!isCollapsed">{{ t('sidebar.controlPlane') }}</h3>
         <div class="control-status">
           <div class="control-status__row">
             <Radio :size="15" />
-            <span v-show="!isCollapsed">Backend</span>
+            <span v-show="!isCollapsed">{{ t('sidebar.backend') }}</span>
             <strong>Local</strong>
           </div>
           <div class="control-status__row">
             <Bot :size="15" />
-            <span v-show="!isCollapsed">Active runs</span>
+            <span v-show="!isCollapsed">{{ t('sidebar.activeRuns') }}</span>
             <strong>{{ activeRuns }}</strong>
           </div>
           <div class="control-status__row">
             <ShieldCheck :size="15" />
-            <span v-show="!isCollapsed">Review</span>
+            <span v-show="!isCollapsed">{{ t('sidebar.review') }}</span>
             <strong>{{ reviewCount }}</strong>
           </div>
           <div class="control-status__row">
             <GitPullRequest :size="15" />
-            <span v-show="!isCollapsed">Blocked</span>
+            <span v-show="!isCollapsed">{{ t('sidebar.blocked') }}</span>
             <strong>{{ blockedCount }}</strong>
           </div>
         </div>
@@ -221,14 +222,14 @@ const toggleCollapse = () => {
 
       <!-- Board Stats -->
       <section class="sidebar__section" v-show="!isCollapsed">
-        <h3 class="sidebar__heading">Board Stats</h3>
+        <h3 class="sidebar__heading">{{ t('sidebar.boardStats') }}</h3>
         <div class="board-stats">
           <div
             v-for="(count, status) in boardStats"
             :key="status"
             class="board-stats__row"
           >
-            <span class="board-stats__label">{{ status.replace('_', ' ') }}</span>
+            <span class="board-stats__label">{{ t(`status.${status}`) }}</span>
             <span class="board-stats__count">{{ count }}</span>
           </div>
         </div>
@@ -236,12 +237,12 @@ const toggleCollapse = () => {
 
       <!-- Recent Jobs -->
       <section class="sidebar__section sidebar__section--jobs" v-show="!isCollapsed">
-        <h3 class="sidebar__heading">Recent Jobs</h3>
+        <h3 class="sidebar__heading">{{ t('sidebar.recentJobs') }}</h3>
         <div v-if="boardStore.isLoadingJobs" class="sidebar__loading">
-          Loading...
+          {{ t('sidebar.loading') }}
         </div>
         <div v-else-if="boardStore.recentJobs.length === 0" class="sidebar__empty">
-          No recent jobs
+          {{ t('sidebar.noRecentJobs') }}
         </div>
         <div v-else class="job-list">
           <button
@@ -259,7 +260,7 @@ const toggleCollapse = () => {
             />
             <div class="job-item__info">
               <span class="job-item__key">{{ job.issue_key }}</span>
-              <span class="job-item__message">{{ job.message || 'No message yet' }}</span>
+              <span class="job-item__message">{{ job.message || t('sidebar.noMessage') }}</span>
               <span class="job-item__time">{{ formatTimeAgo(job.updated_at) }}</span>
             </div>
             <span class="job-item__status">{{ job.status }}</span>
@@ -273,14 +274,14 @@ const toggleCollapse = () => {
       <div class="harness-card" v-show="!isCollapsed">
         <CheckCircle2 :size="16" />
         <div>
-          <span>Harness</span>
+          <span>{{ t('sidebar.harness') }}</span>
           <strong>{{ boardStore.activeHarness }}</strong>
         </div>
       </div>
-      <button class="theme-button" :title="isDark ? 'Light mode' : 'Dark mode'" @click="toggleDark">
+      <button class="theme-button" :title="isDark ? t('sidebar.light') : t('sidebar.dark')" @click="toggleDark">
         <Sun v-if="isDark" :size="18" />
         <Moon v-else :size="18" />
-        <span v-show="!isCollapsed">{{ isDark ? 'Light' : 'Dark' }}</span>
+        <span v-show="!isCollapsed">{{ isDark ? t('sidebar.light') : t('sidebar.dark') }}</span>
       </button>
     </div>
   </aside>

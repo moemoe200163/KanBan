@@ -25,6 +25,8 @@ export interface ECCJobEvent {
   message: string
 }
 
+export type ExecutionMode = 'safe-runner' | 'api-agent' | 'cli-agent'
+
 export interface ECCDispatchJob {
   id: string
   issue_id: string
@@ -37,6 +39,10 @@ export interface ECCDispatchJob {
   updated_at: string
   message: string | null
   events: ECCJobEvent[]
+  // MVP 2: Provider/Model execution config
+  provider?: string | null
+  model?: string | null
+  execution_mode?: ExecutionMode | null
 }
 
 export interface ECCCommandDraft {
@@ -44,6 +50,9 @@ export interface ECCCommandDraft {
   command: string
   profile: ECCProfile
   harness: HarnessType
+  provider?: string
+  model?: string
+  execution_mode?: ExecutionMode
   note?: string
 }
 
@@ -126,6 +135,47 @@ export interface AuditLogEntry {
   timestamp: string
 }
 
+// P2: Issue Collaboration Records
+
+export interface IssueEvent {
+  id: string
+  issueId: string
+  eventType: string
+  actorId: string | null
+  actorName: string | null
+  summary: string | null
+  details: Record<string, unknown>
+  createdAt: string
+}
+
+export interface IssueComment {
+  id: string
+  issueId: string
+  authorId: string | null
+  authorName: string | null
+  body: string
+  commentType: 'comment' | 'note' | 'decision' | 'review' | 'handoff'
+  metadata: Record<string, unknown>
+  createdAt: string
+  updatedAt: string | null
+}
+
+export interface IssueArtifact {
+  id: string
+  issueId: string
+  jobId: string | null
+  title: string
+  artifactType: 'file' | 'screenshot' | 'test_log' | 'pr_link' | 'design_doc' | 'diff_summary' | 'command_output'
+  source: string | null
+  pathOrUrl: string | null
+  sensitivity: 'public' | 'internal' | 'confidential' | 'secret'
+  summary: string | null
+  metadata: Record<string, unknown>
+  createdById: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
 // Issue Interface
 export interface Issue {
   id: string
@@ -155,6 +205,7 @@ export interface Issue {
   prDetails: PRDetails | null
   moveStatus: MoveStatus
   moveError: string | null
+  handoffs: Handoff[]
   createdAt: string
   updatedAt: string
 }
@@ -173,7 +224,7 @@ export interface BoardState {
   isLoading: boolean
   selectedIssue: Issue | null
   isDetailOpen: boolean
-  activeDetailTab: 'overview' | 'ecc-logs' | 'diff'
+  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs'
   jobs: ECCDispatchJob[]
   selectedJob: ECCDispatchJob | null
   isLoadingJobs: boolean
@@ -245,6 +296,85 @@ export const HARNESS_CONFIGS: HarnessConfig[] = [
   { type: 'opencode', name: 'OpenCode', icon: 'opencode', color: '#8C8279', available: false },
   { type: 'gemini', name: 'Gemini', icon: 'google', color: '#C67B4E', available: false }
 ]
+
+// ============================================================================
+// Kanban Protocol — Handoff Types
+// ============================================================================
+
+export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled'
+
+export type RetryPolicy = 'none' | 'fixed' | 'exponential'
+
+export interface Handoff {
+  id: string
+  boardId: string
+  issueId: string
+  fromLane: string | null
+  toLane: string
+  status: HandoffStatus
+  payload: Record<string, unknown>
+  blockReason: string | null
+  createdBy: string | null
+  acceptedBy: string | null
+  dispatchedBy: string | null
+  completedBy: string | null
+  cancelledBy: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
+
+export interface WorkerLane {
+  key: string
+  displayName: string
+  description: string
+  allowedProfiles: string[]
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+  nextLanes: string[]
+  humanApprovalRequired: boolean
+}
+
+export interface HandoffPreview {
+  handoffId: string
+  toLane: string
+  displayName: string
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  presentFields: string[]
+  missingFields: string[]
+  nextLanes: string[]
+  humanApprovalRequired: boolean
+  hasApprover: boolean
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+}
+
+export interface HandoffCreateRequest {
+  fromLane?: string | null
+  toLane: string
+  payload?: Record<string, unknown>
+  createdBy?: string | null
+}
+
+export interface HandoffDispatchRequest {
+  issueKey: string
+  profile: string
+  actor?: string | null
+}
+
+export interface HandoffBlockRequest {
+  actor?: string | null
+  blockReason: string
+}
 
 // ============================================================================
 // LLM Provider System

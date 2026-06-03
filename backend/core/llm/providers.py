@@ -72,12 +72,12 @@ PROVIDERS: List[LLMProviderDef] = [
     LLMProviderDef(
         id="minimax",
         name="MiniMax",
-        adapter="api-chat",
+        adapter="anthropic-compatible",
         capabilities=["chat", "code", "streaming"],
         auth_type="api_key",
-        auth_env_var="MINIMAX_API_KEY",
-        default_model="MiniMax-M1",
-        models=["MiniMax-M1", "abab7-chat"],
+        auth_env_var="ANTHROPIC_AUTH_TOKEN",
+        default_model="MiniMax-M3",
+        models=["MiniMax-M3"],
     ),
     LLMProviderDef(
         id="claude-code",

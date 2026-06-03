@@ -56,6 +56,14 @@ def list_providers() -> List[dict]:
         if p.adapter == "local-safe-runner":
             configured = True
             health = "healthy"
+        elif p.adapter == "anthropic-compatible":
+            # Anthropic-compatible adapters need both AUTH_TOKEN and BASE_URL
+            base_url_set = bool(os.environ.get("ANTHROPIC_BASE_URL", ""))
+            if configured and not base_url_set:
+                configured = False
+                error = "Set ANTHROPIC_BASE_URL to configure"
+            elif not configured:
+                error = f"Set {env_var} to configure" if env_var else None
         elif not configured:
             health = "unknown"
             error = f"Set {env_var} to configure" if env_var else None
@@ -152,6 +160,15 @@ def check_health(provider_id: str) -> dict:
         return {"status": "healthy", "error": None, "lastChecked": None}
 
     configured, _, env_var = _check_env(p.auth_env_var)
+
+    # Anthropic-compatible adapters also need ANTHROPIC_BASE_URL
+    if p.adapter == "anthropic-compatible" and configured:
+        if not os.environ.get("ANTHROPIC_BASE_URL", ""):
+            return {
+                "status": "unhealthy",
+                "error": "Missing ANTHROPIC_BASE_URL",
+                "lastChecked": None,
+            }
     if not configured:
         return {
             "status": "unhealthy",

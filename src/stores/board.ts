@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
-import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile } from '~/types'
+import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile, Handoff, HandoffCreateRequest, HandoffDispatchRequest } from '~/types'
 import { COLUMN_CONFIG, ECC_COMMAND_MAP } from '~/types'
 import { useECCStreamSingleton } from '~/composables/useECCStream'
 import { useDependencyGraph } from '~/composables/useDependencyGraph'
 import { useFeedbackLoop } from '~/composables/useFeedbackLoop'
+import { useKanbanProtocol } from '~/composables/useKanbanProtocol'
 
 // Generate edge-case rich mock data
 const generateMockIssues = (): Issue[] => ([
@@ -39,6 +40,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-20T08:00:00Z',
     updatedAt: '2026-05-28T14:00:00Z'
   },
@@ -99,6 +101,7 @@ const generateMockIssues = (): Issue[] => ([
     },
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-25T08:00:00Z',
     updatedAt: '2026-05-30T10:00:05Z'
   },
@@ -130,6 +133,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-26T08:00:00Z',
     updatedAt: '2026-05-29T14:00:00Z'
   },
@@ -163,6 +167,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-26T08:00:00Z',
     updatedAt: '2026-05-29T14:05:00Z'
   },
@@ -220,6 +225,7 @@ const generateMockIssues = (): Issue[] => ([
     },
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-27T08:00:00Z',
     updatedAt: '2026-05-29T16:01:00Z'
   },
@@ -252,6 +258,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   },
@@ -290,6 +297,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-29T09:15:05Z'
   },
@@ -319,6 +327,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   },
@@ -348,6 +357,7 @@ const generateMockIssues = (): Issue[] => ([
     prDetails: null,
     moveStatus: 'idle',
     moveError: null,
+    handoffs: [],
     createdAt: '2026-05-28T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z'
   }
@@ -911,6 +921,9 @@ export const useBoardStore = defineStore('board', {
       command: string
       profile: ECCProfile
       harness: HarnessType
+      provider?: string
+      model?: string
+      execution_mode?: string
     }): Promise<ECCDispatchJob | null> {
       try {
         const config = useRuntimeConfig()
@@ -921,7 +934,10 @@ export const useBoardStore = defineStore('board', {
             issue_key: payload.issueKey,
             command: payload.command,
             profile: payload.profile,
-            harness: payload.harness
+            harness: payload.harness,
+            provider: payload.provider || null,
+            model: payload.model || null,
+            execution_mode: payload.execution_mode || null
           }
         })
         this.fetchJobs()
@@ -1241,7 +1257,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       this.selectedJob = null
     },
 
-    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff') {
+    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs') {
       this.activeDetailTab = tab
     },
 
@@ -1339,6 +1355,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           prDetails: null,
           moveStatus: 'idle',
           moveError: null,
+          handoffs: [],
           createdAt: job.created_at,
           updatedAt: job.updated_at
         })
@@ -1426,6 +1443,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           prDetails: null,
           moveStatus: 'idle',
           moveError: null,
+          handoffs: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }
@@ -1603,6 +1621,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         prDetails: null,
         moveStatus: 'idle',
         moveError: null,
+        handoffs: [],
         createdAt: job.created_at,
         updatedAt: job.updated_at
       }
@@ -1637,6 +1656,123 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         return job
       } catch (error) {
         console.warn('[BoardStore] retryJob failed:', error)
+        return null
+      }
+    },
+
+    // ------------------------------------------------------------------
+    // Kanban Protocol — Handoff actions
+    // ------------------------------------------------------------------
+
+    /** Find the in-memory issue by ID and return its composable handle. */
+    _handoffCtx(issueId: string) {
+      const issue = this.columns
+        .flatMap(c => c.issues)
+        .find(i => i.id === issueId)
+      if (!issue) return null
+      return { issue, api: useKanbanProtocol(issueId) }
+    },
+
+    async fetchHandoffs(issueId: string): Promise<Handoff[]> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return []
+      try {
+        const { handoffs } = await ctx.api.listHandoffs()
+        ctx.issue.handoffs = handoffs
+        return handoffs
+      } catch (e) {
+        console.warn('[BoardStore] fetchHandoffs failed:', e)
+        return []
+      }
+    },
+
+    async createHandoff(issueId: string, req: HandoffCreateRequest): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.createHandoff(req)
+        ctx.issue.handoffs = [...ctx.issue.handoffs, h]
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] createHandoff failed:', e)
+        return null
+      }
+    },
+
+    async acceptHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.acceptHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] acceptHandoff failed:', e)
+        return null
+      }
+    },
+
+    async dispatchHandoff(issueId: string, handoffId: string, req: HandoffDispatchRequest): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const { handoff } = await ctx.api.dispatchHandoff(handoffId, req)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? handoff : x)
+        return handoff
+      } catch (e) {
+        console.warn('[BoardStore] dispatchHandoff failed:', e)
+        return null
+      }
+    },
+
+    async completeHandoff(issueId: string, handoffId: string, payload?: Record<string, unknown>, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.completeHandoff(handoffId, payload, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] completeHandoff failed:', e)
+        return null
+      }
+    },
+
+    async blockHandoff(issueId: string, handoffId: string, reason: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.blockHandoff(handoffId, reason, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] blockHandoff failed:', e)
+        return null
+      }
+    },
+
+    async unblockHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.unblockHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] unblockHandoff failed:', e)
+        return null
+      }
+    },
+
+    async cancelHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.cancelHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] cancelHandoff failed:', e)
         return null
       }
     }

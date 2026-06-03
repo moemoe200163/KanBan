@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     Integer,
     Index,
+    ForeignKey,
 )
 from sqlalchemy.orm import DeclarativeBase
 
@@ -38,6 +39,7 @@ class Issue(Base):
     description = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="backlog", index=True)
     priority = Column(String(16), nullable=True, index=True)
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
     profile = Column(String(32), nullable=True, index=True)
     labels = Column(JSON, nullable=True, default=list)
     assignee_id = Column(String(64), nullable=True, index=True)
@@ -62,6 +64,7 @@ class Issue(Base):
             "description": self.description,
             "status": self.status,
             "priority": self.priority,
+            "boardId": self.board_id,
             "profile": self.profile,
             "labels": self.labels or [],
             "assigneeId": self.assignee_id,
@@ -222,6 +225,7 @@ class JobModel(Base):
     updated_at = Column(String(32), nullable=False)
     message = Column(String(512), nullable=True)
     events = Column(JSON, nullable=False, default=list)  # JSON array of ECCJobEvent
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
 
     __table_args__ = (
         # Note: status already gets an auto-index from `Column(..., index=True)`.
@@ -242,6 +246,7 @@ class JobModel(Base):
             "updated_at": self.updated_at,
             "message": self.message,
             "events": events,
+            "boardId": self.board_id,
         }
 
 
@@ -346,4 +351,197 @@ class User(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "lastLoginAt": self.last_login_at.isoformat() if self.last_login_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# P2: Issue Collaboration Records
+# ---------------------------------------------------------------------------
+
+
+class IssueEvent(Base):
+    """
+    IssueEvent records everything that happens to an issue: status changes,
+    handoffs, decisions, command runs, etc.
+
+    Provides a durable audit trail for agent collaboration.
+    """
+    __tablename__ = "issue_events"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    actor_id = Column(String(64), nullable=True)
+    actor_name = Column(String(128), nullable=True)
+    summary = Column(Text, nullable=True)
+    details = Column(JSON, nullable=True, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+
+    __table_args__ = (
+        Index("ix_issue_events_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "eventType": self.event_type,
+            "actorId": self.actor_id,
+            "actorName": self.actor_name,
+            "summary": self.summary,
+            "details": self.details or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "boardId": self.board_id,
+        }
+
+
+class IssueComment(Base):
+    """
+    IssueComment stores human/agent notes and discussion on issues.
+
+    comment_type can be: 'comment', 'note', 'decision', 'review', 'handoff'
+    """
+    __tablename__ = "issue_comments"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    author_id = Column(String(64), nullable=True, index=True)
+    author_name = Column(String(128), nullable=True)
+    body = Column(Text, nullable=False)
+    comment_type = Column(String(32), nullable=False, default="comment", index=True)
+    extra_data = Column(JSON, nullable=True, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+
+    __table_args__ = (
+        Index("ix_issue_comments_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "authorId": self.author_id,
+            "authorName": self.author_name,
+            "body": self.body,
+            "commentType": self.comment_type,
+            "metadata": self.extra_data or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "boardId": self.board_id,
+        }
+
+
+class IssueArtifact(Base):
+    """
+    IssueArtifact stores metadata about files, outputs, and evidence
+    linked to issues.
+
+    v1 is metadata-only: no binary storage, no upload pipeline.
+    artifact_type can be: 'file', 'screenshot', 'test_log', 'pr_link',
+    'design_doc', 'diff_summary', 'command_output'
+    sensitivity can be: 'public', 'internal', 'confidential', 'secret'
+    """
+    __tablename__ = "issue_artifacts"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), nullable=False, index=True)
+    job_id = Column(String(64), nullable=True, index=True)
+    title = Column(String(512), nullable=False)
+    artifact_type = Column(String(64), nullable=False, index=True)
+    source = Column(String(128), nullable=True)
+    path_or_url = Column(String(1024), nullable=True)
+    sensitivity = Column(String(32), nullable=False, default="public")
+    summary = Column(Text, nullable=True)
+    extra_data = Column(JSON, nullable=True, default=dict)
+    created_by_id = Column(String(64), nullable=True)
+    created_by_name = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+
+    __table_args__ = (
+        Index("ix_issue_artifacts_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "jobId": self.job_id,
+            "title": self.title,
+            "artifactType": self.artifact_type,
+            "source": self.source,
+            "pathOrUrl": self.path_or_url,
+            "sensitivity": self.sensitivity,
+            "summary": self.summary,
+            "metadata": self.extra_data or {},
+            "createdById": self.created_by_id,
+            "createdByName": self.created_by_name,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "boardId": self.board_id,
+        }
+
+
+class IssueHandoff(Base):
+    """
+    Durable queue item for Kanban Protocol.
+
+    A handoff is created when an issue is moved from one worker lane to
+    another. It carries its own status machine, payload, and audit fields
+    so the transition is durable and replayable.
+    """
+    __tablename__ = "issue_handoffs"
+
+    id = Column(String(64), primary_key=True)
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    issue_id = Column(String(64), ForeignKey("issues.id"), nullable=False, index=True)
+    from_lane = Column(String(32), nullable=True)
+    to_lane = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    payload = Column(JSON, nullable=True, default=dict)
+    block_reason = Column(Text, nullable=True)
+    created_by = Column(String(128), nullable=True)
+    accepted_by = Column(String(128), nullable=True)
+    dispatched_by = Column(String(128), nullable=True)
+    completed_by = Column(String(128), nullable=True)
+    cancelled_by = Column(String(128), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_issue_handoffs_board_status", "board_id", "status"),
+        Index("ix_issue_handoffs_issue_created", "issue_id", "created_at"),
+        Index("ix_issue_handoffs_to_lane_status", "to_lane", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "boardId": self.board_id,
+            "issueId": self.issue_id,
+            "fromLane": self.from_lane,
+            "toLane": self.to_lane,
+            "status": self.status,
+            "payload": self.payload if isinstance(self.payload, dict) else {},
+            "blockReason": self.block_reason or None,
+            "createdBy": self.created_by,
+            "acceptedBy": self.accepted_by,
+            "dispatchedBy": self.dispatched_by,
+            "completedBy": self.completed_by,
+            "cancelledBy": self.cancelled_by,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
         }

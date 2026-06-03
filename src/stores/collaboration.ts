@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import type { IssueEvent, IssueComment, IssueArtifact } from '~/types'
 
 interface TeamMember {
   id: string
@@ -17,15 +18,6 @@ interface ActivityItem {
   timestamp: string
 }
 
-interface Comment {
-  id: string
-  issueId: string
-  author: string
-  authorAvatar: string
-  content: string
-  createdAt: string
-}
-
 interface Webhook {
   id: string
   url: string
@@ -37,8 +29,14 @@ interface Webhook {
 interface CollaborationState {
   members: TeamMember[]
   activities: ActivityItem[]
-  comments: Record<string, Comment[]>
   activeWebhooks: Webhook[]
+  // P2: Real collaboration data from API
+  eventsByIssue: Record<string, IssueEvent[]>
+  commentsByIssue: Record<string, IssueComment[]>
+  artifactsByIssue: Record<string, IssueArtifact[]>
+  isLoadingEvents: boolean
+  isLoadingComments: boolean
+  isLoadingArtifacts: boolean
 }
 
 const generateMockMembers = (): TeamMember[] => [
@@ -97,60 +95,21 @@ const generateMockActivities = (): ActivityItem[] => [
     action: 'created',
     target: 'DEV-009',
     timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString()
-  },
-  {
-    id: 'act4',
-    actor: 'Alex Chen',
-    action: 'assigned',
-    target: 'DEV-003 to themselves',
-    timestamp: new Date(Date.now() - 45 * 60 * 1000).toISOString()
-  },
-  {
-    id: 'act5',
-    actor: 'Jamie Rivera',
-    action: 'unblocked',
-    target: 'DEV-007',
-    timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString()
   }
 ]
-
-const generateMockComments = (): Record<string, Comment[]> => ({
-  'DEV-002': [
-    {
-      id: 'c1',
-      issueId: 'DEV-002',
-      author: 'Alex Chen',
-      authorAvatar: 'https://i.pravatar.cc/150?u=alex',
-      content: 'Looking great! Consider adding keyboard hints for screen reader users.',
-      createdAt: new Date(Date.now() - 20 * 60 * 1000).toISOString()
-    },
-    {
-      id: 'c2',
-      issueId: 'DEV-002',
-      author: 'Sam Taylor',
-      authorAvatar: 'https://i.pravatar.cc/150?u=sam',
-      content: 'The drag-and-drop feels smooth. Good work on the accessibility attributes.',
-      createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString()
-    }
-  ],
-  'DEV-001': [
-    {
-      id: 'c3',
-      issueId: 'DEV-001',
-      author: 'Jamie Rivera',
-      authorAvatar: 'https://i.pravatar.cc/150?u=jamie',
-      content: 'Auth flow works well. The session handling is solid.',
-      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-    }
-  ]
-})
 
 export const useCollaborationStore = defineStore('collaboration', {
   state: (): CollaborationState => ({
     members: [],
     activities: [],
-    comments: {},
-    activeWebhooks: []
+    activeWebhooks: [],
+    // P2: Real collaboration data
+    eventsByIssue: {},
+    commentsByIssue: {},
+    artifactsByIssue: {},
+    isLoadingEvents: false,
+    isLoadingComments: false,
+    isLoadingArtifacts: false
   }),
 
   getters: {
@@ -170,8 +129,16 @@ export const useCollaborationStore = defineStore('collaboration', {
       return state.activities.slice(0, 20)
     },
 
-    getCommentsByIssue: (state) => (issueId: string): Comment[] => {
-      return state.comments[issueId] || []
+    getEventsByIssue: (state) => (issueId: string): IssueEvent[] => {
+      return state.eventsByIssue[issueId] || []
+    },
+
+    getCommentsByIssue: (state) => (issueId: string): IssueComment[] => {
+      return state.commentsByIssue[issueId] || []
+    },
+
+    getArtifactsByIssue: (state) => (issueId: string): IssueArtifact[] => {
+      return state.artifactsByIssue[issueId] || []
     },
 
     getMemberById: (state) => (memberId: string): TeamMember | undefined => {
@@ -188,23 +155,124 @@ export const useCollaborationStore = defineStore('collaboration', {
   },
 
   actions: {
+    // P2: Fetch events from API
+    async fetchEvents(issueId: string) {
+      this.isLoadingEvents = true
+      try {
+        const config = useRuntimeConfig()
+        const data = await $fetch<{ events: IssueEvent[]; total: number }>(
+          `${config.public.apiBase}/issues/${issueId}/events`
+        )
+        this.eventsByIssue[issueId] = data.events
+      } catch (error) {
+        console.warn('[CollaborationStore] fetchEvents failed:', error)
+        this.eventsByIssue[issueId] = []
+      } finally {
+        this.isLoadingEvents = false
+      }
+    },
+
+    // P2: Fetch comments from API
+    async fetchComments(issueId: string) {
+      this.isLoadingComments = true
+      try {
+        const config = useRuntimeConfig()
+        const data = await $fetch<{ comments: IssueComment[]; total: number }>(
+          `${config.public.apiBase}/issues/${issueId}/comments`
+        )
+        this.commentsByIssue[issueId] = data.comments
+      } catch (error) {
+        console.warn('[CollaborationStore] fetchComments failed:', error)
+        this.commentsByIssue[issueId] = []
+      } finally {
+        this.isLoadingComments = false
+      }
+    },
+
+    // P2: Create comment via API
+    async createComment(issueId: string, body: string, authorName?: string) {
+      try {
+        const config = useRuntimeConfig()
+        const comment = await $fetch<IssueComment>(
+          `${config.public.apiBase}/issues/${issueId}/comments`,
+          {
+            method: 'POST',
+            body: { body, authorName }
+          }
+        )
+        // Add to local state
+        if (!this.commentsByIssue[issueId]) {
+          this.commentsByIssue[issueId] = []
+        }
+        this.commentsByIssue[issueId].push(comment)
+        // Refresh events to show the comment event
+        await this.fetchEvents(issueId)
+        return comment
+      } catch (error) {
+        console.error('[CollaborationStore] createComment failed:', error)
+        throw error
+      }
+    },
+
+    // P2: Fetch artifacts from API
+    async fetchArtifacts(issueId: string) {
+      this.isLoadingArtifacts = true
+      try {
+        const config = useRuntimeConfig()
+        const data = await $fetch<{ artifacts: IssueArtifact[]; total: number }>(
+          `${config.public.apiBase}/issues/${issueId}/artifacts`
+        )
+        this.artifactsByIssue[issueId] = data.artifacts
+      } catch (error) {
+        console.warn('[CollaborationStore] fetchArtifacts failed:', error)
+        this.artifactsByIssue[issueId] = []
+      } finally {
+        this.isLoadingArtifacts = false
+      }
+    },
+
+    // P2: Create artifact via API
+    async createArtifact(issueId: string, artifact: {
+      title: string
+      artifactType: IssueArtifact['artifactType']
+      jobId?: string
+      source?: string
+      pathOrUrl?: string
+      summary?: string
+    }) {
+      try {
+        const config = useRuntimeConfig()
+        const created = await $fetch<IssueArtifact>(
+          `${config.public.apiBase}/issues/${issueId}/artifacts`,
+          {
+            method: 'POST',
+            body: artifact
+          }
+        )
+        // Add to local state
+        if (!this.artifactsByIssue[issueId]) {
+          this.artifactsByIssue[issueId] = []
+        }
+        this.artifactsByIssue[issueId].push(created)
+        // Refresh events
+        await this.fetchEvents(issueId)
+        return created
+      } catch (error) {
+        console.error('[CollaborationStore] createArtifact failed:', error)
+        throw error
+      }
+    },
+
+    // Legacy: Fetch members (still mock)
     async fetchMembers() {
-      // Simulate API call
       await new Promise(resolve => setTimeout(resolve, 300))
       this.members = generateMockMembers()
     },
 
+    // Legacy: Fetch activities (still mock)
     async fetchActivities() {
-      // Simulate API call
       await new Promise(resolve => setTimeout(resolve, 200))
       this.activities = generateMockActivities()
-    },
-
-    async fetchComments(issueId: string) {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 150))
-      const mockComments = generateMockComments()
-      this.comments = { ...this.comments, [issueId]: mockComments[issueId] || [] }
     },
 
     addActivity(activity: Omit<ActivityItem, 'id' | 'timestamp'>) {
@@ -215,173 +283,29 @@ export const useCollaborationStore = defineStore('collaboration', {
         target: activity.target,
         timestamp: new Date().toISOString()
       }
-
-      // Prepend to activities (newest first)
       this.activities.unshift(newActivity)
-
-      // Keep only the most recent 100 activities
       if (this.activities.length > 100) {
         this.activities = this.activities.slice(0, 100)
       }
     },
 
-    addComment(issueId: string, content: string, authorInfo?: { name: string; avatar: string }) {
-      const newComment: Comment = {
-        id: `cmt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        issueId,
-        author: authorInfo?.name || 'Anonymous',
-        authorAvatar: authorInfo?.avatar || 'https://i.pravatar.cc/150?u=anonymous',
-        content,
-        createdAt: new Date().toISOString()
-      }
-
-      // Initialize comments array for issue if not exists
-      if (!this.comments[issueId]) {
-        this.comments[issueId] = []
-      }
-
-      this.comments[issueId].push(newComment)
-
-      // Also add as activity
-      this.addActivity({
-        actor: newComment.author,
-        action: 'commented on',
-        target: issueId
-      })
-
-      return newComment
-    },
-
-    updateComment(issueId: string, commentId: string, content: string) {
-      const comments = this.comments[issueId]
-      if (!comments) return false
-
-      const comment = comments.find(c => c.id === commentId)
-      if (!comment) return false
-
-      comment.content = content
-      return true
-    },
-
-    deleteComment(issueId: string, commentId: string) {
-      const comments = this.comments[issueId]
-      if (!comments) return false
-
-      const index = comments.findIndex(c => c.id === commentId)
-      if (index === -1) return false
-
-      comments.splice(index, 1)
-      return true
-    },
-
-    updateMemberStatus(memberId: string, status: TeamMember['status']) {
-      const member = this.members.find(m => m.id === memberId)
-      if (!member) return false
-
-      member.status = status
-      member.lastSeen = new Date().toISOString()
-
-      // Add activity for status change
-      const statusLabel = status === 'online' ? 'came online' : status === 'away' ? 'went away' : 'went offline'
-      this.addActivity({
-        actor: member.name,
-        action: statusLabel,
-        target: ''
-      })
-
-      return true
-    },
-
-    updateMemberRole(memberId: string, role: string) {
-      const member = this.members.find(m => m.id === memberId)
-      if (!member) return false
-
-      member.role = role
-      return true
-    },
-
-    addWebhook(webhook: Omit<Webhook, 'id' | 'createdAt'>) {
-      const newWebhook: Webhook = {
-        id: `wh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        url: webhook.url,
-        events: webhook.events,
-        enabled: webhook.enabled,
-        createdAt: new Date().toISOString()
-      }
-
-      this.activeWebhooks.push(newWebhook)
-      return newWebhook
-    },
-
-    updateWebhook(webhookId: string, updates: Partial<Omit<Webhook, 'id' | 'createdAt'>>) {
-      const webhook = this.activeWebhooks.find(w => w.id === webhookId)
-      if (!webhook) return null
-
-      if (updates.url !== undefined) webhook.url = updates.url
-      if (updates.events !== undefined) webhook.events = updates.events
-      if (updates.enabled !== undefined) webhook.enabled = updates.enabled
-
-      return webhook
-    },
-
-    deleteWebhook(webhookId: string) {
-      const index = this.activeWebhooks.findIndex(w => w.id === webhookId)
-      if (index === -1) return false
-
-      this.activeWebhooks.splice(index, 1)
-      return true
-    },
-
-    toggleWebhook(webhookId: string) {
-      const webhook = this.activeWebhooks.find(w => w.id === webhookId)
-      if (!webhook) return null
-
-      webhook.enabled = !webhook.enabled
-      return webhook
-    },
-
     // Real-time collaboration handlers
     handleMemberPresenceUpdate(payload: { memberId: string; status: TeamMember['status'] }) {
-      this.updateMemberStatus(payload.memberId, payload.status)
+      const member = this.members.find(m => m.id === payload.memberId)
+      if (member) {
+        member.status = payload.status
+        member.lastSeen = new Date().toISOString()
+      }
     },
 
     handleNewActivity(payload: { actor: string; action: string; target: string }) {
       this.addActivity(payload)
     },
 
-    handleNewComment(payload: { issueId: string; author: string; authorAvatar: string; content: string }) {
-      this.addComment(payload.issueId, payload.content, {
-        name: payload.author,
-        avatar: payload.authorAvatar
-      })
-    },
-
-    handleCommentUpdate(payload: { issueId: string; commentId: string; content: string }) {
-      return this.updateComment(payload.issueId, payload.commentId, payload.content)
-    },
-
-    handleCommentDelete(payload: { issueId: string; commentId: string }) {
-      return this.deleteComment(payload.issueId, payload.commentId)
-    },
-
-    // Bulk operations
+    // Initialize (for demo/fallback)
     initializeCollaboration() {
-      // Initialize with mock data for demo purposes
       this.members = generateMockMembers()
       this.activities = generateMockActivities()
-      this.comments = generateMockComments()
-    },
-
-    clearActivities() {
-      this.activities = []
-    },
-
-    clearComments(issueId?: string) {
-      if (issueId) {
-        delete this.comments[issueId]
-      } else {
-        this.comments = {}
-      }
     }
   }
 })

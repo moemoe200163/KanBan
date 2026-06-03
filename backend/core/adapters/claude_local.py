@@ -22,8 +22,24 @@ class ClaudeLocalAdapter(BaseAIAdapter):
         self.github_repo = self.config.get("github_repo")
         self.working_dir = self.config.get("working_dir", "/Users/user/Code/kanban")
         self.timeout = self.config.get("timeout", 300)
+        # When safe_mode is True, ``execute`` delegates to the shared
+        # P0 safe runner instead of spawning the real Claude CLI. The
+        # default is False so the existing harness path keeps working.
+        self.safe_mode: bool = bool(self.config.get("safe_mode", False))
+        # Optional SafeRunnerDeps bundle injected by the dispatch
+        # endpoint so the adapter can drive the same proven loop.
+        self._safe_runner_deps: Optional[Callable] = None
         self._broadcaster: Optional[Callable] = None
         self._job_id: Optional[str] = None
+
+    def attach_safe_runner_deps(self, deps_factory: Callable) -> None:
+        """Register a callable that returns a fresh ``SafeRunnerDeps``.
+
+        The factory pattern lets the adapter pull a snapshot of the
+        current jobs registry and helpers at call time, so callers
+        don't have to keep the bundle in sync.
+        """
+        self._safe_runner_deps = deps_factory
 
     @property
     def supported_harnesses(self) -> List[str]:
@@ -83,6 +99,21 @@ class ClaudeLocalAdapter(BaseAIAdapter):
         if on_log:
             self._broadcaster = on_log
             self._job_id = task_id
+
+        # When safe_mode is enabled and the dispatch layer has wired
+        # in a SafeRunnerDeps factory, delegate to the shared P0
+        # runner so the adapter exercises the proven path. This is
+        # what lets the priority table's "Adapter calls the same
+        # proven execution path" requirement hold in practice.
+        if self.safe_mode and self._safe_runner_deps is not None:
+            from ..execution.safe_runner import run_safe_execution
+
+            await run_safe_execution(task_id, self._safe_runner_deps())
+            return ExecutionResult(
+                success=True,
+                output="Safe execution complete (delegated to shared safe runner)",
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
 
         cmd = [self.claude_path, "-p", prompt]
 
