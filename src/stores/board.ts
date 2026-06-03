@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
-import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile } from '~/types'
+import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile, Handoff, HandoffCreateRequest, HandoffDispatchRequest } from '~/types'
 import { COLUMN_CONFIG, ECC_COMMAND_MAP } from '~/types'
 import { useECCStreamSingleton } from '~/composables/useECCStream'
 import { useDependencyGraph } from '~/composables/useDependencyGraph'
 import { useFeedbackLoop } from '~/composables/useFeedbackLoop'
+import { useKanbanProtocol } from '~/composables/useKanbanProtocol'
 
 // Generate edge-case rich mock data
 const generateMockIssues = (): Issue[] => ([
@@ -1655,6 +1656,123 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         return job
       } catch (error) {
         console.warn('[BoardStore] retryJob failed:', error)
+        return null
+      }
+    },
+
+    // ------------------------------------------------------------------
+    // Kanban Protocol — Handoff actions
+    // ------------------------------------------------------------------
+
+    /** Find the in-memory issue by ID and return its composable handle. */
+    _handoffCtx(issueId: string) {
+      const issue = this.columns
+        .flatMap(c => c.issues)
+        .find(i => i.id === issueId)
+      if (!issue) return null
+      return { issue, api: useKanbanProtocol(issueId) }
+    },
+
+    async fetchHandoffs(issueId: string): Promise<Handoff[]> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return []
+      try {
+        const { handoffs } = await ctx.api.listHandoffs()
+        ctx.issue.handoffs = handoffs
+        return handoffs
+      } catch (e) {
+        console.warn('[BoardStore] fetchHandoffs failed:', e)
+        return []
+      }
+    },
+
+    async createHandoff(issueId: string, req: HandoffCreateRequest): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.createHandoff(req)
+        ctx.issue.handoffs = [...ctx.issue.handoffs, h]
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] createHandoff failed:', e)
+        return null
+      }
+    },
+
+    async acceptHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.acceptHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] acceptHandoff failed:', e)
+        return null
+      }
+    },
+
+    async dispatchHandoff(issueId: string, handoffId: string, req: HandoffDispatchRequest): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const { handoff } = await ctx.api.dispatchHandoff(handoffId, req)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? handoff : x)
+        return handoff
+      } catch (e) {
+        console.warn('[BoardStore] dispatchHandoff failed:', e)
+        return null
+      }
+    },
+
+    async completeHandoff(issueId: string, handoffId: string, payload?: Record<string, unknown>, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.completeHandoff(handoffId, payload, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] completeHandoff failed:', e)
+        return null
+      }
+    },
+
+    async blockHandoff(issueId: string, handoffId: string, reason: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.blockHandoff(handoffId, reason, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] blockHandoff failed:', e)
+        return null
+      }
+    },
+
+    async unblockHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.unblockHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] unblockHandoff failed:', e)
+        return null
+      }
+    },
+
+    async cancelHandoff(issueId: string, handoffId: string, actor?: string): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.cancelHandoff(handoffId, actor)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] cancelHandoff failed:', e)
         return null
       }
     }
