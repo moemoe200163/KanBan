@@ -535,7 +535,7 @@ class IssueHandoff(Base):
             "toLane": self.to_lane,
             "status": self.status,
             "payload": self.payload if isinstance(self.payload, dict) else {},
-            "blockReason": self.block_reason,
+            "blockReason": self.block_reason or None,
             "createdBy": self.created_by,
             "acceptedBy": self.accepted_by,
             "dispatchedBy": self.dispatched_by,

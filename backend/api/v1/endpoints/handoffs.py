@@ -29,6 +29,24 @@ def _check_board(board_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+async def _resolve_handoff(board_id: str, issue_id: str, handoff_id: str) -> dict:
+    """Validate board, issue, and handoff ownership. Returns handoff dict or raises 404."""
+    _check_board(board_id)
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    handoff = await repo.get_issue_handoff(handoff_id)
+    if (
+        not handoff
+        or handoff["boardId"] != board_id
+        or handoff["issueId"] != issue_id
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Handoff '{handoff_id}' not found"
+        )
+    return handoff
+
+
 @router.post("/boards/{board_id}/issues/{issue_id}/handoffs", status_code=201)
 async def create_handoff(
     board_id: str,
@@ -66,17 +84,7 @@ async def list_handoffs(board_id: str, issue_id: str):
 
 @router.get("/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}")
 async def get_handoff(board_id: str, issue_id: str, handoff_id: str):
-    _check_board(board_id)
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
-    return handoff
+    return await _resolve_handoff(board_id, issue_id, handoff_id)
 
 
 @router.post(
@@ -88,19 +96,7 @@ async def accept_handoff(
     handoff_id: str,
     body: HandoffActorRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         return await _svc.accept(handoff_id, actor=body.actor)
     except (ValueError, ScopeDeniedError) as exc:
@@ -116,20 +112,9 @@ async def dispatch_handoff(
     handoff_id: str,
     body: HandoffDispatchRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
+        issue = await repo.get_issue(issue_id)
         return await _svc.dispatch(
             handoff_id=handoff_id,
             issue_key=issue["key"],  # authoritative, not body.issueKey
@@ -149,19 +134,7 @@ async def complete_handoff(
     handoff_id: str,
     body: HandoffCompleteRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         return await _svc.complete(
             handoff_id=handoff_id,
@@ -185,19 +158,7 @@ async def block_handoff(
     handoff_id: str,
     body: HandoffBlockRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         return await _svc.block(
             handoff_id=handoff_id,
@@ -221,19 +182,7 @@ async def unblock_handoff(
     handoff_id: str,
     body: HandoffActorRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         return await _svc.unblock(
             handoff_id=handoff_id,
@@ -256,19 +205,7 @@ async def cancel_handoff(
     handoff_id: str,
     body: HandoffActorRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
         return await _svc.cancel(
             handoff_id=handoff_id,
@@ -292,21 +229,10 @@ async def comment_handoff(
     handoff_id: str,
     body: HandoffCommentRequest,
 ):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
-    return await repo.create_issue_comment(
+    await _resolve_handoff(board_id, issue_id, handoff_id)
+    return await _svc.comment(
         issue_id=issue_id,
+        handoff_id=handoff_id,
         body=body.body,
         author_id=body.authorId,
         author_name=body.authorName,
@@ -322,19 +248,7 @@ async def comment_handoff(
     "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/preview"
 )
 async def preview_handoff(board_id: str, issue_id: str, handoff_id: str):
-    _check_board(board_id)
-    issue = await repo.get_issue(issue_id)
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
-    handoff = await repo.get_issue_handoff(handoff_id)
-    if (
-        not handoff
-        or handoff["boardId"] != board_id
-        or handoff["issueId"] != issue_id
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"Handoff '{handoff_id}' not found"
-        )
+    handoff = await _resolve_handoff(board_id, issue_id, handoff_id)
     lane = get_lane(handoff["toLane"])
     payload = handoff.get("payload") or {}
     required = lane.required_completion_fields

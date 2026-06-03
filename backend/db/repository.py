@@ -792,7 +792,8 @@ async def update_issue_handoff(
         if not row:
             return None
         row.status = status
-        row.block_reason = block_reason
+        if block_reason is not None:
+            row.block_reason = block_reason
         if payload is not None:
             row.payload = payload
         if actor_field and actor_value is not None:

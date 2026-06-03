@@ -18,12 +18,6 @@ def _new_id() -> str:
 class HandoffService:
     """Pure status-machine layer. Persistence lives in ``db.repository``."""
 
-    async def _load_or_404(self, handoff_id: str) -> dict:
-        handoff = await repo.get_issue_handoff(handoff_id)
-        if not handoff:
-            raise ValueError(f"Handoff '{handoff_id}' not found")
-        return handoff
-
     async def create(
         self,
         *,
@@ -185,7 +179,7 @@ class HandoffService:
         return await repo.update_issue_handoff(
             handoff_id,
             status="pending",
-            block_reason=None,
+            block_reason="",
         )
 
     async def cancel(self, *, handoff_id: str, actor: Optional[str]) -> dict:
@@ -201,4 +195,23 @@ class HandoffService:
             status="cancelled",
             actor_field="cancelled_by",
             actor_value=actor,
+        )
+
+    async def comment(
+        self,
+        *,
+        issue_id: str,
+        handoff_id: str,
+        body: str,
+        author_id: Optional[str],
+        author_name: Optional[str],
+        comment_type: str,
+    ) -> dict:
+        """Add a comment to an issue associated with a handoff."""
+        return await repo.create_issue_comment(
+            issue_id=issue_id,
+            body=body,
+            author_id=author_id,
+            author_name=author_name,
+            comment_type=comment_type,
         )
