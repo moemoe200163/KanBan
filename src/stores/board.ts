@@ -531,11 +531,16 @@ export const useBoardStore = defineStore('board', {
     },
 
     reviewQueueItems(): Issue[] {
-      return this.getAllIssues.filter(issue =>
-        issue.status === 'human_review' ||
-        issue.eccJobStatus === 'review_required' ||
-        this.jobs.some(job => job.issue_id === issue.id && job.status === 'review_required')
-      )
+      return this.getAllIssues.filter(issue => {
+        // Done issues are never awaiting review, even if a stale job
+        // row is still flagged ``review_required`` in the registry.
+        if (issue.status === 'done') return false
+        if (issue.status === 'human_review') return true
+        if (issue.eccJobStatus === 'review_required') return true
+        return this.jobs.some(
+          job => job.issue_id === issue.id && job.status === 'review_required'
+        )
+      })
     }
   },
 
