@@ -1,8 +1,14 @@
 # DevFlow 前端全按钮验收报告
 
 **日期**: 2026-06-03
-**分支**: main (d4c5a11)
+**分支**: main (c73d323)
 **执行者**: Claude Code + Playwright
+
+> **2026-06-03 二次复验**: 报告原 PARTIAL 项（P6 Review Queue、P1 /agents/roles 重定向）
+> 均已修复并通过 Playwright 端到端验证：新增 commit `dc373e1`（E2E db schema /
+> sidebar icon / nuxt 路由）+ `c73d323`（review queue 过滤），E2E 套件
+> desktop 16 passed + mobile 12 passed = 28 passed，0 failed。详细修复路径与
+> 复测输出见「P6 章节」与文末「修复后复测汇总」。
 
 ---
 
@@ -16,7 +22,7 @@
 | **P3** Job Flow | **PASS** | ECC dispatch → queued → running → review_required 完整链路 |
 | **P4** Handoff | **PARTIAL** | 创建 ✓，接受 ✓，调度需审批（正确行为），完成需特定字段 |
 | **P5** GNN Safe-runner | **PASS** | 7 events 完整，safe-runner 执行链路正常 |
-| **P6** Review Queue | **PARTIAL** | Approve 按钮点击后 DEV-007 未移动，可能存在 UI 问题 |
+| **P6** Review Queue | **PASS** | 2026-06-03 修复并 E2E 验证，Approve 后 issue 正确移动到 Done |
 | **P7** Settings/LLM | **PASS** | 8 providers 显示，Backend Connected，Harness 可选 |
 
 ---
@@ -176,9 +182,57 @@ POST /api/v1/boards/board-default/issues/{issueId}/handoffs
 - ✅ 2 个 Request changes 按钮
 - ✅ Optional reason textbox
 
-### 问题
+### 2026-06-03 首次复测问题
 - ⚠️ 点击 Approve 后 DEV-007 未从 human_review 移到 done
 - 可能原因: UI 事件处理或 API 调用问题
+
+### 根因分析
+经 e2e schema drift 复测后定位为两层独立问题：
+
+1. **E2E 测试环境 schema 漂移**（实际影响 E2E 与新部署）
+   `init_db` 在 SQLite 路径下使用 `create_all(checkfirst=True)`，
+   不会向已存在的表追加新列。当 `*_e2e.db` 复用旧 schema（如缺
+   `issues.board_id`）时，seed 阶段直接报 `no such column: issues.board_id`，
+   导致 `POST /api/v1/issues` 失败、E2E reset 拿到 0 条 seed。
+
+2. **Review queue 过滤条件过宽**（实际影响 UI 行为）
+   `boardStore.reviewQueueItems` 的第三个 OR 条件
+   `jobs.some(j => j.issue_id === issue.id && j.status === 'review_required')`
+   会让已经移到 `done` 的 issue 继续留在审核队列（只要历史 job 还是
+   `review_required`）。结果是 Approve 走通 `moveIssue` 后，issue 视觉上
+   到了 done，但队列仍然包含它，造成"未移动"的假象。
+
+### 修复
+- `dc373e1` `init_db` 检测 E2E SQLite 目标（`E2E=1` + db 名含 `_e2e`），
+  改为先 `drop_all` 再 `create_all`。
+- `dc373e1` `nuxt.config.ts` 用 `routeRules` 服务端重定向
+  `/agents/roles` → `/agents?tab=roles` 与 `/lanes` → `/agents?tab=lanes`，
+  替代 setup script 中的 `navigateTo`。
+- `dc373e1` Sidebar.vue 补齐 `CircleDot` 导入。
+- `c73d323` `boardStore.reviewQueueItems` 显式排除 `done` 状态，
+  再叠加 `human_review` / `eccJobStatus` / job 三种入队信号。
+- `test_e2e_db_schema.py` 3 个回归测试 pin 住 schema 行为。
+
+### 修复后复测
+| 用例 | 结果 |
+|------|------|
+| `[desktop] Review Queue approve moves an item to Done` | ✅ PASS (455ms) |
+| `loads the board and opens an issue detail panel` | ✅ PASS |
+| `New Issue modal creates a visible issue` | ✅ PASS |
+| `moving an issue to In Progress creates a job and shows ECC logs` | ✅ PASS |
+| `filters issues without collapsing the board` | ✅ PASS |
+| `keeps mobile board columns usable` | ✅ PASS (mobile) |
+
+全局 setup 关键断言：
+```
+[e2e] backend /health OK at http://127.0.0.1:8000/health
+[e2e] backend /health/ready OK at http://127.0.0.1:8000/health/ready
+[e2e] database reset OK: seeded=8 database=./devflow_e2e.db
+[e2e] board has 8 seed issues (matches reset.seeded)
+```
+
+Desktop 全套：**16 passed, 1 skipped, 0 failed**
+Mobile 全套：**12 passed, 5 skipped, 0 failed**
 
 ---
 
@@ -214,9 +268,9 @@ POST /api/v1/boards/board-default/issues/{issueId}/handoffs
 ## 自动化验证
 
 ```bash
-# Backend tests
+# Backend tests (含 3 个新增 e2e_db_schema 回归测试)
 PYTHONPATH=backend pytest -q backend/tests
-# Result: 139 passed
+# Result: 142 passed, 59 warnings
 
 # TypeScript type check
 npm run typecheck
@@ -226,6 +280,54 @@ npm run typecheck
 npm run build
 # Result: PASS (1.7 MB total, 410 kB gzip)
 ```
+
+### Playwright E2E 端到端（2026-06-03 复验）
+
+环境：`E2E=1 DATABASE_URL=sqlite+aiosqlite:///./devflow_e2e.db`，
+后端端口 8000，前端由 Playwright `webServer` 配置启动 build + preview 于 3010。
+
+**Desktop（1440×900）**：
+```
+Running 17 tests using 4 workers
+  ✓  loads the board and opens an issue detail panel
+  ✓  Review Queue approve moves an item to Done           ← 原 P6 PARTIAL
+  ✓  New Issue modal creates a visible issue
+  ✓  moving an issue to In Progress creates a job and shows ECC logs
+  ✓  filters issues without collapsing the board
+  ✓  loads the Command Center page
+  ✓  dispatch creates a job visible in the monitor
+  ✓  clicking a job opens the detail drawer
+  ✓  cancel button transitions a running job to cancelled
+  ✓  Sidebar navigation: navigates to each route from sidebar
+  ✓  Backlog page shows backlog issues
+  ✓  Agents page shows profile matrix
+  ✓  Runs page shows job list with filters
+  ✓  Analytics page shows KPI cards
+  ✓  Activity Log page shows audit entries
+  ✓  Settings page shows backend status
+  -  keeps mobile board columns usable                   ← mobile-only
+  16 passed, 1 skipped, 0 failed (7.3s)
+```
+
+**Mobile（Pixel 5）**：
+```
+  ✓  loads the board and opens an issue detail panel
+  ✓  keeps mobile board columns usable
+  ✓  loads the Command Center page
+  ✓  dispatch creates a job visible in the monitor
+  ✓  clicking a job opens the detail drawer
+  ✓  cancel button transitions a running job to cancelled
+  ✓  Backlog page shows backlog issues
+  ✓  Agents page shows profile matrix
+  ✓  Runs page shows job list with filters
+  ✓  Analytics page shows KPI cards
+  ✓  Activity Log page shows audit entries
+  ✓  Settings page shows backend status
+  -  5 desktop-only tests
+  12 passed, 5 skipped, 0 failed (6.4s)
+```
+
+合计 **28 passed / 6 skipped（设备专属）/ 0 failed**。
 
 ---
 
@@ -241,13 +343,19 @@ npm run build
 
 ## 建议修复优先级
 
-| 优先级 | 问题 | 建议 |
+| 优先级 | 问题 | 状态 |
 |--------|------|------|
-| **MEDIUM** | Review Queue Approve 按钮点击后 issue 状态未更新 | 调查 UI 事件处理和 API 调用 |
-| **LOW** | `/agents/roles` 客户端重定向未生效 | 检查 `navigateTo()` 与 Nuxt middleware |
+| **MEDIUM** | Review Queue Approve 按钮点击后 issue 状态未更新 | ✅ **RESOLVED** in `c73d323` + `dc373e1`，E2E PASS |
+| **LOW** | `/agents/roles` 客户端重定向未生效 | ✅ **RESOLVED** in `dc373e1`（routeRules 替换 setup script） |
+
+剩余 PARTIAL：P4 Handoff 完成需 `actor/payload` 字段，**非 bug**（设计如此，
+需要审批链路上游填齐），不在本轮范围。
 
 ---
 
 ## 结论
 
-DevFlow 前端核心功能验收通过。Board 渲染、Issue 创建、ECC dispatch、Safe-runner 执行链路均正常工作。主要发现两个 PARTIAL 问题需要后续修复。
+DevFlow 前端核心功能验收通过。Board 渲染、Issue 创建、ECC dispatch、Safe-runner
+执行链路均正常工作。2026-06-03 二次复验中两个 PARTIAL 项已全部修复，并
+通过 Playwright 端到端验证（desktop 16 + mobile 12 = 28 passed，0 failed）。
+仅剩 P4 Handoff 完成路径需要 `actor/payload` 字段，属设计约束而非缺陷。
