@@ -373,3 +373,19 @@ async def test_cancel_rejected_from_completed_state(fresh_db):
     await svc.complete(handoff_id=handoff["id"], actor="bob", payload=None)
     with pytest.raises(ValueError):
         await svc.cancel(handoff_id=handoff["id"], actor="bob")
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejected_from_cancelled_state(fresh_db):
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={},
+        created_by="alice",
+    )
+    await svc.cancel(handoff_id=handoff["id"], actor="bob")
+    with pytest.raises(ValueError):
+        await svc.cancel(handoff_id=handoff["id"], actor="bob")
