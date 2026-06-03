@@ -22,9 +22,14 @@ def _parse_iso_datetime(value: str, param_name: str) -> datetime:
     """Parse an ISO 8601 string into a datetime. Raises 422 on failure.
 
     If the string has no timezone info, it is treated as UTC.
+    Handles the ``Z`` suffix for UTC on Python < 3.11 where
+    ``datetime.fromisoformat`` does not recognise it.
     """
     try:
-        dt = datetime.fromisoformat(value)
+        normalised = value.rstrip() if isinstance(value, str) else value
+        if isinstance(normalised, str) and normalised.endswith("Z"):
+            normalised = normalised[:-1] + "+00:00"
+        dt = datetime.fromisoformat(normalised)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=422,
