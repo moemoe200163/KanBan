@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     Integer,
     Index,
+    ForeignKey,
 )
 from sqlalchemy.orm import DeclarativeBase
 
@@ -495,7 +496,7 @@ class IssueHandoff(Base):
 
     id = Column(String(64), primary_key=True)
     board_id = Column(String(64), nullable=False, default="board-default", index=True)
-    issue_id = Column(String(64), nullable=False, index=True)
+    issue_id = Column(String(64), ForeignKey("issues.id"), nullable=False, index=True)
     from_lane = Column(String(32), nullable=True)
     to_lane = Column(String(32), nullable=False)
     status = Column(String(32), nullable=False, default="pending", index=True)
@@ -518,6 +519,12 @@ class IssueHandoff(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_issue_handoffs_board_status", "board_id", "status"),
+        Index("ix_issue_handoffs_issue_created", "issue_id", "created_at"),
+        Index("ix_issue_handoffs_to_lane_status", "to_lane", "status"),
+    )
 
     def to_dict(self) -> dict:
         return {
