@@ -1,27 +1,28 @@
 <script setup lang="ts">
 /**
  * DevStats — compact record-count display for the Command Center.
- * Fetches from GET /api/v1/stats on mount and refreshes periodically.
+ * Fetches from GET /api/v1/dev/stats on mount and refreshes periodically.
+ * Hidden when the endpoint returns 404 (production mode).
  */
 
 const config = useRuntimeConfig()
 const counts = ref<Record<string, number>>({})
-const error = ref<string | null>(null)
+const visible = ref(false)
 
 async function fetchStats() {
   try {
     const data = await $fetch<{ counts: Record<string, number> }>(
-      `${config.public.apiBase}/stats`
+      `${config.public.apiBase}/dev/stats`
     )
     counts.value = data.counts
-    error.value = null
-  } catch (err) {
-    error.value = (err as Error)?.message || 'Failed to load stats'
+    visible.value = true
+  } catch {
+    // 404 in production — hide component entirely
+    visible.value = false
   }
 }
 
 onMounted(fetchStats)
-// Refresh every 30s
 const interval = setInterval(fetchStats, 30_000)
 onUnmounted(() => clearInterval(interval))
 
@@ -34,12 +35,11 @@ const items = computed(() => [
 </script>
 
 <template>
-  <section class="dev-stats" data-testid="dev-stats">
+  <section v-if="visible" class="dev-stats" data-testid="dev-stats">
     <header class="dev-stats__header">
       <span class="dev-stats__kicker">Database</span>
     </header>
-    <p v-if="error" class="dev-stats__error">{{ error }}</p>
-    <div v-else class="dev-stats__grid">
+    <div class="dev-stats__grid">
       <div v-for="item in items" :key="item.key" class="dev-stats__cell">
         <span class="dev-stats__value">{{ counts[item.key] ?? '—' }}</span>
         <span class="dev-stats__label">{{ item.label }}</span>
@@ -84,9 +84,5 @@ const items = computed(() => [
 .dev-stats__label {
   color: var(--muted);
   font-size: 0.6875rem;
-}
-.dev-stats__error {
-  color: var(--clay-red);
-  font-size: 0.75rem;
 }
 </style>

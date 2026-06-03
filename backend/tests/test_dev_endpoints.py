@@ -57,10 +57,10 @@ def fresh_db(tmp_path, monkeypatch):
 
 
 def test_stats_returns_counts(fresh_db, monkeypatch):
-    """GET /api/v1/stats must return record counts for key tables."""
+    """GET /api/v1/dev/stats must return record counts for key tables."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with TestClient(fresh_db) as client:
-        response = client.get("/api/v1/stats")
+        response = client.get("/api/v1/dev/stats")
     assert response.status_code == 200
     body = response.json()
     counts = body["counts"]
@@ -90,6 +90,15 @@ def test_dev_reset_404_in_production(monkeypatch):
     from api.v1.endpoints import dev
 
     assert dev._is_dev_mode() is False
+
+
+def test_stats_404_in_production(fresh_db, monkeypatch):
+    """GET /api/v1/dev/stats must return 404 when DATABASE_URL is set (prod mode)."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/prod_db")
+    monkeypatch.delenv("E2E", raising=False)
+    with TestClient(fresh_db) as client:
+        response = client.get("/api/v1/dev/stats")
+    assert response.status_code == 404
 
 
 def test_dev_reset_works_in_e2e_mode(monkeypatch):

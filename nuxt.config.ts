@@ -26,6 +26,6 @@ export default defineNuxtConfig({
   // URL for a frame. Nitro handles the redirect before any HTML ships.
   routeRules: {
     '/agents/roles': { redirect: '/agents?tab=roles' },
-    '/lanes': { redirect: '/agents?tab=lanes' }
+    '/lanes': { redirect: '/agents?tab=roles' }
   }
 })

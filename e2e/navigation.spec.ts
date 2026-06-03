@@ -95,4 +95,10 @@ test.describe('MVP pages', () => {
     await expect(page.locator('.settings-card', { hasText: 'Backend Status' })).toBeVisible()
     await expect(page.locator('.settings-card', { hasText: 'Active Harness' })).toBeVisible()
   })
+
+  test('redirect /lanes to /agents?tab=roles', async ({ page }) => {
+    await page.goto('/lanes')
+    await expect(page).toHaveURL(/\/agents\?tab=roles/)
+    await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible()
+  })
 })

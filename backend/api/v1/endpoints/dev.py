@@ -106,14 +106,20 @@ async def dev_reset():
 
 
 @router.get(
-    "/stats",
+    "/dev/stats",
     status_code=status.HTTP_200_OK,
+    include_in_schema=False,
 )
 async def get_stats():
     """Return record counts for key tables.
 
-    Always available (not gated) so the frontend can display data volume.
+    Gated on dev mode — returns 404 in production.
     """
+    if not _is_dev_mode():
+        return JSONResponse(
+            content={"detail": "Not Found"},
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
     try:
         async with _db.AsyncSessionLocal() as session:
             counts: dict[str, int] = {}
