@@ -85,16 +85,28 @@ async def lifespan(app: FastAPI):
 
     # Start the background agent worker when real execution is enabled.
     # The worker polls for pending AgentRun records and executes them via
-    # the safe runner (P0) or real adapters (future).
+    # the safe runner (P0) or real adapters (when harness is "claude-code").
     app.state.worker = None
     import os as _worker_os
     if _worker_os.getenv("ALLOW_REAL_LLM_EXECUTION", "false").lower() == "true":
         try:
             from core.runtime.worker import start_background_worker
-            app.state.worker = await start_background_worker()
-            logger.info("Background agent worker started")
+            app.state.worker = await start_background_worker(
+                claude_path=_worker_os.getenv("CLAUDE_CODE_PATH", "claude"),
+                workspace_path=_worker_os.getenv("WORKSPACE_PATH", "/Users/user/Code/kanban"),
+            )
+            logger.info("Background agent worker started (real execution enabled)")
         except Exception:
             logger.exception("Background agent worker failed to start (non-fatal)")
+
+    # Register adapters in the HarnessRegistry
+    try:
+        from core.adapters.registry import HarnessRegistry
+        from core.adapters.claude_local import ClaudeLocalAdapter
+        HarnessRegistry.register("claude-code", ClaudeLocalAdapter)
+        logger.info("HarnessRegistry: registered claude-code adapter")
+    except Exception:
+        logger.exception("HarnessRegistry registration failed (non-fatal)")
 
     logger.info("DevFlow Backend started successfully")
 

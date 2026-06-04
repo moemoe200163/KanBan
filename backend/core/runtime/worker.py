@@ -43,11 +43,7 @@ EXECUTION_TICK_DELAY: float = float(os.getenv("WORKER_TICK_DELAY", "0.05"))
 
 @dataclass
 class ExecutionContext:
-    """Minimal context passed to an executor for a single run.
-
-    This is the P0 version — just enough to drive the safe runner.
-    Future phases add workspace_path, env, timeout, etc.
-    """
+    """Context passed to an executor for a single run."""
 
     run_id: str
     issue_key: str
@@ -56,6 +52,11 @@ class ExecutionContext:
     harness: str = "safe-runner"
     board_id: str = "board-default"
     extra_metadata: dict = field(default_factory=dict)
+    # Real execution fields
+    workspace_path: str = ""
+    timeout: int = 300
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,100 @@ class SafeRunExecutor:
 
 
 # ---------------------------------------------------------------------------
+# ClaudeExecutor — real Claude CLI execution via ClaudeLocalAdapter
+# ---------------------------------------------------------------------------
+
+class ClaudeExecutor:
+    """Executes a run by spawning the Claude CLI via ClaudeLocalAdapter.
+
+    This executor bridges the orchestrator/worker layer to the adapter layer.
+    It builds a prompt from the ExecutionContext and delegates to the adapter's
+    execute() method, streaming logs back via the on_log callback.
+    """
+
+    def __init__(
+        self,
+        claude_path: Optional[str] = None,
+        workspace_path: str = "",
+        timeout: int = 300,
+    ):
+        self.claude_path = claude_path or os.getenv("CLAUDE_CODE_PATH", "claude")
+        self.workspace_path = workspace_path
+        self.timeout = timeout
+
+    async def execute(
+        self,
+        ctx: ExecutionContext,
+        on_log: Callable[[str], Coroutine[Any, Any, None]],
+    ) -> str:
+        """Run the Claude CLI and return a result summary.
+
+        Args:
+            ctx: The execution context for this run.
+            on_log: Async callback to emit a log line.
+
+        Returns:
+            A result summary string.
+
+        Raises:
+            RuntimeError: If execution fails.
+        """
+        from core.adapters.claude_local import ClaudeLocalAdapter
+
+        workspace = ctx.workspace_path or self.workspace_path or os.getcwd()
+        timeout = ctx.timeout or self.timeout
+
+        adapter = ClaudeLocalAdapter(config={
+            "claude_path": self.claude_path,
+            "working_dir": workspace,
+            "timeout": timeout,
+            "safe_mode": False,
+        })
+
+        # Build prompt from context
+        prompt = self._build_prompt(ctx)
+
+        await on_log(f"Starting Claude CLI execution for {ctx.issue_key}")
+        await on_log(f"Workspace: {workspace}")
+        await on_log(f"Profile: {ctx.profile}")
+
+        # ClaudeLocalAdapter.execute returns ExecutionResult
+        result = await adapter.execute(
+            task_id=ctx.run_id,
+            prompt=prompt,
+            workspace=workspace,
+        )
+
+        # Stream adapter output as logs
+        if result.output:
+            for line in result.output.splitlines():
+                await on_log(line)
+
+        if not result.success:
+            error_msg = result.error or "Unknown error"
+            await on_log(f"ERROR: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        duration_s = result.duration_ms / 1000
+        await on_log(f"Claude CLI completed in {duration_s:.1f}s")
+        return result.output or "Execution complete"
+
+    def _build_prompt(self, ctx: ExecutionContext) -> str:
+        """Build a prompt string from the execution context."""
+        parts = [
+            f"# Issue: {ctx.issue_key}",
+            f"## Command: {ctx.command}",
+            f"## Profile: {ctx.profile}",
+        ]
+        if ctx.extra_metadata.get("title"):
+            parts.append(f"## Title: {ctx.extra_metadata['title']}")
+        if ctx.extra_metadata.get("description"):
+            parts.append(f"## Description:\n{ctx.extra_metadata['description']}")
+        parts.append("\n---\n## Instructions\n1. Analyze the issue\n2. Implement changes\n3. Return summary")
+        return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # AgentWorkerProcess — the main worker loop
 # ---------------------------------------------------------------------------
 
@@ -132,6 +227,8 @@ class AgentWorkerProcess:
         capabilities: Optional[List[str]] = None,
         poll_interval: float = POLL_INTERVAL,
         heartbeat_interval: float = HEARTBEAT_INTERVAL,
+        claude_path: Optional[str] = None,
+        workspace_path: str = "",
     ):
         self.worker_id = worker_id or f"worker_{uuid4().hex[:8]}"
         self.board_id = board_id
@@ -141,6 +238,9 @@ class AgentWorkerProcess:
         self.poll_interval = poll_interval
         self.heartbeat_interval = heartbeat_interval
         self._running = False
+        self._claude_path = claude_path
+        self._workspace_path = workspace_path
+        # Default executor — overridden per-run if harness is "claude-code"
         self._executor = SafeRunExecutor()
 
     async def start(self) -> None:
@@ -198,14 +298,28 @@ class AgentWorkerProcess:
                 await start_run(run_id, self.worker_id)
 
                 # Build execution context from run record
+                run_harness = run.get("harness", self.harness)
                 ctx = ExecutionContext(
                     run_id=run_id,
                     issue_key=run.get("issueKey", "UNKNOWN"),
                     command=run.get("command", ""),
                     profile=run.get("profile", "general"),
-                    harness=run.get("harness", self.harness),
+                    harness=run_harness,
                     board_id=self.board_id,
+                    workspace_path=self._workspace_path,
+                    timeout=int(run.get("metadata", {}).get("timeout", 300)),
+                    provider=run.get("provider"),
+                    model=run.get("model"),
                 )
+
+                # Select executor based on harness
+                if run_harness == "claude-code":
+                    executor = ClaudeExecutor(
+                        claude_path=self._claude_path,
+                        workspace_path=self._workspace_path,
+                    )
+                else:
+                    executor = self._executor
 
                 # Log callback — pushes to DB + WebSocket via repo
                 async def _on_log(message: str) -> None:
@@ -219,7 +333,7 @@ class AgentWorkerProcess:
                     )
 
                 # Execute
-                result = await self._executor.execute(ctx, _on_log)
+                result = await executor.execute(ctx, _on_log)
 
                 # Complete
                 await complete_run(run_id, self.worker_id, result_summary=result)
@@ -259,6 +373,10 @@ async def start_background_worker(**kwargs) -> AgentWorkerProcess:
 
     Called from main.py lifespan. Returns the worker instance so the
     lifespan can store it on app.state for cleanup.
+
+    Supported kwargs:
+        worker_id, board_id, worker_type, harness, capabilities,
+        poll_interval, heartbeat_interval, claude_path, workspace_path
     """
     global _background_worker
     _background_worker = AgentWorkerProcess(**kwargs)

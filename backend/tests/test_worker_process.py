@@ -1,9 +1,11 @@
-"""Tests for Agent Worker Process — safe runner integration.
+"""Tests for Agent Worker Process — safe runner + real execution integration.
 
 Covers:
-- ExecutionContext dataclass construction
+- ExecutionContext dataclass construction (including new fields)
 - SafeRunExecutor deterministic log sequence
+- ClaudeExecutor real CLI execution (mocked)
 - AgentWorkerProcess claim -> execute -> complete lifecycle
+- AgentWorkerProcess executor selection by harness
 - Heartbeat during idle polling
 - Failure reporting on exception
 - Worker stop signal
@@ -15,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.runtime.worker import (
     AgentWorkerProcess,
+    ClaudeExecutor,
     ExecutionContext,
     SafeRunExecutor,
     DEFAULT_SAFE_EVENTS,
@@ -53,6 +56,28 @@ class TestExecutionContext:
         assert ctx.harness == "claude-code"
         assert ctx.board_id == "board-ops"
         assert ctx.extra_metadata == {"key": "val"}
+
+    def test_real_execution_fields_defaults(self):
+        ctx = ExecutionContext(
+            run_id="run-3", issue_key="DEV-003", command="test",
+        )
+        assert ctx.workspace_path == ""
+        assert ctx.timeout == 300
+        assert ctx.provider is None
+        assert ctx.model is None
+
+    def test_real_execution_fields_custom(self):
+        ctx = ExecutionContext(
+            run_id="run-4", issue_key="DEV-004", command="test",
+            workspace_path="/tmp/workspace",
+            timeout=600,
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+        )
+        assert ctx.workspace_path == "/tmp/workspace"
+        assert ctx.timeout == 600
+        assert ctx.provider == "anthropic"
+        assert ctx.model == "claude-sonnet-4-20250514"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +139,133 @@ class TestSafeRunExecutor:
 
         await executor.execute(ctx, on_log)
         assert logs[1] == "Preparing execution context for backend"
+
+
+# ---------------------------------------------------------------------------
+# ClaudeExecutor — real CLI execution (mocked adapter)
+# ---------------------------------------------------------------------------
+
+class TestClaudeExecutor:
+    @pytest.mark.asyncio
+    async def test_execute_success(self):
+        """ClaudeExecutor delegates to ClaudeLocalAdapter and returns output."""
+        executor = ClaudeExecutor(
+            claude_path="/usr/bin/claude",
+            workspace_path="/tmp/test",
+            timeout=60,
+        )
+        ctx = ExecutionContext(
+            run_id="run-claude-1",
+            issue_key="DEV-300",
+            command="implement",
+            profile="backend",
+            harness="claude-code",
+            workspace_path="/tmp/test",
+            timeout=60,
+        )
+        logs = []
+
+        async def on_log(msg):
+            logs.append(msg)
+
+        mock_result = MagicMock(
+            success=True,
+            output="Implementation complete",
+            error=None,
+            duration_ms=1500,
+            pr_url=None,
+        )
+
+        with patch("core.adapters.claude_local.ClaudeLocalAdapter") as MockAdapter:
+            mock_instance = MockAdapter.return_value
+            mock_instance.execute = AsyncMock(return_value=mock_result)
+
+            result = await executor.execute(ctx, on_log)
+
+        assert result == "Implementation complete"
+        assert any("Starting Claude CLI execution" in log for log in logs)
+        assert any("DEV-300" in log for log in logs)
+        assert any("Implementation complete" in log for log in logs)
+        assert any("completed in" in log for log in logs)
+
+    @pytest.mark.asyncio
+    async def test_execute_failure_raises(self):
+        """ClaudeExecutor raises RuntimeError on adapter failure."""
+        executor = ClaudeExecutor()
+        ctx = ExecutionContext(
+            run_id="run-claude-2",
+            issue_key="DEV-301",
+            command="test",
+        )
+        logs = []
+
+        async def on_log(msg):
+            logs.append(msg)
+
+        mock_result = MagicMock(
+            success=False,
+            output=None,
+            error="Claude CLI exited with code 1: permission denied",
+            duration_ms=500,
+        )
+
+        with patch("core.adapters.claude_local.ClaudeLocalAdapter") as MockAdapter:
+            mock_instance = MockAdapter.return_value
+            mock_instance.execute = AsyncMock(return_value=mock_result)
+
+            with pytest.raises(RuntimeError, match="permission denied"):
+                await executor.execute(ctx, on_log)
+
+        assert any("ERROR:" in log for log in logs)
+
+    @pytest.mark.asyncio
+    async def test_build_prompt_from_context(self):
+        """ClaudeExecutor builds a prompt from ExecutionContext fields."""
+        executor = ClaudeExecutor()
+        ctx = ExecutionContext(
+            run_id="run-5",
+            issue_key="DEV-400",
+            command="refactor",
+            profile="frontend",
+            extra_metadata={
+                "title": "Fix login button",
+                "description": "The button is misaligned",
+            },
+        )
+
+        prompt = executor._build_prompt(ctx)
+
+        assert "DEV-400" in prompt
+        assert "refactor" in prompt
+        assert "frontend" in prompt
+        assert "Fix login button" in prompt
+        assert "The button is misaligned" in prompt
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_ctx_workspace(self):
+        """ClaudeExecutor uses workspace_path from ExecutionContext."""
+        executor = ClaudeExecutor(workspace_path="/default/path")
+        ctx = ExecutionContext(
+            run_id="run-6",
+            issue_key="DEV-500",
+            command="test",
+            workspace_path="/custom/path",
+        )
+
+        async def on_log(msg):
+            pass
+
+        mock_result = MagicMock(success=True, output="ok", error=None, duration_ms=100)
+
+        with patch("core.adapters.claude_local.ClaudeLocalAdapter") as MockAdapter:
+            mock_instance = MockAdapter.return_value
+            mock_instance.execute = AsyncMock(return_value=mock_result)
+
+            await executor.execute(ctx, on_log)
+
+        # Verify adapter was created with ctx's workspace path
+        call_config = MockAdapter.call_args[1]["config"]
+        assert call_config["working_dir"] == "/custom/path"
 
 
 # ---------------------------------------------------------------------------
@@ -311,3 +463,72 @@ class TestAgentWorkerProcess:
 
         # Worker should have stopped and updated status
         assert worker._running is False
+
+    @pytest.mark.asyncio
+    async def test_worker_selects_claude_executor_for_claude_harness(self):
+        """Worker uses ClaudeExecutor when run harness is 'claude-code'."""
+        worker = self._make_worker(
+            harness="safe-runner",
+            claude_path="/usr/bin/claude",
+            workspace_path="/tmp/workspace",
+        )
+
+        from db import repository as repo
+
+        fake_run = {
+            "id": "run-claude-select",
+            "issueKey": "DEV-600",
+            "command": "implement",
+            "profile": "backend",
+            "harness": "claude-code",  # run requests claude-code
+        }
+
+        mock_upsert = AsyncMock(return_value={"id": "test-worker-1"})
+        mock_heartbeat = AsyncMock()
+        mock_start_run = AsyncMock(return_value=fake_run)
+        mock_complete_run = AsyncMock(return_value={**fake_run, "status": "completed"})
+        mock_fail_run = AsyncMock()
+        mock_append_event = AsyncMock()
+
+        claim_calls = 0
+        async def claim_once(worker_id, board_id):
+            nonlocal claim_calls
+            claim_calls += 1
+            if claim_calls == 1:
+                return fake_run
+            return None
+
+        iteration = 0
+        original_sleep = asyncio.sleep
+
+        async def controlled_sleep(dt):
+            nonlocal iteration
+            iteration += 1
+            if iteration > 10:
+                worker.stop()
+            await original_sleep(0)
+
+        mock_claude_result = MagicMock(
+            success=True, output="Claude output", error=None, duration_ms=2000,
+        )
+
+        with patch.object(repo, "upsert_worker", mock_upsert), \
+             patch.object(repo, "update_worker_heartbeat", mock_heartbeat), \
+             patch("core.runtime.orchestrator.claim_next_run", claim_once), \
+             patch("core.runtime.orchestrator.start_run", mock_start_run), \
+             patch("core.runtime.orchestrator.complete_run", mock_complete_run), \
+             patch("core.runtime.orchestrator.fail_run", mock_fail_run), \
+             patch("db.repository.append_run_event", mock_append_event), \
+             patch("core.adapters.claude_local.ClaudeLocalAdapter") as MockAdapter, \
+             patch("core.runtime.worker.POLL_INTERVAL", 0.01), \
+             patch("asyncio.sleep", controlled_sleep):
+            MockAdapter.return_value.execute = AsyncMock(return_value=mock_claude_result)
+            await worker.start()
+
+        # Verify ClaudeLocalAdapter was instantiated (not SafeRunExecutor)
+        MockAdapter.assert_called_once()
+        call_config = MockAdapter.call_args[1]["config"]
+        assert call_config["claude_path"] == "/usr/bin/claude"
+        assert call_config["working_dir"] == "/tmp/workspace"
+        # Verify run completed
+        mock_complete_run.assert_called_once()
