@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, func
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 from db import database as _db
 from db.models import (
     Issue as IssueModel,
@@ -186,12 +187,19 @@ async def seed_if_empty() -> int:
         return 0
 
 
-async def list_issues() -> List[dict]:
-    """Return all issues as frontend-shaped dicts (sorted by id for stability)."""
+async def list_issues(board_id: Optional[str] = None) -> List[dict]:
+    """Return issues as frontend-shaped dicts (sorted by id for stability).
+
+    Args:
+        board_id: If provided, only return issues belonging to this board.
+    """
     try:
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
-            result = await session.execute(select(IssueModel).order_by(IssueModel.id))
+            stmt = select(IssueModel).order_by(IssueModel.id)
+            if board_id is not None:
+                stmt = stmt.where(IssueModel.board_id == board_id)
+            result = await session.execute(stmt)
             rows = result.scalars().all()
             return [_issue_model_to_dict(r) for r in rows]
     except Exception as e:
@@ -235,6 +243,8 @@ async def upsert_issue(issue_data: dict) -> dict:
             existing.status = issue_data["status"]
             existing.priority = issue_data.get("priority", "medium")
             existing.profile = issue_data.get("profile", "general")
+            if "board_id" in issue_data:
+                existing.board_id = issue_data["board_id"]
             existing.updated_at = now
             issue = existing
         else:
@@ -246,6 +256,7 @@ async def upsert_issue(issue_data: dict) -> dict:
                 status=issue_data["status"],
                 priority=issue_data.get("priority", "medium"),
                 profile=issue_data.get("profile", "general"),
+                board_id=issue_data.get("board_id", DEFAULT_BOARD_ID),
                 created_at=now,
                 updated_at=now,
             )
@@ -325,6 +336,7 @@ async def upsert_job(job_data: dict) -> None:
             else:
                 session.add(JobModel(
                     id=job_data["id"],
+                    board_id=job_data.get("board_id", DEFAULT_BOARD_ID),
                     issue_id=job_data["issue_id"],
                     issue_key=job_data["issue_key"],
                     command=job_data["command"],
@@ -856,6 +868,7 @@ async def create_ecc_job_safe_runner(
     profile: str,
     harness: str,
     handoff_id: Optional[str] = None,
+    board_id: str = DEFAULT_BOARD_ID,
 ) -> dict:
     """Create a JobModel row that runs through the P0 safe runner.
 
@@ -868,7 +881,7 @@ async def create_ecc_job_safe_runner(
     now = _utc_now()
     row = JobModel(
         id=job_id,
-        board_id="board-default",
+        board_id=board_id,
         issue_id=issue_id,
         issue_key=issue_key,
         command=command,

@@ -1,10 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from typing import List, Optional
 from pydantic import BaseModel
 
 # Lazy import: db.repository is touched only inside handlers to keep
 # import-time startup lightweight and resilient.
 from db import repository as repo
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
 
 router = APIRouter()
 
@@ -77,14 +78,22 @@ class BoardStateResponse(BaseModel):
 
 
 @router.get("/board", response_model=BoardStateResponse)
-async def get_board():
+async def get_board(
+    board_id: str = Query(DEFAULT_BOARD_ID, description="Board to retrieve"),
+):
     """
     Get board state with columns and issues.
 
     The board is built fresh from the repository on every request so a
     fresh process sees the persisted state immediately.
     """
-    issues = await repo.list_issues()
+    try:
+        assert_board_id_allowed(board_id)
+    except LookupError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    issues = await repo.list_issues(board_id=board_id)
     issues_by_status: dict[str, list[Issue]] = {s: [] for s in VALID_STATUSES}
     for issue_dict in issues:
         status = issue_dict.get("status", "backlog")

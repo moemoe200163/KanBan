@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +63,7 @@ class AgentRole:
 
 async def create_run_for_dispatch(
     *,
-    board_id: str = "board-default",
+    board_id: str = DEFAULT_BOARD_ID,
     issue_id: str,
     issue_key: str,
     command: str,
@@ -109,7 +111,7 @@ async def create_run_for_dispatch(
 
 async def claim_next_run(
     worker_id: str,
-    board_id: str = "board-default",
+    board_id: str = DEFAULT_BOARD_ID,
 ) -> Optional[dict]:
     """Find the oldest matching pending run and claim it for this worker.
 
@@ -272,7 +274,7 @@ async def cancel_run(run_id: str, worker_id: Optional[str] = None) -> Optional[d
     return updated
 
 
-async def get_worker_stats(board_id: str = "board-default") -> dict:
+async def get_worker_stats(board_id: str = DEFAULT_BOARD_ID) -> dict:
     """Return worker counts by status for a board."""
     from db import repository as repo
 
@@ -288,7 +290,7 @@ async def get_worker_stats(board_id: str = "board-default") -> dict:
     }
 
 
-async def get_run_stats(board_id: str = "board-default") -> dict:
+async def get_run_stats(board_id: str = DEFAULT_BOARD_ID) -> dict:
     """Return run counts by status for a board."""
     from db import repository as repo
 

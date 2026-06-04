@@ -5,6 +5,8 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
+
 # NOTE: backend.db imports are done lazily (inside functions that need them)
 # to avoid import-time failures when running with PYTHONPATH=backend from
 # within the backend/ package directory.
@@ -27,6 +29,7 @@ class ECCDispatchRequest(BaseModel):
     issue_id: str = Field(..., min_length=1)
     issue_key: str = Field(..., min_length=1)
     command: str = Field(..., min_length=1)
+    board_id: str = Field(default=DEFAULT_BOARD_ID, description="Board this dispatch belongs to")
     profile: str = Field(default="general")
     harness: str = Field(default="claude-code")
     # MVP 2: Provider/Model execution config
@@ -55,6 +58,7 @@ class ECCDispatchJob(BaseModel):
     status: ECCJobStatus
     created_at: str
     updated_at: str
+    board_id: str = DEFAULT_BOARD_ID
     message: Optional[str] = None
     events: List[ECCJobEvent] = Field(default_factory=list)
     # MVP 2: Provider/Model execution config
@@ -137,6 +141,7 @@ async def _save_job_to_db(job: ECCDispatchJob) -> None:
 
     await repo.upsert_job({
         "id": job.id,
+        "board_id": job.board_id,
         "issue_id": job.issue_id,
         "issue_key": job.issue_key,
         "command": job.command,
@@ -205,6 +210,12 @@ async def dispatch_ecc_command(
         # Implement JWT validation before any public/production deployment.
         pass
 
+    # Validate board_id
+    try:
+        assert_board_id_allowed(request.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     command_name = request.command.split(" --profile=", 1)[0]
     if command_name not in VALID_COMMANDS:
         raise HTTPException(status_code=400, detail=f"Invalid ECC command: {request.command}")
@@ -248,6 +259,7 @@ async def dispatch_ecc_command(
         status="queued",
         created_at=now,
         updated_at=now,
+        board_id=request.board_id,
         message=initial_message,
         events=[
             ECCJobEvent(
@@ -281,7 +293,7 @@ async def dispatch_ecc_command(
         try:
             from core.runtime.orchestrator import create_run_for_dispatch
             run = await create_run_for_dispatch(
-                board_id="board-default",
+                board_id=request.board_id,
                 issue_id=request.issue_id,
                 issue_key=request.issue_key,
                 command=request.command,
@@ -303,6 +315,10 @@ async def dispatch_ecc_command(
 
 @router.get("/ecc/jobs")
 async def list_ecc_jobs(
+    board_id: Optional[str] = Query(
+        DEFAULT_BOARD_ID,
+        description="Filter jobs by board. Defaults to the default board.",
+    ),
     issue_id: Optional[str] = Query(
         None,
         description="Filter jobs to a single issue id. Returns all jobs when omitted.",
@@ -327,17 +343,18 @@ async def list_ecc_jobs(
             row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
             job = ECCDispatchJob(**row)
             _jobs[job.id] = job
+            if board_id and job.board_id != board_id:
+                continue
             jobs.append(job)
     except Exception:
-        if issue_id or status:
-            filtered = list(_jobs.values())
-            if issue_id:
-                filtered = [j for j in filtered if j.issue_id == issue_id]
-            if status:
-                filtered = [j for j in filtered if j.status == status]
-            jobs = filtered
-        else:
-            jobs = list(_jobs.values())
+        filtered = list(_jobs.values())
+        if board_id:
+            filtered = [j for j in filtered if j.board_id == board_id]
+        if issue_id:
+            filtered = [j for j in filtered if j.issue_id == issue_id]
+        if status:
+            filtered = [j for j in filtered if j.status == status]
+        jobs = filtered
 
     jobs = sorted(jobs, key=lambda job: job.created_at, reverse=True)
     if limit:

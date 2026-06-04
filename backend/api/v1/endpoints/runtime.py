@@ -10,6 +10,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
+
 router = APIRouter()
 
 
@@ -19,7 +21,7 @@ router = APIRouter()
 
 class WorkerRegisterRequest(BaseModel):
     worker_id: str = Field(..., min_length=1, description="Unique worker ID")
-    board_id: str = Field("board-default", description="Board this worker serves")
+    board_id: str = Field(DEFAULT_BOARD_ID, description="Board this worker serves")
     worker_type: str = Field(..., min_length=1, description="Worker type (claude-code, codex, etc.)")
     harness: Optional[str] = Field(None, description="Harness identifier")
     capabilities: Optional[list] = Field(default_factory=list)
@@ -31,7 +33,7 @@ class WorkerHeartbeatRequest(BaseModel):
 
 
 class RunClaimRequest(BaseModel):
-    board_id: str = Field("board-default", description="Board to claim from")
+    board_id: str = Field(DEFAULT_BOARD_ID, description="Board to claim from")
 
 
 class RunCompleteRequest(BaseModel):
@@ -65,9 +67,13 @@ async def list_agent_roles():
 
 @router.get("/runtime/workers")
 async def list_workers(
-    board_id: str = Query("board-default", description="Board to list workers for"),
+    board_id: str = Query(DEFAULT_BOARD_ID, description="Board to list workers for"),
 ):
     """List agent workers for a board."""
+    try:
+        assert_board_id_allowed(board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     from db import repository as repo
     workers = await repo.list_workers_by_board(board_id)
     return {"workers": workers, "total": len(workers)}
@@ -90,6 +96,10 @@ async def get_worker(worker_id: str):
 @router.post("/runtime/workers")
 async def register_worker(request: WorkerRegisterRequest):
     """Register a new worker or update an existing one."""
+    try:
+        assert_board_id_allowed(request.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     from db import repository as repo
     worker = await repo.upsert_worker(
         id=request.worker_id,
@@ -123,12 +133,16 @@ async def worker_heartbeat(worker_id: str, request: WorkerHeartbeatRequest):
 
 @router.get("/runtime/runs")
 async def list_runs(
-    board_id: str = Query("board-default", description="Board to list runs for"),
+    board_id: str = Query(DEFAULT_BOARD_ID, description="Board to list runs for"),
     issue_id: Optional[str] = Query(None, description="Filter by issue ID"),
     status: Optional[str] = Query(None, description="Filter by run status"),
     limit: int = Query(100, ge=1, le=500, description="Max runs to return"),
 ):
     """List execution runs for a board."""
+    try:
+        assert_board_id_allowed(board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     from db import repository as repo
     runs = await repo.list_runs_by_board(
         board_id=board_id,

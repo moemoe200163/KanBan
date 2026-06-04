@@ -7,6 +7,7 @@ import uuid
 # import-time startup lightweight and resilient.
 from db import repository as repo
 from sqlalchemy.exc import IntegrityError
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
 
 # Parallel createIssue calls race on DEV-NNN key generation
 # (next_issue_key reads max-then-increments). The unique constraint
@@ -27,6 +28,7 @@ class IssueCreateRequest(BaseModel):
     status: str = Field(default="backlog")
     priority: str = Field(default="medium")
     profile: str = Field(default="general")
+    board_id: str = Field(default=DEFAULT_BOARD_ID, description="Board this issue belongs to")
 
 
 class IssueResponse(BaseModel):
@@ -37,6 +39,7 @@ class IssueResponse(BaseModel):
     status: str
     priority: str
     profile: str
+    board_id: str = DEFAULT_BOARD_ID
     created_at: str
     updated_at: str
 
@@ -47,6 +50,7 @@ class IssueStatusUpdateRequest(BaseModel):
 
 @router.get("/issues")
 async def list_issues(
+    board_id: str = Query(DEFAULT_BOARD_ID, description="Board to list issues for"),
     status: Optional[str] = Query(None, description="Filter by status"),
     priority: Optional[str] = Query(None, description="Filter by priority"),
     profile: Optional[str] = Query(None, description="Filter by assigned profile")
@@ -57,6 +61,11 @@ async def list_issues(
     The repository is the source of truth; this endpoint just adds
     in-memory filtering and validation.
     """
+    try:
+        assert_board_id_allowed(board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if status is not None and status not in VALID_STATUSES:
         raise HTTPException(
             status_code=400,
@@ -73,7 +82,7 @@ async def list_issues(
             detail=f"Invalid profile. Valid values: {VALID_PROFILES}",
         )
 
-    issues = await repo.list_issues()
+    issues = await repo.list_issues(board_id=board_id)
 
     if status:
         issues = [i for i in issues if i["status"] == status]
@@ -93,6 +102,11 @@ async def create_issue(request: IssueCreateRequest):
     Persists through the repository. The repository generates the next
     DEV-NNN key based on existing rows.
     """
+    try:
+        assert_board_id_allowed(request.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if request.status not in VALID_STATUSES:
         raise HTTPException(
             status_code=400,
@@ -122,6 +136,7 @@ async def create_issue(request: IssueCreateRequest):
                 "status": request.status,
                 "priority": request.priority,
                 "profile": request.profile,
+                "board_id": request.board_id,
             })
         except IntegrityError:
             # Another concurrent createIssue won this key. Re-read max and retry.

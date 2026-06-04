@@ -21,6 +21,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
+
 
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models."""
@@ -39,7 +41,7 @@ class Issue(Base):
     description = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="backlog", index=True)
     priority = Column(String(16), nullable=True, index=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
     profile = Column(String(32), nullable=True, index=True)
     labels = Column(JSON, nullable=True, default=list)
     assignee_id = Column(String(64), nullable=True, index=True)
@@ -225,7 +227,7 @@ class JobModel(Base):
     updated_at = Column(String(32), nullable=False)
     message = Column(String(512), nullable=True)
     events = Column(JSON, nullable=False, default=list)  # JSON array of ECCJobEvent
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
 
     __table_args__ = (
         # Note: status already gets an auto-index from `Column(..., index=True)`.
@@ -376,7 +378,7 @@ class IssueEvent(Base):
     summary = Column(Text, nullable=True)
     details = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
 
     __table_args__ = (
         Index("ix_issue_events_issue_created", "issue_id", "created_at"),
@@ -413,7 +415,7 @@ class IssueComment(Base):
     extra_data = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
 
     __table_args__ = (
         Index("ix_issue_comments_issue_created", "issue_id", "created_at"),
@@ -459,7 +461,7 @@ class IssueArtifact(Base):
     created_by_id = Column(String(64), nullable=True)
     created_by_name = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
 
     __table_args__ = (
         Index("ix_issue_artifacts_issue_created", "issue_id", "created_at"),
@@ -495,7 +497,7 @@ class IssueHandoff(Base):
     __tablename__ = "issue_handoffs"
 
     id = Column(String(64), primary_key=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
     issue_id = Column(String(64), ForeignKey("issues.id"), nullable=False, index=True)
     from_lane = Column(String(32), nullable=True)
     to_lane = Column(String(32), nullable=False)
@@ -634,7 +636,7 @@ class AgentWorker(Base):
     __tablename__ = "agent_workers"
 
     id = Column(String(64), primary_key=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
     worker_type = Column(String(32), nullable=False, index=True)  # claude-code, codex, safe-runner, etc.
     harness = Column(String(32), nullable=True)  # claude-code, codex, cursor, etc.
     status = Column(String(32), nullable=False, default="idle", index=True)  # idle, claimed, starting, running, stopping, stopped, error
@@ -693,7 +695,7 @@ class AgentRun(Base):
 
     id = Column(String(64), primary_key=True)
     worker_id = Column(String(64), nullable=True, index=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
     issue_id = Column(String(64), nullable=True, index=True)
     issue_key = Column(String(32), nullable=True)
     job_id = Column(String(64), nullable=True, index=True)  # links to ecc_jobs.id

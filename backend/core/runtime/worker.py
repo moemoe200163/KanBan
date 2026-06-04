@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, List, Optional
 from uuid import uuid4
 
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
+
 logger = logging.getLogger(__name__)
 
 # Default deterministic log lines for safe execution (matches safe_runner.py)
@@ -50,7 +52,7 @@ class ExecutionContext:
     command: str
     profile: str = "general"
     harness: str = "safe-runner"
-    board_id: str = "board-default"
+    board_id: str = DEFAULT_BOARD_ID
     extra_metadata: dict = field(default_factory=dict)
     # Real execution fields
     workspace_path: str = ""
@@ -221,7 +223,7 @@ class AgentWorkerProcess:
     def __init__(
         self,
         worker_id: Optional[str] = None,
-        board_id: str = "board-default",
+        board_id: str = DEFAULT_BOARD_ID,
         worker_type: str = "safe-runner",
         harness: str = "safe-runner",
         capabilities: Optional[List[str]] = None,
