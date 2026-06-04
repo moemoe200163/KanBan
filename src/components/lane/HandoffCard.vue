@@ -113,6 +113,49 @@ const showEvidenceToggle = computed(
       <span aria-hidden="true">{{ expanded ? '−' : '+' }}</span>
     </button>
 
+    <!-- Evidence body (only when expanded) -->
+    <div
+      v-if="showEvidenceToggle && expanded"
+      data-testid="handoff-evidence-body"
+      class="mb-2 rounded border border-zinc-800 bg-zinc-900/40 p-2 space-y-1.5"
+    >
+      <div
+        v-for="(value, key) in handoff.payload"
+        :key="key"
+        class="text-[11px]"
+      >
+        <div class="text-zinc-500 mb-0.5">{{ key }}</div>
+
+        <!-- list[str] (e.g. screenshots, interfaces, acceptance_criteria) -->
+        <ul
+          v-if="Array.isArray(value)"
+          class="list-disc list-inside text-zinc-300 space-y-0.5"
+        >
+          <li v-for="(item, i) in value" :key="i">{{ item }}</li>
+        </ul>
+
+        <!-- number (e.g. coverage_pct) -->
+        <div v-else-if="typeof value === 'number'" class="text-zinc-300">
+          {{ value }}{{ key === 'coverage_pct' ? '%' : '' }}
+        </div>
+
+        <!-- long string (>= 280 chars OR contains newline) -->
+        <div
+          v-else-if="typeof value === 'string' && (value.length >= 280 || value.includes('\n'))"
+          class="text-zinc-300 max-h-48 overflow-y-auto whitespace-pre-wrap
+                 bg-zinc-950/40 rounded p-1.5 border border-zinc-800/60"
+        >{{ value }}</div>
+
+        <!-- short string -->
+        <div v-else-if="typeof value === 'string'" class="text-zinc-300">
+          {{ value }}
+        </div>
+
+        <!-- fallback (boolean, null, object) -->
+        <div v-else class="text-zinc-300">{{ String(value) }}</div>
+      </div>
+    </div>
+
     <!-- Actions -->
     <div class="flex flex-wrap gap-1.5 mt-2">
       <button

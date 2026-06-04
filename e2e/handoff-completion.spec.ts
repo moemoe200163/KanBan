@@ -242,9 +242,24 @@ test('completed handoff shows View evidence toggle and expands', async ({
   await page.goto('/')
   await openIssueAndSwitchToHandoffsTab(page, issue.id)
 
-  // Toggle visible, body hidden by default. (Body assertions come in Task 2.)
+  // Toggle visible, body hidden by default.
   const toggle = page.getByTestId('handoff-evidence-toggle')
   await expect(toggle).toBeVisible()
   await expect(toggle).toContainText('View evidence (2 fields)')
   await expect(page.getByTestId('handoff-evidence-body')).toHaveCount(0)
+
+  // Click to expand
+  await toggle.click()
+  const body = page.getByTestId('handoff-evidence-body')
+  await expect(body).toBeVisible()
+  await expect(body).toContainText('diff_summary')
+  await expect(body).toContainText('Adds the evidence toggle to HandoffCard.')
+  await expect(body).toContainText('screenshots')
+  await expect(body).toContainText('shot-1.png')
+  await expect(body).toContainText('shot-2.png')
+
+  // Click again to collapse
+  await toggle.click()
+  await expect(page.getByTestId('handoff-evidence-body')).toHaveCount(0)
+  await expect(toggle).toContainText('View evidence (2 fields)')
 })
