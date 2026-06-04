@@ -373,3 +373,84 @@ async def preview_handoff(board_id: str, issue_id: str, handoff_id: str):
         retryPolicy=lane.retry_policy,
         retryMax=lane.retry_max,
     )
+
+
+# ---------------------------------------------------------------------------
+# Advance endpoint — create next handoff after approval
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/advance"
+)
+async def advance_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffActorRequest,
+):
+    """Advance an approved handoff by creating the next handoff in the chain.
+
+    Reads the approved handoff's target lane, looks up next_lanes from the
+    lane registry, and creates a new pending handoff to the first suggested
+    lane. Also syncs issue status.
+    """
+    handoff = await _resolve_handoff(board_id, issue_id, handoff_id)
+
+    if handoff.get("status") != "approved":
+        raise HTTPException(
+            status_code=422,
+            detail=f"Handoff '{handoff_id}' is not approved (status: {handoff.get('status')}); "
+            "only approved handoffs can be advanced",
+        )
+
+    to_lane = handoff.get("toLane", "")
+    try:
+        lane = get_lane(to_lane)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    next_lane_candidates = lane.next_lanes
+    if not next_lane_candidates:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Lane '{to_lane}' has no next_lanes; nothing to advance to",
+        )
+
+    target_lane = next_lane_candidates[0]
+    advance_payload: dict = {
+        "advanced_by": body.actor,
+        "advanced_from_review": handoff_id,
+    }
+
+    try:
+        next_h = await _svc.create(
+            issue_id=issue_id,
+            board_id=board_id,
+            from_lane=to_lane,
+            to_lane=target_lane,
+            payload=advance_payload,
+            created_by=body.actor,
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Sync issue status based on target lane
+    status_map = {
+        "delivery": "in_progress",
+        "frontend": "in_progress",
+        "backend": "in_progress",
+        "qa": "in_progress",
+        "review": "human_review",
+    }
+    new_status = status_map.get(target_lane)
+    if new_status:
+        await repo.update_issue_status(issue_id, new_status)
+
+    return {
+        "handoff": next_h,
+        "advance": {
+            "from_lane": to_lane,
+            "to_lane": target_lane,
+            "next_lanes": next_lane_candidates,
+        },
+    }

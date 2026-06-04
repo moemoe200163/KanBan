@@ -162,6 +162,42 @@ class HandoffService:
             set_completed_at=True,
         )
 
+    async def system_complete(
+        self,
+        *,
+        handoff_id: str,
+        result_summary: Optional[str] = None,
+    ) -> dict:
+        """System-initiated completion that bypasses payload validation.
+
+        Used by the Delivery Orchestrator when an ECC job finishes and the
+        handoff needs to transition to 'completed' without requiring lane-
+        specific payload fields (which are review-time concerns).
+        """
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] not in ("in_progress", "accepted"):
+            raise ValueError(
+                f"Cannot complete handoff in status '{current['status']}'; "
+                "only 'in_progress' or 'accepted' handoffs can be completed"
+            )
+
+        # Preserve existing payload, merge result summary if provided.
+        existing = current.get("payload") or {}
+        merged = {**existing}
+        if result_summary:
+            merged["result_summary"] = result_summary
+
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="completed",
+            payload=merged,
+            actor_field="completed_by",
+            actor_value="system",
+            set_completed_at=True,
+        )
+
     async def review(
         self,
         *,
@@ -260,7 +296,30 @@ class HandoffService:
             )
             routing = {"action": "reject", "next_handoff": next_h, "next_lane": target_lane}
 
-        # approve: no auto-routing — human decides next step.
+        elif decision == "approve":
+            # Use lane.next_lanes to suggest/create the next handoff.
+            to_lane = current.get("toLane", "")
+            try:
+                lane = get_lane(to_lane)
+                next_lane_candidates = lane.next_lanes
+            except KeyError:
+                next_lane_candidates = []
+
+            if next_lane_candidates:
+                target_lane = next_lane_candidates[0]
+                approve_payload: dict = {
+                    "approved_by": actor,
+                    "approved_from_review": handoff_id,
+                }
+                next_h = await self.create(
+                    issue_id=issue_id,
+                    board_id=board_id,
+                    from_lane=to_lane,
+                    to_lane=target_lane,
+                    payload=approve_payload,
+                    created_by=actor,
+                )
+                routing = {"action": "approve", "next_handoff": next_h, "next_lane": target_lane}
 
         return {"handoff": updated, "routing": routing}
 

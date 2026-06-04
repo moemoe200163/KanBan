@@ -303,8 +303,37 @@ async def _sync_job_for_run(
             "events": events,
         })
         logger.info("Synced job %s → %s (from run %s)", job_id, job_status, run_id)
+
+        # --- Close job→handoff loop ---
+        # When job reaches review_required, auto-complete the linked handoff
+        # so it transitions from in_progress to completed (ready for review).
+        if job_status == "review_required":
+            handoff_id = _extract_handoff_id(job)
+            if handoff_id:
+                try:
+                    from core.kanban_protocol.handoff import HandoffService
+                    svc = HandoffService()
+                    await svc.system_complete(
+                        handoff_id=handoff_id,
+                        result_summary=result_summary,
+                    )
+                    logger.info("Auto-completed handoff %s for job %s", handoff_id, job_id)
+                except Exception as exc:
+                    logger.warning("Failed to auto-complete handoff %s: %s", handoff_id, exc)
+
     except Exception as exc:
         logger.warning("Failed to sync job for run %s: %s", run_id, exc)
+
+
+def _extract_handoff_id(job: dict) -> Optional[str]:
+    """Extract handoff_id from the job's message field.
+
+    The message format is: "Created by Kanban Protocol handoff {handoff_id}"
+    """
+    import re
+    message = job.get("message", "")
+    match = re.search(r"handoff\s+(h_\w+)", message)
+    return match.group(1) if match else None
 
 
 async def cancel_run(run_id: str, worker_id: Optional[str] = None) -> Optional[dict]:

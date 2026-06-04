@@ -112,7 +112,7 @@ def _create_and_complete_handoff(client, *, to_lane="review", from_lane="fronten
 
 
 def test_review_approve_sets_decision_and_status(fresh_db):
-    """Approving a completed handoff sets decision='approve' and status='approved'."""
+    """Approving a completed handoff sets decision='approve' and routes to next lane."""
     handoff = _create_and_complete_handoff(client)
 
     response = client.post(
@@ -127,9 +127,14 @@ def test_review_approve_sets_decision_and_status(fresh_db):
     assert h["reviewedBy"] == "carol"
     assert h["reviewedAt"] is not None
     assert h["reviewComment"] is None
-    # Approve: no auto-routing
-    assert body["routing"]["action"] == "none"
-    assert body["routing"]["next_handoff"] is None
+    # Approve: routes to first next_lane (delivery for review lane)
+    assert body["routing"]["action"] == "approve"
+    assert body["routing"]["next_lane"] == "delivery"
+    next_h = body["routing"]["next_handoff"]
+    assert next_h is not None
+    assert next_h["toLane"] == "delivery"
+    assert next_h["fromLane"] == "review"
+    assert next_h["status"] == "pending"
 
 
 def test_review_reject_sets_decision_and_routes_to_triage(fresh_db):
