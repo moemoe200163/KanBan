@@ -263,3 +263,21 @@ test('completed handoff shows View evidence toggle and expands', async ({
   await expect(page.getByTestId('handoff-evidence-body')).toHaveCount(0)
   await expect(toggle).toContainText('View evidence (2 fields)')
 })
+
+test('non-completed handoff hides evidence toggle', async ({
+  page, request, isMobile
+}) => {
+  test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+
+  // Seed: issue + handoff + accept, do NOT complete.
+  const title = `E2E handoff no evidence ${Date.now()}`
+  const issue = await createIssue(request, { title, profile: 'frontend' })
+  await createAcceptedHandoff(request, issue.id, 'frontend')
+
+  await page.goto('/')
+  await openIssueAndSwitchToHandoffsTab(page, issue.id)
+
+  await expect(
+    page.getByTestId('handoff-evidence-toggle')
+  ).toHaveCount(0)
+})
