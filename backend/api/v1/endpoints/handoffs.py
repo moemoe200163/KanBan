@@ -163,11 +163,9 @@ async def complete_handoff(
         )
 
         # Auto-create artifacts from typed payload fields.
-        # Wrapped in try/except so a DB error during artifact creation
-        # does not fail the handoff completion itself.
-        try:
-            payload = body.payload or {}
+        payload = body.payload or {}
 
+        try:
             for shot in (payload.get("screenshots") or []):
                 await repo.create_issue_artifact(
                     issue_id=issue_id,
@@ -200,12 +198,12 @@ async def complete_handoff(
                     path_or_url=None,
                     summary=payload["test_results"],
                 )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Failed to create artifacts for handoff %s on issue %s",
+                "Artifact creation failed for handoff %s: %s %s",
                 handoff_id,
-                issue_id,
-                exc_info=True,
+                type(exc).__name__,
+                exc,
             )
 
         return result

@@ -39,7 +39,7 @@ test.describe('Manual artifact creation', () => {
     await expect(page.locator('.issue-detail__panel')).toBeVisible()
 
     // Switch to Collaboration tab.
-    await page.getByRole('button', { name: 'Collaboration' }).click()
+    await page.getByRole('button', { name: 'Notes' }).click()
 
     // Click "+ Add Artifact" button.
     await page.getByTestId('add-artifact-btn').click()
@@ -98,7 +98,15 @@ test.describe('Manual artifact creation', () => {
     )
     expect(completeResp.ok()).toBeTruthy()
 
-    // Open issue in UI and switch to Collaboration tab.
+    // Verify artifacts were created via API before checking UI.
+    const artifactsResp = await request.get(
+      `http://127.0.0.1:8000/api/v1/issues/${issueId}/artifacts`
+    )
+    expect(artifactsResp.ok()).toBeTruthy()
+    const artifactsData = await artifactsResp.json()
+    expect(artifactsData.total).toBeGreaterThanOrEqual(2)
+
+    // Open issue in UI and switch to Notes tab.
     await page.goto('/')
     await expect(
       page.locator(`[data-issue-id="${issueId}"]`)
@@ -112,7 +120,7 @@ test.describe('Manual artifact creation', () => {
       hook.store.selectIssue(issue)
     }, issueId)
     await expect(page.locator('.issue-detail__panel')).toBeVisible()
-    await page.getByRole('button', { name: 'Collaboration' }).click()
+    await page.getByRole('button', { name: 'Notes' }).click()
 
     // Both auto-created artifacts should appear.
     await expect(
