@@ -83,13 +83,32 @@ async def lifespan(app: FastAPI):
         logger.exception("ProcessRunner initialization failed during startup")
         raise
 
+    # Start the background agent worker when real execution is enabled.
+    # The worker polls for pending AgentRun records and executes them via
+    # the safe runner (P0) or real adapters (future).
+    app.state.worker = None
+    import os as _worker_os
+    if _worker_os.getenv("ALLOW_REAL_LLM_EXECUTION", "false").lower() == "true":
+        try:
+            from core.runtime.worker import start_background_worker
+            app.state.worker = await start_background_worker()
+            logger.info("Background agent worker started")
+        except Exception:
+            logger.exception("Background agent worker failed to start (non-fatal)")
+
     logger.info("DevFlow Backend started successfully")
 
     # Yield control to the application
     yield
 
-    # Shutdown: Clean up connections
+    # Shutdown: stop the background worker, then clean up connections
     logger.info("Shutting down DevFlow Backend...")
+    if getattr(app.state, "worker", None) is not None:
+        try:
+            from core.runtime.worker import stop_background_worker
+            stop_background_worker()
+        except Exception:
+            logger.exception("Error stopping background worker")
 
     # Example: await close_redis_connection()
     # Example: await close_database_connection()
