@@ -92,6 +92,52 @@ class JobConnectionManager:
 job_manager = JobConnectionManager()
 
 
+class RunLogManager:
+    """
+    Manages WebSocket connections per run for real-time log streaming.
+
+    Similar to JobConnectionManager but specifically for run log events.
+    Clients subscribe to a run_id and receive log events as they arrive.
+    """
+
+    def __init__(self):
+        self._run_connections: Dict[str, Set[WebSocket]] = {}
+        self._connection_run: Dict[WebSocket, str] = {}
+
+    async def connect(self, websocket: WebSocket, run_id: str):
+        if run_id not in self._run_connections:
+            self._run_connections[run_id] = set()
+        self._run_connections[run_id].add(websocket)
+        self._connection_run[websocket] = run_id
+        logger.info(f"RunLog WebSocket connected for run {run_id}")
+
+    def disconnect(self, websocket: WebSocket):
+        run_id = self._connection_run.pop(websocket, None)
+        if run_id and run_id in self._run_connections:
+            self._run_connections[run_id].discard(websocket)
+            if not self._run_connections[run_id]:
+                del self._run_connections[run_id]
+
+    async def broadcast_to_run(self, run_id: str, message: dict):
+        if run_id not in self._run_connections:
+            return
+        disconnected = set()
+        for connection in self._run_connections[run_id]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.add(connection)
+        for conn in disconnected:
+            self.disconnect(conn)
+
+    def get_subscriber_count(self, run_id: str) -> int:
+        return len(self._run_connections.get(run_id, set()))
+
+
+# Global run log connection manager instance
+run_log_manager = RunLogManager()
+
+
 def verify_ws_token(token: str) -> dict:
     """
     Verify JWT token for WebSocket authentication.
@@ -226,3 +272,88 @@ async def broadcast_job_update(job_id: str, job_data: dict):
         "type": "job_update",
         "job": job_data
     })
+
+
+async def broadcast_run_log(run_id: str, event: dict):
+    """Broadcast a run log event to all subscribers of that run."""
+    await run_log_manager.broadcast_to_run(run_id, {
+        "type": "run_log",
+        "run_id": run_id,
+        "event": event,
+    })
+
+
+@router.websocket("/ws/runtime/runs")
+async def websocket_run_logs(
+    websocket: WebSocket,
+    token: str = Query(..., description="JWT authentication token"),
+):
+    """
+    WebSocket endpoint for real-time run log streaming.
+
+    Client Messages:
+        - {"action": "subscribe", "run_id": "xxx"} - Subscribe to run logs
+        - {"action": "unsubscribe", "run_id": "xxx"} - Unsubscribe from run logs
+        - {"action": "ping"} - Keep-alive heartbeat
+
+    Server Messages:
+        - {"type": "run_log", "run_id": "xxx", "event": {...}} - Log event
+        - {"type": "subscribed", "run_id": "xxx"} - Successfully subscribed
+        - {"type": "unsubscribed", "run_id": "xxx"} - Successfully unsubscribed
+        - {"type": "pong", "timestamp": "..."} - Heartbeat response
+    """
+    if _ws_anon_allowed():
+        user = {"user_id": "anonymous", "username": "anonymous"}
+    else:
+        try:
+            user = verify_ws_token(token)
+        except Exception as e:
+            await websocket.close(code=4001, reason=str(e))
+            return
+
+    await websocket.accept()
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            action = data.get("action")
+
+            if action == "subscribe":
+                run_id = data.get("run_id")
+                if not run_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "run_id is required for subscribe action",
+                    })
+                    continue
+                await run_log_manager.connect(websocket, run_id)
+                await websocket.send_json({
+                    "type": "subscribed",
+                    "run_id": run_id,
+                })
+
+            elif action == "unsubscribe":
+                run_id = data.get("run_id")
+                run_log_manager.disconnect(websocket)
+                await websocket.send_json({
+                    "type": "unsubscribed",
+                    "run_id": run_id,
+                })
+
+            elif action == "ping":
+                await websocket.send_json({
+                    "type": "pong",
+                    "timestamp": data.get("timestamp"),
+                })
+
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown action: {action}",
+                })
+
+    except WebSocketDisconnect:
+        run_log_manager.disconnect(websocket)
+    except Exception as e:
+        run_log_manager.disconnect(websocket)
+        logger.error(f"RunLog WebSocket error: {e}")

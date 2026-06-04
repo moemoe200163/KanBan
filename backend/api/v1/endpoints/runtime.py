@@ -229,3 +229,61 @@ async def list_run_events(
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     events = await repo.list_run_events(run_id, limit=limit)
     return {"events": events, "total": len(events)}
+
+
+# ---------------------------------------------------------------------------
+# Log Sync — push + stream
+# ---------------------------------------------------------------------------
+
+class LogPushRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Log line content")
+    level: str = Field("info", description="Log level: debug, info, warn, error")
+    metadata: Optional[dict] = Field(default_factory=dict)
+
+
+@router.post("/runtime/runs/{run_id}/log")
+async def push_run_log(run_id: str, request: LogPushRequest):
+    """Push a log line from a worker. Persists to DB and broadcasts via WebSocket."""
+    import uuid
+    from db import repository as repo
+    from uuid import uuid4
+
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    event = await repo.append_run_event(
+        id=f"log_{uuid4().hex[:12]}",
+        run_id=run_id,
+        event_type="log",
+        message=request.message,
+        extra_metadata={"level": request.level, **(request.metadata or {})},
+    )
+
+    # Broadcast via WebSocket (best effort — ignore if no subscribers)
+    try:
+        from .ws import broadcast_run_log
+        await broadcast_run_log(run_id, event)
+    except Exception:
+        pass
+
+    return event
+
+
+@router.get("/runtime/runs/{run_id}/logs")
+async def list_run_logs(
+    run_id: str,
+    limit: int = Query(500, ge=1, le=5000, description="Max log lines to return"),
+):
+    """List log events for a run, ordered by created_at ASC (oldest first).
+
+    Convenience endpoint that filters to event_type=log only.
+    """
+    from db import repository as repo
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    all_events = await repo.list_run_events(run_id, limit=limit)
+    # Filter to log events only (status_change events are separate)
+    logs = [e for e in all_events if e.get("eventType") == "log"]
+    return {"logs": logs, "total": len(logs)}
