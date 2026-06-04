@@ -27,6 +27,9 @@ from db.models import (
     IssueEvent,
     IssueComment,
     IssueArtifact,
+    AgentWorker,
+    AgentRun,
+    AgentRunEvent,
 )
 
 
@@ -74,6 +77,19 @@ __all__ = [
     "upsert_llm_provider_config",
     "update_llm_provider_health",
     "seed_llm_provider_configs",
+    # Agent Runtime
+    "upsert_worker",
+    "get_worker",
+    "list_workers_by_board",
+    "update_worker_status",
+    "update_worker_heartbeat",
+    "create_run",
+    "get_run",
+    "list_runs_by_board",
+    "list_runs_by_worker",
+    "update_run_status",
+    "append_run_event",
+    "list_run_events",
 ]
 
 
@@ -1048,3 +1064,311 @@ async def seed_llm_provider_configs() -> int:
     except Exception as e:
         logger.warning(f"Failed to seed LLM provider configs: {e}")
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Agent Runtime — Worker / Run / Event
+# ---------------------------------------------------------------------------
+
+async def upsert_worker(
+    *,
+    id: str,
+    board_id: str = "board-default",
+    worker_type: str,
+    harness: Optional[str] = None,
+    status: str = "idle",
+    capabilities: Optional[list] = None,
+    max_concurrency: int = 1,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Create or update a worker record. Returns the worker as dict."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        existing = await session.get(AgentWorker, id)
+        now = datetime.now(timezone.utc)
+        if existing:
+            existing.worker_type = worker_type
+            existing.harness = harness
+            existing.status = status
+            if capabilities is not None:
+                existing.capabilities = capabilities
+            existing.max_concurrency = max_concurrency
+            if extra_metadata is not None:
+                existing.extra_metadata = extra_metadata
+            existing.updated_at = now
+            await session.commit()
+            await session.refresh(existing)
+            return existing.to_dict()
+        else:
+            row = AgentWorker(
+                id=id,
+                board_id=board_id,
+                worker_type=worker_type,
+                harness=harness,
+                status=status,
+                capabilities=capabilities or [],
+                max_concurrency=max_concurrency,
+                extra_metadata=extra_metadata or {},
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row.to_dict()
+
+
+async def get_worker(worker_id: str) -> Optional[dict]:
+    """Return a single worker as dict, or None."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentWorker, worker_id)
+            return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get worker {worker_id}: {e}")
+        return None
+
+
+async def list_workers_by_board(board_id: str = "board-default") -> List[dict]:
+    """List all workers for a board, ordered by created_at DESC."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(AgentWorker)
+                .where(AgentWorker.board_id == board_id)
+                .order_by(AgentWorker.created_at.desc())
+            )
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to list workers for board {board_id}: {e}")
+        return []
+
+
+async def update_worker_status(
+    worker_id: str,
+    status: str,
+    *,
+    active_run_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+    claimed_at: Optional[datetime] = None,
+    started_at: Optional[datetime] = None,
+    stopped_at: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Update worker status and optional timestamps. Returns updated dict."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentWorker, worker_id)
+        if not row:
+            return None
+        row.status = status
+        row.updated_at = datetime.now(timezone.utc)
+        if active_run_id is not None:
+            row.active_run_id = active_run_id
+        if error_message is not None:
+            row.error_message = error_message
+        if claimed_at is not None:
+            row.claimed_at = claimed_at
+        if started_at is not None:
+            row.started_at = started_at
+        if stopped_at is not None:
+            row.stopped_at = stopped_at
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def update_worker_heartbeat(worker_id: str) -> Optional[dict]:
+    """Update the worker's last_heartbeat_at to now. Returns updated dict."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentWorker, worker_id)
+        if not row:
+            return None
+        row.last_heartbeat_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Agent Run
+# ---------------------------------------------------------------------------
+
+async def create_run(
+    *,
+    id: str,
+    board_id: str = "board-default",
+    worker_id: Optional[str] = None,
+    issue_id: Optional[str] = None,
+    issue_key: Optional[str] = None,
+    job_id: Optional[str] = None,
+    command: Optional[str] = None,
+    profile: Optional[str] = None,
+    harness: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Create a new run. Returns the run as dict."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    row = AgentRun(
+        id=id,
+        board_id=board_id,
+        worker_id=worker_id,
+        issue_id=issue_id,
+        issue_key=issue_key,
+        job_id=job_id,
+        status="pending",
+        command=command,
+        profile=profile,
+        harness=harness,
+        provider=provider,
+        model=model,
+        extra_metadata=extra_metadata or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def get_run(run_id: str) -> Optional[dict]:
+    """Return a single run as dict, or None."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentRun, run_id)
+            return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get run {run_id}: {e}")
+        return None
+
+
+async def list_runs_by_board(
+    board_id: str = "board-default",
+    issue_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> List[dict]:
+    """List runs for a board, newest first. Optional filters for issue_id and status."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = select(AgentRun).where(AgentRun.board_id == board_id)
+            if issue_id:
+                stmt = stmt.where(AgentRun.issue_id == issue_id)
+            if status:
+                stmt = stmt.where(AgentRun.status == status)
+            stmt = stmt.order_by(AgentRun.created_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to list runs for board {board_id}: {e}")
+        return []
+
+
+async def list_runs_by_worker(
+    worker_id: str,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> List[dict]:
+    """List runs for a worker, newest first. Optional status filter."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = select(AgentRun).where(AgentRun.worker_id == worker_id)
+            if status:
+                stmt = stmt.where(AgentRun.status == status)
+            stmt = stmt.order_by(AgentRun.created_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to list runs for worker {worker_id}: {e}")
+        return []
+
+
+async def update_run_status(
+    run_id: str,
+    status: str,
+    *,
+    worker_id: Optional[str] = None,
+    result_summary: Optional[str] = None,
+    error_message: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Update run status and optional fields. Returns updated dict."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentRun, run_id)
+        if not row:
+            return None
+        row.status = status
+        if worker_id is not None:
+            row.worker_id = worker_id
+        if result_summary is not None:
+            row.result_summary = result_summary
+        if error_message is not None:
+            row.error_message = error_message
+        if started_at is not None:
+            row.started_at = started_at
+        if completed_at is not None:
+            row.completed_at = completed_at
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Agent Run Events
+# ---------------------------------------------------------------------------
+
+async def append_run_event(
+    *,
+    id: str,
+    run_id: str,
+    event_type: str,
+    message: Optional[str] = None,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Append an event to a run. Returns the created event."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    row = AgentRunEvent(
+        id=id,
+        run_id=run_id,
+        event_type=event_type,
+        message=message,
+        extra_metadata=extra_metadata or {},
+        created_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def list_run_events(run_id: str, limit: int = 500) -> List[dict]:
+    """List events for a run, ordered by created_at ASC (oldest first)."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(AgentRunEvent)
+                .where(AgentRunEvent.run_id == run_id)
+                .order_by(AgentRunEvent.created_at.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to list events for run {run_id}: {e}")
+        return []

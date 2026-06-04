@@ -616,3 +616,159 @@ class LLMProviderConfig(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+# ---------------------------------------------------------------------------
+# Agent Runtime — Multi-Agent Worker System
+# ---------------------------------------------------------------------------
+
+
+class AgentWorker(Base):
+    """
+    Tracks agent worker processes.
+
+    A worker is a long-lived process that claims and executes runs.
+    Workers register on startup, send heartbeats, and report status.
+    Every worker belongs to a board (board_id) for isolation.
+    """
+    __tablename__ = "agent_workers"
+
+    id = Column(String(64), primary_key=True)
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    worker_type = Column(String(32), nullable=False, index=True)  # claude-code, codex, safe-runner, etc.
+    harness = Column(String(32), nullable=True)  # claude-code, codex, cursor, etc.
+    status = Column(String(32), nullable=False, default="idle", index=True)  # idle, claimed, starting, running, stopping, stopped, error
+    capabilities = Column(JSON, nullable=True, default=list)
+    max_concurrency = Column(Integer, nullable=False, default=1)
+    active_run_id = Column(String(64), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(String(512), nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_agent_workers_board_status", "board_id", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "boardId": self.board_id,
+            "workerType": self.worker_type,
+            "harness": self.harness,
+            "status": self.status,
+            "capabilities": self.capabilities or [],
+            "maxConcurrency": self.max_concurrency,
+            "activeRunId": self.active_run_id,
+            "claimedAt": self.claimed_at.isoformat() if self.claimed_at else None,
+            "startedAt": self.started_at.isoformat() if self.started_at else None,
+            "stoppedAt": self.stopped_at.isoformat() if self.stopped_at else None,
+            "lastHeartbeatAt": self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
+            "errorMessage": self.error_message,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class AgentRun(Base):
+    """
+    Tracks execution runs assigned to workers.
+
+    A run is a single execution attempt of a command against an issue.
+    It references both the worker that runs it and optionally the ECC job.
+    """
+    __tablename__ = "agent_runs"
+
+    id = Column(String(64), primary_key=True)
+    worker_id = Column(String(64), nullable=True, index=True)
+    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    issue_id = Column(String(64), nullable=True, index=True)
+    issue_key = Column(String(32), nullable=True)
+    job_id = Column(String(64), nullable=True, index=True)  # links to ecc_jobs.id
+    status = Column(String(32), nullable=False, default="pending", index=True)  # pending, claimed, running, completed, failed, cancelled
+    command = Column(String(128), nullable=True)
+    profile = Column(String(32), nullable=True)
+    harness = Column(String(32), nullable=True)
+    provider = Column(String(32), nullable=True)
+    model = Column(String(128), nullable=True)
+    result_summary = Column(Text, nullable=True)
+    error_message = Column(String(512), nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_runs_board_status", "board_id", "status"),
+        Index("ix_agent_runs_worker_status", "worker_id", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "workerId": self.worker_id,
+            "boardId": self.board_id,
+            "issueId": self.issue_id,
+            "issueKey": self.issue_key,
+            "jobId": self.job_id,
+            "status": self.status,
+            "command": self.command,
+            "profile": self.profile,
+            "harness": self.harness,
+            "provider": self.provider,
+            "model": self.model,
+            "resultSummary": self.result_summary,
+            "errorMessage": self.error_message,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "startedAt": self.started_at.isoformat() if self.started_at else None,
+            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+
+class AgentRunEvent(Base):
+    """
+    Logs events within a run (status changes, log lines, errors).
+
+    Events are append-only and ordered by created_at for streaming.
+    """
+    __tablename__ = "agent_run_events"
+
+    id = Column(String(64), primary_key=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    event_type = Column(String(32), nullable=False, index=True)  # status_change, log, error, heartbeat
+    message = Column(Text, nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_agent_run_events_run_created", "run_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "runId": self.run_id,
+            "eventType": self.event_type,
+            "message": self.message,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
