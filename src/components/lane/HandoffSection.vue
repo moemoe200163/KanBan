@@ -6,6 +6,13 @@
 
 import { useBoardStore } from '~/stores/board'
 import type { Handoff, HandoffPreview, WorkerLane } from '~/types'
+// Explicit import: HandoffCard lives in the same `lane/` directory, so
+// Nuxt's auto-import registers it as `LaneHandoffCard`. IssueDetail.vue
+// imports HandoffSection the same way for the same reason — see its
+// top-of-file `import HandoffSection from './lane/HandoffSection.vue'`.
+// Without this, `<HandoffCard>` falls through to a literal custom
+// element (`<handoffcard>`) and the per-handoff UI never renders.
+import HandoffCard from './HandoffCard.vue'
 
 const boardStore = useBoardStore()
 const issue = computed(() => boardStore.selectedIssue)
@@ -112,10 +119,27 @@ async function submitCompletion() {
     // merges with the existing payload, so partial submissions are
     // fine — but the user must cover all required fields, otherwise
     // the service will 422 again.
+    //
+    // List-typed fields (e.g. `screenshots: list[str]`) need a real
+    // JSON array on the wire. The form's input is a text field, so we
+    // try `JSON.parse` on each value: if the user typed a valid JSON
+    // array (e.g. `["a.png","b.png"]`), pass it through as the array.
+    // Otherwise the raw string is sent and the backend can surface a
+    // 422 for any type mismatch it catches (P1.5 typed payload).
     const payload: Record<string, unknown> = {}
     for (const field of completionPreview.value.missingFields) {
       const v = completionValues.value[field]?.trim()
-      if (v) payload[field] = v
+      if (!v) continue
+      try {
+        const parsed = JSON.parse(v)
+        if (Array.isArray(parsed)) {
+          payload[field] = parsed
+          continue
+        }
+      } catch {
+        // not JSON — fall through to plain string
+      }
+      payload[field] = v
     }
     await boardStore.completeHandoff(
       issue.value.id,
@@ -245,6 +269,7 @@ async function handleCancel(handoffId: string) {
           {{ isCompleting ? 'Submitting...' : 'Complete Handoff' }}
         </button>
         <button
+          data-testid="cancel-completion"
           class="px-2 py-1.5 rounded text-[11px] bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
           @click="cancelCompletion"
         >

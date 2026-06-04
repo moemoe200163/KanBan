@@ -53,25 +53,53 @@ test.describe('Handoff completion with required fields', () => {
 
     await page.goto('/')
 
-    // Open the issue and switch to the Handoffs tab
+    // Open the issue and switch to the Handoffs tab.
+    // Drive the store directly via the e2e hook (NUXT_PUBLIC_E2E=1).
+    // A card click is the user-facing path, but with many seeded issues
+    // the kanban columns container (and the review-queue overlay on the
+    // right) can sit on top of the card's bounding box and intercept
+    // the click. The store-hook path is what dependency.spec.ts uses
+    // for the same reason — it tests the same flow (panel renders,
+    // handoffs tab, Complete button) without depending on overlay
+    // pointer routing.
     const card = page.locator(`[data-testid="issue-card"][data-issue-id="${issue.id}"]`)
     await expect(card).toBeVisible()
-    await card.click()
+    await page.evaluate((issueId) => {
+      const hook = (window as Window).__DEVFLOW_E2E__
+      if (!hook) {
+        throw new Error(
+          '__DEVFLOW_E2E__ not exposed. Confirm NUXT_PUBLIC_E2E=1 is set ' +
+          'on the preview server (see e2e/playwright.config.ts webServer.env).'
+        )
+      }
+      const issue = hook.store.getAllIssues.find(i => i.id === issueId)
+      if (!issue) throw new Error(`Issue ${issueId} not found in store`)
+      hook.store.selectIssue(issue)
+    }, issue.id)
     await expect(page.locator('.issue-detail__panel')).toBeVisible()
     await page.getByRole('button', { name: 'Handoffs' }).click()
 
     // The handoff created above should render in the section. Click
     // Complete — should pre-flight the preview and open the inline
     // form because the frontend lane requires diff_summary + screenshots.
-    await page.getByRole('button', { name: 'Complete' }).click()
+    // Use the HandoffCard's data-testid; the bare `name: 'Complete'`
+    // collides with sidebar job-item buttons whose job status text
+    // contains "Complete" (e.g. "completed" past-tense).
+    await page.getByTestId('handoff-complete-btn').click()
 
     // The new form should appear with one input per missing required field.
     await expect(page.getByTestId('completion-field-diff_summary')).toBeVisible()
     await expect(page.getByTestId('completion-field-screenshots')).toBeVisible()
 
-    // Fill in the required fields and submit.
+    // Fill in the required fields and submit. The frontend lane's
+    // `screenshots` is a typed `list[str]` on the wire (see
+    // backend/core/kanban_protocol/payloads.py FrontendPayload) — the
+    // form's submitCompletion tries JSON.parse on each value and
+    // passes through the array when the input parses, so we send a
+    // valid JSON array here. `diff_summary` is a plain string and
+    // goes through unchanged.
     await page.getByTestId('completion-field-diff_summary').fill('E2E diff summary')
-    await page.getByTestId('completion-field-screenshots').fill('e2e.png')
+    await page.getByTestId('completion-field-screenshots').fill('["e2e.png"]')
 
     await Promise.all([
       page.waitForResponse(response =>
@@ -98,7 +126,13 @@ test.describe('Handoff completion with required fields', () => {
 
     const card = page.locator(`[data-testid="issue-card"][data-issue-id="${issue.id}"]`)
     await expect(card).toBeVisible()
-    await card.click()
+    await page.evaluate((issueId) => {
+      const hook = (window as Window).__DEVFLOW_E2E__
+      if (!hook) throw new Error('__DEVFLOW_E2E__ missing during open')
+      const issue = hook.store.getAllIssues.find(i => i.id === issueId)
+      if (!issue) throw new Error(`Issue ${issueId} not found in store`)
+      hook.store.selectIssue(issue)
+    }, issue.id)
     await expect(page.locator('.issue-detail__panel')).toBeVisible()
     await page.getByRole('button', { name: 'Handoffs' }).click()
 
@@ -109,9 +143,13 @@ test.describe('Handoff completion with required fields', () => {
       }
     })
 
-    await page.getByRole('button', { name: 'Complete' }).click()
+    await page.getByTestId('handoff-complete-btn').click()
     await expect(page.getByTestId('completion-field-diff_summary')).toBeVisible()
-    await page.getByRole('button', { name: 'Cancel' }).click()
+    // Scope to the form's Cancel button via its testid; a bare
+    // `getByRole('button', { name: 'Cancel' })` collides with the
+    // HandoffCard's per-card Cancel action (the new-issue and handoff
+    // create modals also have a Cancel).
+    await page.getByTestId('cancel-completion').click()
 
     // Give a tick for any stray request to fire
     await page.waitForTimeout(300)

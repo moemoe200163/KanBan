@@ -101,6 +101,7 @@ const relativeTime = computed(() => {
       </button>
       <button
         v-if="handoff.status === 'in_progress' || handoff.status === 'accepted'"
+        data-testid="handoff-complete-btn"
         class="px-2 py-1 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 text-[11px] transition-colors"
         @click="emit('complete', handoff.id)"
       >

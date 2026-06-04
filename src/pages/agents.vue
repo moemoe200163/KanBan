@@ -12,6 +12,11 @@
 import { useBoardStore } from '~/stores/board'
 import { Bot, Circle, Loader2, XCircle } from 'lucide-vue-next'
 import type { WorkerLane, Handoff } from '~/types'
+// Explicit import: AgentRoleMatrix lives in `components/lane/`, so
+// Nuxt's auto-import registers it as `LaneAgentRoleMatrix`. Without
+// this explicit import, `<AgentRoleMatrix>` is rendered as a literal
+// custom element (`<agentrolematrix>`) and the roles matrix never shows.
+import AgentRoleMatrix from '~/components/lane/AgentRoleMatrix.vue'
 
 const boardStore = useBoardStore()
 const route = useRoute()
