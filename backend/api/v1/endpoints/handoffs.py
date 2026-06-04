@@ -1,7 +1,10 @@
 """Kanban Protocol — Handoff API."""
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+
+logger = logging.getLogger(__name__)
 
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
@@ -160,39 +163,49 @@ async def complete_handoff(
         )
 
         # Auto-create artifacts from typed payload fields.
-        payload = body.payload or {}
+        # Wrapped in try/except so a DB error during artifact creation
+        # does not fail the handoff completion itself.
+        try:
+            payload = body.payload or {}
 
-        for shot in (payload.get("screenshots") or []):
-            await repo.create_issue_artifact(
-                issue_id=issue_id,
-                title=shot,
-                artifact_type="screenshot",
-                job_id=None,
-                source="handoff_complete",
-                path_or_url=shot,
-                summary=f"Screenshot from handoff {handoff_id}",
-            )
+            for shot in (payload.get("screenshots") or []):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title=shot,
+                    artifact_type="screenshot",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=shot,
+                    summary=f"Screenshot from handoff {handoff_id}",
+                )
 
-        if payload.get("diff_summary"):
-            await repo.create_issue_artifact(
-                issue_id=issue_id,
-                title="Diff Summary",
-                artifact_type="diff_summary",
-                job_id=None,
-                source="handoff_complete",
-                path_or_url=None,
-                summary=payload["diff_summary"],
-            )
+            if payload.get("diff_summary"):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title="Diff Summary",
+                    artifact_type="diff_summary",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=None,
+                    summary=payload["diff_summary"],
+                )
 
-        if payload.get("test_results"):
-            await repo.create_issue_artifact(
-                issue_id=issue_id,
-                title="Test Results",
-                artifact_type="test_log",
-                job_id=None,
-                source="handoff_complete",
-                path_or_url=None,
-                summary=payload["test_results"],
+            if payload.get("test_results"):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title="Test Results",
+                    artifact_type="test_log",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=None,
+                    summary=payload["test_results"],
+                )
+        except Exception:
+            logger.warning(
+                "Failed to create artifacts for handoff %s on issue %s",
+                handoff_id,
+                issue_id,
+                exc_info=True,
             )
 
         return result
