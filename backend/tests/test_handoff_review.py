@@ -121,15 +121,19 @@ def test_review_approve_sets_decision_and_status(fresh_db):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "approved"
-    assert body["decision"] == "approve"
-    assert body["reviewedBy"] == "carol"
-    assert body["reviewedAt"] is not None
-    assert body["reviewComment"] is None
+    h = body["handoff"]
+    assert h["status"] == "approved"
+    assert h["decision"] == "approve"
+    assert h["reviewedBy"] == "carol"
+    assert h["reviewedAt"] is not None
+    assert h["reviewComment"] is None
+    # Approve: no auto-routing
+    assert body["routing"]["action"] == "none"
+    assert body["routing"]["next_handoff"] is None
 
 
-def test_review_reject_sets_decision_and_routes_to_from_lane(fresh_db):
-    """Rejecting sets decision='reject' and status='rejected'."""
+def test_review_reject_sets_decision_and_routes_to_triage(fresh_db):
+    """Rejecting creates a new handoff to triage with rejection context."""
     handoff = _create_and_complete_handoff(client, from_lane="frontend")
 
     response = client.post(
@@ -138,31 +142,51 @@ def test_review_reject_sets_decision_and_routes_to_from_lane(fresh_db):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "rejected"
-    assert body["decision"] == "reject"
-    assert body["reviewedBy"] == "carol"
-    assert body["reviewComment"] == "Needs more work"
-    assert body["reviewedAt"] is not None
+    h = body["handoff"]
+    assert h["status"] == "rejected"
+    assert h["decision"] == "reject"
+    assert h["reviewedBy"] == "carol"
+    assert h["reviewComment"] == "Needs more work"
+    assert h["reviewedAt"] is not None
+    # Reject: auto-routes to triage
+    assert body["routing"]["action"] == "reject"
+    assert body["routing"]["next_lane"] == "triage"
+    next_h = body["routing"]["next_handoff"]
+    assert next_h is not None
+    assert next_h["toLane"] == "triage"
+    assert next_h["fromLane"] == "review"
+    assert next_h["status"] == "pending"
+    assert next_h["payload"]["rejection_reason"] == "Needs more work"
+    assert next_h["payload"]["rejected_from_lane"] == "frontend"
 
 
-def test_review_request_changes_sets_decision(fresh_db):
-    """Requesting changes sets decision='request_changes' and status='rework'."""
+def test_review_request_changes_creates_rework_handoff(fresh_db):
+    """Requesting changes creates a rework handoff back to the originating lane."""
     handoff = _create_and_complete_handoff(client, from_lane="backend")
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
-        json={"decision": "request_changes", "actor": "carol"},
+        json={"decision": "request_changes", "actor": "carol", "comment": "Fix tests"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "rework"
-    assert body["decision"] == "request_changes"
-    assert body["reviewedBy"] == "carol"
-    assert body["reviewedAt"] is not None
+    h = body["handoff"]
+    assert h["status"] == "rework"
+    assert h["decision"] == "request_changes"
+    # Rework: auto-routes back to backend
+    assert body["routing"]["action"] == "rework"
+    assert body["routing"]["next_lane"] == "backend"
+    next_h = body["routing"]["next_handoff"]
+    assert next_h is not None
+    assert next_h["toLane"] == "backend"
+    assert next_h["fromLane"] == "review"
+    assert next_h["status"] == "pending"
+    assert next_h["payload"]["rework_reason"] == "Fix tests"
+    assert next_h["payload"]["rework_from_review"] == handoff["id"]
 
 
 def test_review_reject_without_from_lane_routes_to_triage(fresh_db):
-    """Reject/rework with from_lane=None should still succeed (routes conceptually to triage)."""
+    """Reject/rework with from_lane=None routes to triage."""
     handoff = _create_and_complete_handoff(client, from_lane=None)
 
     response = client.post(
@@ -171,8 +195,15 @@ def test_review_reject_without_from_lane_routes_to_triage(fresh_db):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "rejected"
-    assert body["decision"] == "reject"
+    h = body["handoff"]
+    assert h["status"] == "rejected"
+    assert h["decision"] == "reject"
+    # Routes to triage
+    assert body["routing"]["action"] == "reject"
+    assert body["routing"]["next_lane"] == "triage"
+    next_h = body["routing"]["next_handoff"]
+    assert next_h["toLane"] == "triage"
+    assert next_h["payload"]["rejected_from_lane"] is None
 
 
 # ---------------------------------------------------------------------------

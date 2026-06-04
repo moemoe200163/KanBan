@@ -170,7 +170,15 @@ class HandoffService:
         actor: Optional[str],
         comment: Optional[str] = None,
     ) -> dict:
-        """Reviewer decides on a completed handoff: approve, reject, or request_changes."""
+        """Reviewer decides on a completed handoff: approve, reject, or request_changes.
+
+        Returns a dict with keys:
+        - ``handoff``: the updated handoff record
+        - ``routing``: a dict describing the routing action taken or suggested
+          - ``action``: ``"none"`` | ``"rework"`` | ``"reject"``
+          - ``next_handoff``: the newly created handoff (for rework/reject), or ``None``
+          - ``next_lane``: the target lane for the routing action
+        """
         if decision not in ("approve", "reject", "request_changes"):
             raise ValueError(
                 f"Invalid decision '{decision}'; "
@@ -193,14 +201,13 @@ class HandoffService:
                 "only 'completed' handoffs can be reviewed"
             )
 
-        # Route based on decision.
+        # Determine new status.
         if decision == "approve":
             new_status = "approved"
         else:
-            # reject or request_changes — route back to from_lane.
             new_status = "rejected" if decision == "reject" else "rework"
 
-        return await repo.update_issue_handoff(
+        updated = await repo.update_issue_handoff(
             handoff_id,
             status=new_status,
             decision=decision,
@@ -208,6 +215,54 @@ class HandoffService:
             reviewed_by=actor,
             set_reviewed_at=True,
         )
+
+        # --- Decision routing ---
+        from_lane = current.get("fromLane")
+        issue_id = current["issueId"]
+        board_id = current.get("boardId", "board-default")
+
+        routing: dict = {"action": "none", "next_handoff": None, "next_lane": None}
+
+        if decision == "request_changes":
+            # Create a rework handoff back to the originating lane.
+            target_lane = from_lane or "triage"
+            rework_payload: dict = {
+                "rework_reason": comment or "",
+                "original_reviewer": actor,
+                "rework_from_review": handoff_id,
+            }
+            next_h = await self.create(
+                issue_id=issue_id,
+                board_id=board_id,
+                from_lane="review",
+                to_lane=target_lane,
+                payload=rework_payload,
+                created_by=actor,
+            )
+            routing = {"action": "rework", "next_handoff": next_h, "next_lane": target_lane}
+
+        elif decision == "reject":
+            # Route to triage for re-evaluation.
+            target_lane = "triage"
+            reject_payload: dict = {
+                "rejection_reason": comment or "",
+                "original_reviewer": actor,
+                "rejected_from_review": handoff_id,
+                "rejected_from_lane": from_lane,
+            }
+            next_h = await self.create(
+                issue_id=issue_id,
+                board_id=board_id,
+                from_lane="review",
+                to_lane=target_lane,
+                payload=reject_payload,
+                created_by=actor,
+            )
+            routing = {"action": "reject", "next_handoff": next_h, "next_lane": target_lane}
+
+        # approve: no auto-routing — human decides next step.
+
+        return {"handoff": updated, "routing": routing}
 
     async def block(self, *, handoff_id: str, actor: Optional[str], reason: str) -> dict:
         if not reason or not reason.strip():

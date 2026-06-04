@@ -1747,8 +1747,14 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       const ctx = this._handoffCtx(issueId)
       if (!ctx) return null
       try {
-        const h = await ctx.api.reviewHandoff(handoffId, req)
+        const resp = await ctx.api.reviewHandoff(handoffId, req) as any
+        // Backend returns { handoff, routing }. Extract the updated handoff.
+        const h: Handoff = resp.handoff ?? resp
         ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        // If routing created a new handoff (rework/reject), append it.
+        if (resp.routing?.next_handoff) {
+          ctx.issue.handoffs.push(resp.routing.next_handoff)
+        }
         return h
       } catch (e) {
         console.warn('[BoardStore] reviewHandoff failed:', e)
