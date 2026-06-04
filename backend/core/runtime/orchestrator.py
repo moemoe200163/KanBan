@@ -217,6 +217,8 @@ async def complete_run(
             event_type="status_change",
             message=f"Run completed: {result_summary or 'success'}",
         )
+        # Sync linked ECC job → review_required
+        await _sync_job_for_run(run_id, "review_required", repo, result_summary=result_summary)
         logger.info("Run %s completed by worker %s", run_id, worker_id)
     return updated
 
@@ -247,8 +249,62 @@ async def fail_run(
             event_type="error",
             message=f"Run failed: {error_message}",
         )
+        # Sync linked ECC job → failed
+        await _sync_job_for_run(run_id, "failed", repo, error_message=error_message)
         logger.warning("Run %s failed: %s", run_id, error_message)
     return updated
+
+
+async def _sync_job_for_run(
+    run_id: str,
+    job_status: str,
+    repo,
+    result_summary: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """Sync the linked ECC job status when a run completes or fails.
+
+    Looks up the run's job_id, then upserts the ECC job with the new status
+    and appends a status_change event.
+    """
+    try:
+        run = await repo.get_run(run_id)
+        if not run:
+            return
+        job_id = run.get("jobId") or run.get("job_id")
+        if not job_id:
+            return
+
+        job = await repo.get_job(job_id)
+        if not job:
+            return
+
+        now = datetime.now(timezone.utc).isoformat()
+        message = result_summary or error_message or job_status
+        events = list(job.get("events") or [])
+        events.append({
+            "timestamp": now,
+            "status": job_status,
+            "message": f"Run {run_id}: {message}",
+        })
+
+        await repo.upsert_job({
+            "id": job_id,
+            "issue_id": job["issue_id"],
+            "issue_key": job["issue_key"],
+            "command": job.get("command", ""),
+            "profile": job.get("profile", ""),
+            "harness": job.get("harness", ""),
+            "board_id": job.get("board_id", "board-default"),
+            "status": job_status,
+            "created_at": job.get("created_at", now),
+            "updated_at": now,
+            "message": message[:512] if message else None,
+            "events": events,
+        })
+        logger.info("Synced job %s → %s (from run %s)", job_id, job_status, run_id)
+    except Exception as exc:
+        logger.warning("Failed to sync job for run %s: %s", run_id, exc)
 
 
 async def cancel_run(run_id: str, worker_id: Optional[str] = None) -> Optional[dict]:

@@ -1053,7 +1053,7 @@ async def seed_llm_provider_configs() -> int:
                 return 0
 
             defaults = [
-                ("minimax", "MiniMax", "https://api.minimax.io/v1", "/chat/completions", "openai-chat", "bearer", "MiniMax-M3"),
+                ("minimax", "MiniMax", "https://api.minimax.io/anthropic", "/v1/messages", "anthropic-messages", "x-api-key", "MiniMax-M3"),
                 ("openai", "OpenAI", "https://api.openai.com/v1", "/responses", "openai-responses", "bearer", "gpt-4o"),
                 ("anthropic", "Anthropic", "https://api.anthropic.com/v1", "/messages", "anthropic-messages", "x-api-key", "claude-sonnet-4-20250514"),
                 ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", "/chat/completions", "openai-chat", "api-key", "MiMo-7B"),

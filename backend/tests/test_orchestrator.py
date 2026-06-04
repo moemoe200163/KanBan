@@ -366,3 +366,251 @@ class TestRunLifecycleAPI:
         resp = api_client.post(f"/api/v1/runtime/runs/{run['id']}/start")
         assert resp.status_code == 409
         assert "claimed" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline: run completion syncs ECC job status
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_complete_run_syncs_ecc_job_to_review_required(fresh_db):
+    """When a run completes, the linked ECC job status moves to review_required."""
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, complete_run
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed a job
+    await repo.upsert_job({
+        "id": "job-pipe-1",
+        "issue_id": "iss-pipe",
+        "issue_key": "DEV-PIPE-1",
+        "command": "implement",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+
+    # Create a run linked to the job
+    await repo.upsert_worker(id="wk-pipe", board_id="board-default", worker_type="safe-runner")
+    run = await create_run_for_dispatch(
+        board_id="board-default",
+        issue_id="iss-pipe",
+        issue_key="DEV-PIPE-1",
+        command="implement",
+        harness="safe-runner",
+        job_id="job-pipe-1",
+    )
+    assert run["jobId"] == "job-pipe-1"
+
+    # Claim → start → complete (real orchestrator, not mocked)
+    await claim_next_run("wk-pipe", "board-default")
+    await start_run(run["id"], "wk-pipe")
+    completed = await complete_run(run["id"], "wk-pipe", result_summary="Implementation done")
+
+    assert completed["status"] == "completed"
+
+    # Verify the ECC job was synced
+    job = await repo.get_job("job-pipe-1")
+    assert job is not None
+    assert job["status"] == "review_required"
+    assert job["message"] == "Implementation done"
+    # Events should include the status_change from the sync
+    events = job.get("events", [])
+    assert len(events) >= 1
+    assert events[-1]["status"] == "review_required"
+    assert "Implementation done" in events[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_fail_run_syncs_ecc_job_to_failed(fresh_db):
+    """When a run fails, the linked ECC job status moves to failed."""
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, fail_run
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed a job
+    await repo.upsert_job({
+        "id": "job-pipe-2",
+        "issue_id": "iss-pipe-2",
+        "issue_key": "DEV-PIPE-2",
+        "command": "test",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "running",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+
+    # Create a run linked to the job
+    await repo.upsert_worker(id="wk-pipe-2", board_id="board-default", worker_type="safe-runner")
+    run = await create_run_for_dispatch(
+        board_id="board-default",
+        issue_id="iss-pipe-2",
+        issue_key="DEV-PIPE-2",
+        command="test",
+        harness="safe-runner",
+        job_id="job-pipe-2",
+    )
+
+    # Claim → start → fail (real orchestrator)
+    await claim_next_run("wk-pipe-2", "board-default")
+    await start_run(run["id"], "wk-pipe-2")
+    failed = await fail_run(run["id"], "wk-pipe-2", error_message="API timeout")
+
+    assert failed["status"] == "failed"
+
+    # Verify the ECC job was synced
+    job = await repo.get_job("job-pipe-2")
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["message"] == "API timeout"
+    events = job.get("events", [])
+    assert len(events) >= 1
+    assert events[-1]["status"] == "failed"
+    assert "API timeout" in events[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_complete_run_without_job_id_skips_sync(fresh_db):
+    """Run without a linked job completes normally (no sync attempted)."""
+    from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, complete_run
+
+    await repo.upsert_worker(id="wk-nojob", board_id="board-default", worker_type="safe-runner")
+    run = await create_run_for_dispatch(
+        board_id="board-default",
+        issue_id="iss-nojob",
+        issue_key="DEV-NOJOB",
+        command="test",
+        harness="safe-runner",
+        # No job_id
+    )
+    assert run["jobId"] is None
+
+    await claim_next_run("wk-nojob", "board-default")
+    await start_run(run["id"], "wk-nojob")
+    completed = await complete_run(run["id"], "wk-nojob", result_summary="ok")
+
+    assert completed["status"] == "completed"
+    # No crash, no job to sync
+
+
+@pytest.mark.asyncio
+async def test_pipeline_dispatch_to_review(fresh_db):
+    """Full pipeline: dispatch → claim → start → complete → job review_required → approve."""
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, complete_run
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 1. Seed a job in "queued" status
+    await repo.upsert_job({
+        "id": "job-full-pipe",
+        "issue_id": "iss-full",
+        "issue_key": "DEV-FULL",
+        "command": "implement",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+
+    # 2. Create run linked to job
+    await repo.upsert_worker(id="wk-full", board_id="board-default", worker_type="safe-runner")
+    run = await create_run_for_dispatch(
+        board_id="board-default",
+        issue_id="iss-full",
+        issue_key="DEV-FULL",
+        command="implement",
+        harness="safe-runner",
+        job_id="job-full-pipe",
+    )
+
+    # 3. Worker claims
+    claimed = await claim_next_run("wk-full", "board-default")
+    assert claimed["id"] == run["id"]
+    assert claimed["status"] == "claimed"
+
+    # 4. Worker starts
+    started = await start_run(run["id"], "wk-full")
+    assert started["status"] == "running"
+
+    # 5. Worker completes
+    completed = await complete_run(run["id"], "wk-full", result_summary="All tests passed")
+    assert completed["status"] == "completed"
+
+    # 6. Verify job synced to review_required
+    job = await repo.get_job("job-full-pipe")
+    assert job["status"] == "review_required"
+
+    # 7. Verify run events
+    events = await repo.list_run_events(run["id"])
+    event_types = [e["eventType"] for e in events]
+    assert "status_change" in event_types
+
+
+# ---------------------------------------------------------------------------
+# API layer: GET /ecc/jobs/{job_id} returns valid events after run sync
+# ---------------------------------------------------------------------------
+
+def test_get_ecc_job_after_run_complete_has_valid_events(api_client, fresh_db):
+    """GET /api/v1/ecc/jobs/{id} returns 200 with ECCJobEvent-shaped events
+    after a run completes and syncs the job status."""
+    import asyncio
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, complete_run
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed a job
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(repo.upsert_job({
+        "id": "job-api-test",
+        "issue_id": "iss-api",
+        "issue_key": "DEV-API-1",
+        "command": "implement",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "events": [{"timestamp": now, "status": "queued", "message": "Job created"}],
+    }))
+
+    # Create + claim + start + complete run
+    loop.run_until_complete(repo.upsert_worker(id="wk-api", board_id="board-default", worker_type="safe-runner"))
+    run = loop.run_until_complete(create_run_for_dispatch(
+        board_id="board-default", issue_id="iss-api", issue_key="DEV-API-1",
+        command="implement", harness="safe-runner", job_id="job-api-test",
+    ))
+    loop.run_until_complete(claim_next_run("wk-api", "board-default"))
+    loop.run_until_complete(start_run(run["id"], "wk-api"))
+    loop.run_until_complete(complete_run(run["id"], "wk-api", result_summary="Done"))
+    loop.close()
+
+    # GET the job via API — should not crash on event parsing
+    resp = api_client.get("/api/v1/ecc/jobs/job-api-test")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "review_required"
+
+    # Events should be valid ECCJobEvent shape (timestamp, status, message)
+    events = body["events"]
+    assert len(events) >= 2
+    # Last event should be the sync event
+    last_event = events[-1]
+    assert "status" in last_event
+    assert "timestamp" in last_event
+    assert "message" in last_event
+    assert last_event["status"] == "review_required"

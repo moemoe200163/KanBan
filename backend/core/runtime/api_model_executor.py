@@ -5,8 +5,8 @@ this executor reads the provider config from the DB, makes a real HTTP
 call to the LLM API, and streams the response back as logs.
 
 Supported api_shapes:
-- openai-chat (MiniMax, OpenAI, Xiaomi MiMo)
-- anthropic-messages (Claude)
+- openai-chat (OpenAI, Xiaomi MiMo)
+- anthropic-messages (Claude, MiniMax via Anthropic-compatible endpoint)
 - openai-responses (OpenAI Responses API)
 
 Falls back gracefully if provider config is missing or API call fails.
