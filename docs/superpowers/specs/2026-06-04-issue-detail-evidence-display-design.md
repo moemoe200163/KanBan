@@ -9,10 +9,9 @@
 
 ## 1. Goal
 
-Make completed handoff evidence (typed payload values, completion actor, completion
-timestamp) visible inside the existing Issue Detail panel so that a reviewer can
-see *what was actually delivered* on a handoff — not just the handoff's status
-badge and lane.
+Make completed handoff **typed payload values** visible inside the existing
+Issue Detail panel so that a reviewer can see *what was actually delivered* on
+a handoff — not just the handoff's status badge and lane.
 
 The "evidence" surface lives **inside `HandoffCard.vue`** on the existing
 `Handoffs` tab. It is **collapsed by default**, **shown only for completed
@@ -22,6 +21,17 @@ panel). This is a surgical UI addition — not an evidence chain refactor.
 This sprint is the **first slice** of the evidence chain. P2 (Artifacts v1) is
 deferred per the user's roadmap; the spec leaves a typed seam so the next
 sprint can attach artifact refs without breaking the display contract.
+
+The displayed fields are exactly those already on the typed `payload` from
+P1.5: `summary`, `diff_summary`, `test_results`, `coverage_pct`, `screenshots`,
+`interfaces`, `acceptance_criteria`, `design_notes`, `release_notes`,
+`reviewer`, `decision`, `approver`, `lane_recommendation`. `Handoff.completedBy`
+and `Handoff.completedAt` are **not** rendered as separate metadata lines
+this sprint — they are part of the Handoff aggregate that the backend can
+already expose via the existing `GET /handoffs` response, but adding them
+to the UI here would conflate "the payload the user typed" with "the system
+metadata". A future sprint can decide whether to surface them inline; for
+now, scope stays tight to payload-only.
 
 ## 2. Non-Goals
 
@@ -224,7 +234,45 @@ expansion is a transient interaction state, not a persistent preference.
 
 Two new tests in `e2e/handoff-completion.spec.ts`, file-scoped to the desktop
 project (the existing tests in this file already `test.skip(isMobile, ...)`
-for the same reason).
+for the same reason). Both tests share a small helper that the existing tests
+in the file should also adopt while we are here (the inlined `selectIssue`
+snippet in the existing tests is now used three times — extract it).
+
+### 5.0 Shared helper
+
+```ts
+// Drive the store directly via the e2e hook (NUXT_PUBLIC_E2E=1) to
+// open an issue and switch to the Handoffs tab. The user-facing path
+// is a card click, but the kanban columns container and the
+// review-queue overlay can sit on top of the card's bounding box and
+// intercept the click; the store-hook path is what
+// e2e/dependency.spec.ts uses for the same reason. This is the
+// tracked UX bug noted in §6.
+const openIssueAndSwitchToHandoffsTab = async (
+  page: Page,
+  issueId: string
+) => {
+  await page.evaluate((id) => {
+    const hook = (window as Window).__DEVFLOW_E2E__
+    if (!hook) {
+      throw new Error(
+        '__DEVFLOW_E2E__ not exposed. Confirm NUXT_PUBLIC_E2E=1 is set ' +
+        'on the preview server (see e2e/playwright.config.ts webServer.env).'
+      )
+    }
+    const issue = hook.store.getAllIssues.find(i => i.id === id)
+    if (!issue) throw new Error(`Issue ${id} not found in store`)
+    hook.store.selectIssue(issue)
+  }, issueId)
+  await expect(page.locator('.issue-detail__panel')).toBeVisible()
+  await page.getByRole('button', { name: 'Handoffs' }).click()
+}
+```
+
+This helper is additive: the existing tests in this file keep their inline
+copy and we don't churn working tests. Only the two new tests below use the
+helper. A future cleanup pass can replace the inline copies with calls to
+this helper.
 
 ### 5.1 `completed handoff shows View evidence toggle and expands`
 
