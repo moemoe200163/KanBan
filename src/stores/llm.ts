@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { LLMProvider, LLMDefaults } from '~/types'
+import type { LLMProvider, LLMDefaults, LLMTestResult } from '~/types'
 
 const API_BASE = useRuntimeConfig().public.apiBase as string
 
@@ -65,44 +65,64 @@ export const useLLMStore = defineStore('llm', {
       }
     },
 
-    async testHealth(providerId: string): Promise<{ status: string; error: string | null }> {
+    async testHealth(providerId: string): Promise<LLMTestResult | null> {
       try {
-        const res = await fetch(`${API_BASE}/llm/providers/${providerId}/health`, {
+        const token = useCookie('auth_token').value
+        const res = await fetch(`${API_BASE}/llm/providers/${providerId}/test`, {
           method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
-        // Update local state
+        // Update local provider state
         const idx = this.providers.findIndex(p => p.id === providerId)
         if (idx !== -1) {
           this.providers[idx] = {
             ...this.providers[idx],
             healthStatus: data.status,
-            lastChecked: new Date().toISOString(),
-            errorSummary: data.error,
+            lastTestStatus: data.status,
+            lastChecked: data.checkedAt,
+            lastLatencyMs: data.latencyMs,
+            lastErrorMessage: data.safeError,
+            configured: data.status !== 'not_configured',
           }
         }
         return data
       } catch (e: any) {
-        return { status: 'unhealthy', error: e.message }
+        return null
       }
     },
 
-    async updateProviderConfig(providerId: string, config: { enabled?: boolean; defaultModel?: string }) {
+    async updateProviderConfig(providerId: string, config: { baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean }) {
       try {
+        const token = useCookie('auth_token').value
         const res = await fetch(`${API_BASE}/llm/providers/${providerId}/config`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify(config),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const updated = await res.json()
-        const idx = this.providers.findIndex(p => p.id === providerId)
-        if (idx !== -1) {
-          this.providers[idx] = updated
-        }
+        // Re-fetch providers to get updated state
+        await this.fetchProviders()
       } catch (e: any) {
         this.error = e.message || 'Failed to update provider'
+      }
+    },
+
+    async selectProvider(providerId: string) {
+      try {
+        const token = useCookie('auth_token').value
+        const res = await fetch(`${API_BASE}/llm/providers/${providerId}/select`, {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        await this.fetchDefaults()
+      } catch (e: any) {
+        this.error = e.message || 'Failed to select provider'
       }
     },
 

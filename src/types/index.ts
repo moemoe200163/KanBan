@@ -402,13 +402,30 @@ export interface LLMProvider {
   configured: boolean
   status: LLMProviderStatus
   defaultModel: string | null
+  model: string | null
   capabilities: LLMCapability[]
   authType: 'api_key' | 'oauth' | 'cli_path' | 'none'
   authEnvVar: string | null
   maskedSecret: string | null
-  healthStatus: 'healthy' | 'unhealthy' | 'unknown'
+  healthStatus: 'healthy' | 'unhealthy' | 'unknown' | 'not_configured' | 'auth_error' | 'billing_error' | 'model_error' | 'rate_limited' | 'endpoint_error' | 'timeout'
   lastChecked: string | null
   errorSummary: string | null
+  baseUrl: string | null
+  lastTestStatus: string | null
+  lastLatencyMs: number | null
+  lastErrorMessage: string | null
+}
+
+export interface LLMTestResult {
+  provider: string
+  status: string
+  ok: boolean
+  latencyMs: number
+  model: string
+  baseUrl: string
+  checkedAt: string
+  message: string
+  safeError: string | null
 }
 
 export interface LLMProviderConfig {

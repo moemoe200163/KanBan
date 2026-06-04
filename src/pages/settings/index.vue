@@ -22,6 +22,8 @@ const backendStatus = ref<'checking' | 'healthy' | 'error'>('checking')
 const expandedProvider = ref<string | null>(null)
 const testingProvider = ref<string | null>(null)
 const savingDefaults = ref(false)
+const editingKeyFor = ref<string | null>(null)
+const newApiKey = ref('')
 
 const harnessOptions = HARNESS_CONFIGS.filter(h => h.available).map(h => h.type)
 const selectedHarness = ref<HarnessType>(boardStore.activeHarness)
@@ -35,27 +37,64 @@ const capabilityIcons: Record<string, any> = {
   vision: Eye,
   cli: Terminal
 }
+const healthStatusLabel = (status: string | null) => {
+  switch (status) {
+    case 'healthy': return 'Healthy'
+    case 'auth_error': return 'Auth Error'
+    case 'billing_error': return 'Billing Error'
+    case 'model_error': return 'Model Error'
+    case 'rate_limited': return 'Rate Limited'
+    case 'endpoint_error': return 'Endpoint Error'
+    case 'timeout': return 'Timeout'
+    case 'not_configured': return 'Not Configured'
+    case 'unhealthy': return 'Unhealthy'
+    default: return 'Unknown'
+  }
+}
 
-// Provider status colors
-const statusColor = (status: string) => {
+const healthStatusColor = (status: string | null) => {
   switch (status) {
     case 'healthy': return 'var(--sage)'
-    case 'configured': return 'var(--sage)'
-    case 'missing_key': return 'var(--amber)'
-    case 'unhealthy': return 'var(--clay-red)'
-    case 'disabled': return 'var(--muted)'
+    case 'auth_error':
+    case 'billing_error':
+    case 'model_error': return 'var(--clay-red)'
+    case 'rate_limited': return 'var(--amber)'
+    case 'endpoint_error':
+    case 'timeout': return 'var(--amber)'
+    case 'not_configured': return 'var(--muted)'
     default: return 'var(--muted)'
   }
 }
 
-const statusLabel = (status: string) => {
-  switch (status) {
-    case 'healthy': return 'Healthy'
-    case 'configured': return 'Configured'
-    case 'missing_key': return 'Missing Key'
-    case 'unhealthy': return 'Unhealthy'
-    case 'disabled': return 'Disabled'
-    default: return 'Unknown'
+const startEditKey = (provider: LLMProvider) => {
+  editingKeyFor.value = provider.id
+  newApiKey.value = ''
+}
+
+const saveApiKey = async (provider: LLMProvider) => {
+  if (!newApiKey.value) return
+  await llmStore.updateProviderConfig(provider.id, { apiKey: newApiKey.value })
+  editingKeyFor.value = null
+  newApiKey.value = ''
+}
+
+const updateBaseUrl = async (provider: LLMProvider, baseUrl: string) => {
+  await llmStore.updateProviderConfig(provider.id, { baseUrl })
+}
+
+const updateModel = async (provider: LLMProvider, model: string) => {
+  await llmStore.updateProviderConfig(provider.id, { model })
+}
+
+const selectProviderAction = async (providerId: string) => {
+  await llmStore.selectProvider(providerId)
+}
+
+const formatTime = (iso: string) => {
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
   }
 }
 
@@ -80,10 +119,6 @@ const testConnection = async (providerId: string) => {
   testingProvider.value = providerId
   await llmStore.testHealth(providerId)
   testingProvider.value = null
-}
-
-const setDefaultProvider = async (providerId: string) => {
-  await llmStore.updateDefaults({ providerId })
 }
 
 const toggleProviderEnabled = async (provider: LLMProvider) => {
@@ -234,10 +269,10 @@ const backendStatusColor = computed(() => {
             </div>
             <div class="provider-card__status">
               <span
-                class="provider-badge"
-                :style="{ background: statusColor(provider.status) }"
+                class="health-badge"
+                :class="`health-badge--${provider.lastTestStatus || provider.healthStatus || 'unknown'}`"
               >
-                {{ statusLabel(provider.status) }}
+                {{ healthStatusLabel(provider.lastTestStatus || provider.healthStatus) }}
               </span>
               <component :is="expandedProvider === provider.id ? ChevronDown : ChevronRight" :size="16" />
             </div>
@@ -246,8 +281,8 @@ const backendStatusColor = computed(() => {
           <!-- Provider Summary -->
           <div class="provider-card__summary">
             <div class="provider-card__model">
-              <span class="label">Default:</span>
-              <span class="value">{{ provider.defaultModel || 'Not set' }}</span>
+              <span class="label">Model:</span>
+              <span class="value">{{ provider.model || provider.defaultModel || 'Not set' }}</span>
             </div>
             <div class="provider-card__caps">
               <span
@@ -263,21 +298,72 @@ const backendStatusColor = computed(() => {
 
           <!-- Expanded Details -->
           <div v-if="expandedProvider === provider.id" class="provider-card__details">
+            <!-- Base URL -->
             <div class="provider-detail-row">
-              <span class="label">Auth Type:</span>
-              <span class="value">{{ provider.authType }}</span>
+              <span class="label">Base URL:</span>
+              <input
+                :value="provider.baseUrl || ''"
+                class="field__input field__input--sm"
+                placeholder="API base URL"
+                @change="updateBaseUrl(provider, ($event.target as HTMLInputElement).value)"
+              />
             </div>
+
+            <!-- Model -->
             <div class="provider-detail-row">
-              <span class="label">Env Var:</span>
-              <code class="env-var">{{ provider.authEnvVar || 'N/A' }}</code>
+              <span class="label">Model:</span>
+              <input
+                :value="provider.model || provider.defaultModel || ''"
+                class="field__input field__input--sm"
+                placeholder="Model name"
+                @change="updateModel(provider, ($event.target as HTMLInputElement).value)"
+              />
             </div>
-            <div v-if="provider.maskedSecret" class="provider-detail-row">
-              <span class="label">Secret:</span>
-              <code class="env-var">{{ provider.maskedSecret }}</code>
+
+            <!-- API Key -->
+            <div class="provider-detail-row">
+              <span class="label">API Key:</span>
+              <div class="api-key-field">
+                <input
+                  v-if="editingKeyFor === provider.id"
+                  v-model="newApiKey"
+                  type="text"
+                  class="field__input field__input--sm"
+                  placeholder="Enter API key"
+                  @keyup.enter="saveApiKey(provider)"
+                />
+                <code v-else class="env-var">{{ provider.maskedSecret || 'Not configured' }}</code>
+                <button
+                  v-if="editingKeyFor === provider.id"
+                  class="action-btn action-btn--save"
+                  @click="saveApiKey(provider)"
+                >Save</button>
+                <button
+                  v-else
+                  class="action-btn action-btn--edit"
+                  @click="startEditKey(provider)"
+                >Edit</button>
+              </div>
             </div>
-            <div v-if="provider.errorSummary" class="provider-detail-row">
-              <span class="label">Note:</span>
-              <span class="value provider-error">{{ provider.errorSummary }}</span>
+
+            <!-- Warning about key types -->
+            <div class="provider-warning">
+              <AlertCircle :size="14" />
+              <span>Provider keys (sk-cp-...) are LLM API credentials, NOT SecurityWeb Access Keys.</span>
+            </div>
+
+            <!-- Last Test Info -->
+            <div v-if="provider.lastTestStatus" class="provider-detail-row">
+              <span class="label">Last Test:</span>
+              <span class="value">
+                {{ healthStatusLabel(provider.lastTestStatus) }}
+                <span v-if="provider.lastLatencyMs"> · {{ provider.lastLatencyMs }}ms</span>
+                <span v-if="provider.lastChecked"> · {{ formatTime(provider.lastChecked) }}</span>
+              </span>
+            </div>
+            <div v-if="provider.lastErrorMessage" class="provider-detail-row">
+              <span class="label">Error:</span>
+              <span class="value provider-error">{{ provider.lastErrorMessage }}</span>
             </div>
 
             <!-- Actions -->
@@ -293,10 +379,10 @@ const backendStatusColor = computed(() => {
               </button>
               <button
                 class="action-btn action-btn--default"
-                @click.stop="setDefaultProvider(provider.id)"
+                @click.stop="selectProviderAction(provider.id)"
               >
                 <Star :size="14" />
-                Set Default
+                Select Active
               </button>
               <button
                 :class="['action-btn', provider.enabled ? 'action-btn--disable' : 'action-btn--enable']"
@@ -306,16 +392,6 @@ const backendStatusColor = computed(() => {
                 <Power v-else :size="14" />
                 {{ provider.enabled ? 'Disable' : 'Enable' }}
               </button>
-            </div>
-
-            <!-- Models List -->
-            <div v-if="provider.configured" class="provider-models">
-              <span class="label">Available Models:</span>
-              <div class="model-list">
-                <span v-for="model in getProviderModels(provider)" :key="model" class="model-tag">
-                  {{ model }}
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -545,12 +621,6 @@ function getProviderModels(provider: LLMProvider): string[] {
 .provider-card__adapter { font-size: 0.75rem; color: var(--muted); font-family: var(--font-mono); }
 .provider-card__status { display: flex; align-items: center; gap: 8px; }
 
-.provider-badge {
-  padding: 3px 8px; border-radius: 6px;
-  font-size: 0.6875rem; font-weight: 600; color: white;
-  text-transform: uppercase; letter-spacing: 0.02em;
-}
-
 .provider-card__summary {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 16px 12px; gap: 12px;
@@ -645,4 +715,53 @@ function getProviderModels(provider: LLMProvider): string[] {
 /* Spin animation */
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* Health Badge */
+.health-badge {
+  padding: 3px 8px; border-radius: 6px;
+  font-size: 0.6875rem; font-weight: 600; color: white;
+  text-transform: uppercase; letter-spacing: 0.02em;
+}
+.health-badge--healthy { background: var(--sage); }
+.health-badge--unhealthy,
+.health-badge--auth_error,
+.health-badge--billing_error,
+.health-badge--model_error { background: var(--clay-red); }
+.health-badge--rate_limited,
+.health-badge--endpoint_error,
+.health-badge--timeout { background: var(--amber); }
+.health-badge--not_configured,
+.health-badge--unknown { background: var(--muted); }
+
+/* API Key Field */
+.api-key-field {
+  display: flex; align-items: center; gap: 6px; flex: 1;
+}
+
+/* Provider Warning */
+.provider-warning {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; border-radius: 6px;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  color: var(--amber); font-size: 0.75rem;
+}
+
+/* Small Input */
+.field__input--sm {
+  padding: 5px 8px; font-size: 0.8125rem; flex: 1;
+}
+
+/* Action Button Variants */
+.action-btn--save {
+  border-color: var(--sage); color: var(--sage);
+}
+.action-btn--save:hover {
+  background: var(--sage); color: white;
+}
+.action-btn--edit {
+  border-color: var(--primary); color: var(--primary);
+}
+.action-btn--edit:hover {
+  background: var(--primary); color: white;
+}
 </style>
