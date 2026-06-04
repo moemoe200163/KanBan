@@ -20,6 +20,45 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Agent Roles — used for role-based dispatch
+# ---------------------------------------------------------------------------
+
+class AgentRole:
+    """Predefined agent roles for capability-based dispatch.
+
+    Workers register with a list of capabilities (role strings).
+    Runs specify a ``required_role`` — only workers whose capabilities
+    include that role can claim the run.
+
+    A run with ``required_role=None`` can be claimed by any worker.
+    """
+
+    SAFE_RUNNER = "safe-runner"
+    BACKEND_DEV = "backend-dev"
+    FRONTEND_DEV = "frontend-dev"
+    CODE_REVIEWER = "code-reviewer"
+    FULL_STACK = "full-stack"
+    QA = "qa"
+    DEVOPS = "devops"
+
+    # Convenience: all known roles (for validation / UI display)
+    ALL = [
+        SAFE_RUNNER,
+        BACKEND_DEV,
+        FRONTEND_DEV,
+        CODE_REVIEWER,
+        FULL_STACK,
+        QA,
+        DEVOPS,
+    ]
+
+    @classmethod
+    def is_valid(cls, role: str) -> bool:
+        """Return True if role is a known predefined role."""
+        return role in cls.ALL
+
+
 async def create_run_for_dispatch(
     *,
     board_id: str = "board-default",
@@ -31,6 +70,7 @@ async def create_run_for_dispatch(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     job_id: Optional[str] = None,
+    required_role: Optional[str] = None,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new run in 'pending' status for the orchestrator to dispatch.
@@ -38,6 +78,10 @@ async def create_run_for_dispatch(
     This is called by the ECC dispatch endpoint when execution_mode is
     api-agent or cli-agent. The run sits in the queue until a worker
     claims it.
+
+    Args:
+        required_role: If set, only workers with this role in their
+            capabilities can claim the run. None means any worker can claim.
     """
     from db import repository as repo
 
@@ -53,9 +97,13 @@ async def create_run_for_dispatch(
         harness=harness,
         provider=provider,
         model=model,
+        required_role=required_role,
         extra_metadata=extra_metadata or {},
     )
-    logger.info("Created run %s for issue %s (board=%s)", run_id, issue_key, board_id)
+    logger.info(
+        "Created run %s for issue %s (board=%s, role=%s)",
+        run_id, issue_key, board_id, required_role or "any",
+    )
     return run
 
 
@@ -63,18 +111,37 @@ async def claim_next_run(
     worker_id: str,
     board_id: str = "board-default",
 ) -> Optional[dict]:
-    """Find the oldest pending run for the board and claim it for this worker.
+    """Find the oldest matching pending run and claim it for this worker.
 
-    Returns the updated run dict, or None if no pending runs exist.
-    Uses status update to atomically claim (pending → claimed).
+    Role-based matching: a run matches if its ``required_role`` is None
+    (any worker can claim) or if ``required_role`` is in the worker's
+    ``capabilities`` list.
+
+    Returns the updated run dict, or None if no matching runs exist.
     """
     from db import repository as repo
 
-    runs = await repo.list_runs_by_board(board_id=board_id, status="pending", limit=1, order="asc")
+    # Fetch worker capabilities
+    worker = await repo.get_worker(worker_id)
+    worker_capabilities: list = worker.get("capabilities", []) if worker else []
+
+    # Fetch pending runs (fetch a batch to filter by capability)
+    runs = await repo.list_runs_by_board(board_id=board_id, status="pending", limit=20, order="asc")
     if not runs:
         return None
 
-    run = runs[0]  # oldest pending run
+    # Filter by role match
+    matched_run = None
+    for run in runs:
+        required_role = run.get("requiredRole")
+        if required_role is None or required_role in worker_capabilities:
+            matched_run = run
+            break
+
+    if not matched_run:
+        return None
+
+    run = matched_run
     now = datetime.now(timezone.utc)
     updated = await repo.update_run_status(
         run["id"],

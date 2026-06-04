@@ -33,6 +33,7 @@ class ECCDispatchRequest(BaseModel):
     provider: Optional[str] = Field(default=None, description="LLM provider id (e.g., openai, anthropic)")
     model: Optional[str] = Field(default=None, description="Model id (e.g., gpt-4o, claude-sonnet-4-20250514)")
     execution_mode: Optional[str] = Field(default=None, description="Execution mode: safe-runner, api-agent, cli-agent")
+    required_role: Optional[str] = Field(default=None, description="Required agent role for role-based dispatch (e.g., backend-dev, frontend-dev)")
 
 
 ECCJobStatus = Literal["queued", "running", "paused", "failed", "review_required", "completed", "cancelled"]
@@ -289,6 +290,7 @@ async def dispatch_ecc_command(
                 provider=request.provider,
                 model=request.model,
                 job_id=job.id,
+                required_role=request.required_role,
             )
             _transition_job(job, "queued", f"Run {run['id']} created in runtime queue")
             await _save_job_to_db(job)

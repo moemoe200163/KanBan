@@ -703,6 +703,7 @@ class AgentRun(Base):
     harness = Column(String(32), nullable=True)
     provider = Column(String(32), nullable=True)
     model = Column(String(128), nullable=True)
+    required_role = Column(String(32), nullable=True)  # role-based dispatch: backend-dev, frontend-dev, code-reviewer, etc.
     result_summary = Column(Text, nullable=True)
     error_message = Column(String(512), nullable=True)
     extra_metadata = Column(JSON, nullable=True, default=dict)
@@ -732,6 +733,7 @@ class AgentRun(Base):
             "harness": self.harness,
             "provider": self.provider,
             "model": self.model,
+            "requiredRole": self.required_role,
             "resultSummary": self.result_summary,
             "errorMessage": self.error_message,
             "metadata": self.extra_metadata or {},

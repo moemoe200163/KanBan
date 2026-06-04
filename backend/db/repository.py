@@ -1214,6 +1214,7 @@ async def create_run(
     harness: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    required_role: Optional[str] = None,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new run. Returns the run as dict."""
@@ -1232,6 +1233,7 @@ async def create_run(
         harness=harness,
         provider=provider,
         model=model,
+        required_role=required_role,
         extra_metadata=extra_metadata or {},
         created_at=now,
     )

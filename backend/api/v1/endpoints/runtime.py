@@ -43,6 +43,23 @@ class RunFailRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Agent Roles
+# ---------------------------------------------------------------------------
+
+@router.get("/runtime/roles")
+async def list_agent_roles():
+    """List available agent roles for role-based dispatch."""
+    from core.runtime.orchestrator import AgentRole
+    return {
+        "roles": [
+            {"id": role, "displayName": role.replace("-", " ").title()}
+            for role in AgentRole.ALL
+        ],
+        "total": len(AgentRole.ALL),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Workers — Read
 # ---------------------------------------------------------------------------
 

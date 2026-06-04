@@ -129,6 +129,7 @@ class AgentWorkerProcess:
         board_id: str = "board-default",
         worker_type: str = "safe-runner",
         harness: str = "safe-runner",
+        capabilities: Optional[List[str]] = None,
         poll_interval: float = POLL_INTERVAL,
         heartbeat_interval: float = HEARTBEAT_INTERVAL,
     ):
@@ -136,6 +137,7 @@ class AgentWorkerProcess:
         self.board_id = board_id
         self.worker_type = worker_type
         self.harness = harness
+        self.capabilities = capabilities or ["safe-runner"]
         self.poll_interval = poll_interval
         self.heartbeat_interval = heartbeat_interval
         self._running = False
@@ -157,6 +159,7 @@ class AgentWorkerProcess:
             board_id=self.board_id,
             worker_type=self.worker_type,
             harness=self.harness,
+            capabilities=self.capabilities,
             status="idle",
         )
         logger.info("Worker %s registered (board=%s)", self.worker_id, self.board_id)
