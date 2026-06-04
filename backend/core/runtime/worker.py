@@ -312,14 +312,9 @@ class AgentWorkerProcess:
                     model=run.get("model"),
                 )
 
-                # Select executor based on harness
-                if run_harness == "claude-code":
-                    executor = ClaudeExecutor(
-                        claude_path=self._claude_path,
-                        workspace_path=self._workspace_path,
-                    )
-                else:
-                    executor = self._executor
+                # Select executor based on provider/harness
+                run_provider = run.get("provider")
+                run_model = run.get("model")
 
                 # Log callback — pushes to DB + WebSocket via repo
                 async def _on_log(message: str) -> None:
@@ -332,8 +327,31 @@ class AgentWorkerProcess:
                         extra_metadata={"level": "info"},
                     )
 
-                # Execute
-                result = await executor.execute(ctx, _on_log)
+                # Execute — route to the right executor
+                if run_provider:
+                    # API model execution (MiniMax, OpenAI, Claude, etc.)
+                    from core.runtime.api_model_executor import APIModelExecutor
+                    api_executor = APIModelExecutor(timeout=ctx.timeout)
+                    prompt = _build_api_prompt(ctx)
+                    api_result = await api_executor.execute(
+                        provider_id=run_provider,
+                        model=run_model or "",
+                        prompt=prompt,
+                        on_log=_on_log,
+                    )
+                    result = api_result.output if api_result.success else f"FAILED: {api_result.error}"
+                    if not api_result.success:
+                        raise RuntimeError(api_result.error or "API execution failed")
+                elif run_harness == "claude-code":
+                    # Claude CLI execution
+                    executor = ClaudeExecutor(
+                        claude_path=self._claude_path,
+                        workspace_path=self._workspace_path,
+                    )
+                    result = await executor.execute(ctx, _on_log)
+                else:
+                    # Safe runner (default)
+                    result = await self._executor.execute(ctx, _on_log)
 
                 # Complete
                 await complete_run(run_id, self.worker_id, result_summary=result)
@@ -359,6 +377,30 @@ class AgentWorkerProcess:
         """Signal the worker to stop after the current iteration."""
         self._running = False
         logger.info("Worker %s stop requested", self.worker_id)
+
+
+# ---------------------------------------------------------------------------
+# Helper: build prompt for API model execution
+# ---------------------------------------------------------------------------
+
+def _build_api_prompt(ctx: ExecutionContext) -> str:
+    """Build a prompt string from the execution context for LLM API calls."""
+    parts = [
+        f"# Issue: {ctx.issue_key}",
+        f"## Command: {ctx.command}",
+        f"## Profile: {ctx.profile}",
+    ]
+    if ctx.extra_metadata.get("title"):
+        parts.append(f"## Title: {ctx.extra_metadata['title']}")
+    if ctx.extra_metadata.get("description"):
+        parts.append(f"## Description:\n{ctx.extra_metadata['description']}")
+    parts.append(
+        "\n---\n## Instructions\n"
+        "1. Analyze the issue\n"
+        "2. Provide a clear, detailed response\n"
+        "3. Include examples where appropriate"
+    )
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
