@@ -353,6 +353,20 @@ class TestWorkerRoutingToAPIModel:
             latency_ms=1200,
         )
 
+        # Create a mock adapter class that returns our fake result
+        from core.adapters.registry import HarnessRegistry
+        from core.adapters.base import ExecutionResult
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter_instance = MagicMock()
+        mock_adapter_instance.execute = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            output="GNN explanation from MiniMax",
+            error=None,
+            duration_ms=1200,
+        ))
+        mock_adapter_cls.return_value = mock_adapter_instance
+
         with patch.object(repo, "upsert_worker", mock_upsert), \
              patch.object(repo, "update_worker_heartbeat", mock_heartbeat), \
              patch("core.runtime.orchestrator.claim_next_run", claim_once), \
@@ -360,12 +374,13 @@ class TestWorkerRoutingToAPIModel:
              patch("core.runtime.orchestrator.complete_run", mock_complete_run), \
              patch("core.runtime.orchestrator.fail_run", mock_fail_run), \
              patch("db.repository.append_run_event", mock_append_event), \
-             patch("core.runtime.api_model_executor.APIModelExecutor.execute", new_callable=AsyncMock, return_value=mock_api_result), \
+             patch.object(HarnessRegistry, "_provider_classes", {"minimax": mock_adapter_cls}), \
              patch("core.runtime.worker.POLL_INTERVAL", 0.01), \
              patch("asyncio.sleep", controlled_sleep):
             await worker.start()
 
-        # Verify APIModelExecutor was used (via the mock)
+        # Verify adapter was instantiated and used via registry
+        mock_adapter_cls.assert_called()
         mock_complete_run.assert_called_once()
         # Result should contain the API output
         call_args = mock_complete_run.call_args
