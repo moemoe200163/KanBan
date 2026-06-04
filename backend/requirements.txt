@@ -61,6 +61,9 @@ mypy==1.13.0
 # Authentication - JWT
 PyJWT==2.10.0
 
+# Encryption - Fernet symmetric encryption for API keys
+cryptography>=41.0.0
+
 # =============================================================================
 # Optional: Faster JSON parsing (uncomment if needed)
 # =============================================================================
