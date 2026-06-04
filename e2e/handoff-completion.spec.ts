@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
 // Create an issue via the issues endpoint. Returns the issue JSON.
 const createIssue = async (request: APIRequestContext, data: {
@@ -41,6 +41,38 @@ const createAcceptedHandoff = async (
   )
   expect(accept.ok(), `accept handoff: ${accept.status()} ${await accept.text()}`).toBeTruthy()
   return await accept.json()
+}
+
+// Open an issue via the e2e store hook and switch to the Handoffs tab.
+// The user-facing path is a card click, but the kanban columns container
+// and the review-queue overlay can sit on top of the card's bounding
+// box and intercept the click; the store-hook path is what
+// e2e/dependency.spec.ts uses for the same reason. This is the tracked
+// UX bug noted in the spec section 6, not a test methodology preference.
+const openIssueAndSwitchToHandoffsTab = async (
+  page: Page,
+  issueId: string
+) => {
+  // Wait for the board to load so the store has the issue. Without
+  // this, getAllIssues can be empty when the API-created issue hasn't
+  // been fetched yet — same pattern dependency.spec.ts uses.
+  await expect(
+    page.locator(`[data-issue-id="${issueId}"]`)
+  ).toBeVisible({ timeout: 5_000 })
+  await page.evaluate((id) => {
+    const hook = (window as Window).__DEVFLOW_E2E__
+    if (!hook) {
+      throw new Error(
+        '__DEVFLOW_E2E__ not exposed. Confirm NUXT_PUBLIC_E2E=1 is set ' +
+        'on the preview server (see e2e/playwright.config.ts webServer.env).'
+      )
+    }
+    const issue = hook.store.getAllIssues.find(i => i.id === id)
+    if (!issue) throw new Error(`Issue ${id} not found in store`)
+    hook.store.selectIssue(issue)
+  }, issueId)
+  await expect(page.locator('.issue-detail__panel')).toBeVisible()
+  await page.getByRole('button', { name: 'Handoffs' }).click()
 }
 
 test.describe('Handoff completion with required fields', () => {
@@ -182,4 +214,37 @@ test('Backend rejects bad coverage_pct with structured 422 (P1.5 regression)', a
   expect(body.detail.errors.some(
     (e: any) => Array.isArray(e.loc) && e.loc[0] === 'coverage_pct'
   )).toBe(true)
+})
+
+test('completed handoff shows View evidence toggle and expands', async ({
+  page, request, isMobile
+}) => {
+  test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+
+  // Seed: issue + handoff + accept + complete with a typed payload that
+  // exercises both string and list[str] field rendering.
+  const title = `E2E handoff evidence ${Date.now()}`
+  const issue = await createIssue(request, { title, profile: 'frontend' })
+  const handoff = await createAcceptedHandoff(request, issue.id, 'frontend')
+  await request.post(
+    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
+    {
+      data: {
+        actor: 'e2e',
+        payload: {
+          diff_summary: 'Adds the evidence toggle to HandoffCard.',
+          screenshots: ['shot-1.png', 'shot-2.png']
+        }
+      }
+    }
+  )
+
+  await page.goto('/')
+  await openIssueAndSwitchToHandoffsTab(page, issue.id)
+
+  // Toggle visible, body hidden by default. (Body assertions come in Task 2.)
+  const toggle = page.getByTestId('handoff-evidence-toggle')
+  await expect(toggle).toBeVisible()
+  await expect(toggle).toContainText('View evidence (2 fields)')
+  await expect(page.getByTestId('handoff-evidence-body')).toHaveCount(0)
 })

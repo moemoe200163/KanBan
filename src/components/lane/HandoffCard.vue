@@ -41,6 +41,21 @@ const relativeTime = computed(() => {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
   return d.toLocaleDateString()
 })
+
+// Evidence display — collapsed by default, completed handoffs only.
+// Component-local state; never read by parent. Refreshes on prop change
+// so a re-fetched Handoff with a populated payload updates the count.
+const expanded = ref(false)
+
+const payloadKeyCount = computed(
+  () => Object.keys(props.handoff.payload ?? {}).length
+)
+
+// accepted / in_progress / blocked / cancelled / pending are
+// intentionally NOT eligible — they have no "evidence" to show.
+const showEvidenceToggle = computed(
+  () => props.handoff.status === 'completed' && payloadKeyCount.value > 0
+)
 </script>
 
 <template>
@@ -82,6 +97,21 @@ const relativeTime = computed(() => {
         {{ key }}
       </span>
     </div>
+
+    <!-- Evidence toggle (completed handoffs with non-empty payload only) -->
+    <button
+      v-if="showEvidenceToggle"
+      type="button"
+      data-testid="handoff-evidence-toggle"
+      class="w-full mb-2 flex items-center justify-between px-2 py-1 rounded
+             bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200
+             text-[11px] transition-colors"
+      :aria-expanded="expanded"
+      @click="expanded = !expanded"
+    >
+      <span>{{ expanded ? 'Hide evidence' : `View evidence (${payloadKeyCount} fields)` }}</span>
+      <span aria-hidden="true">{{ expanded ? '−' : '+' }}</span>
+    </button>
 
     <!-- Actions -->
     <div class="flex flex-wrap gap-1.5 mt-2">
