@@ -275,9 +275,26 @@ async def dispatch_ecc_command(
     if effective_execution_mode == "safe-runner":
         background_tasks.add_task(_execute_safe_runner, job.id)
     else:
-        # For now, all non-safe-runner modes still go through safe runner
-        # This will be replaced with real adapters in P3
-        background_tasks.add_task(_execute_safe_runner, job.id)
+        # Create an AgentRun in the runtime queue for the orchestrator.
+        # The run sits in "pending" until a worker claims it.
+        try:
+            from core.runtime.orchestrator import create_run_for_dispatch
+            run = await create_run_for_dispatch(
+                board_id="board-default",
+                issue_id=request.issue_id,
+                issue_key=request.issue_key,
+                command=request.command,
+                profile=request.profile,
+                harness=request.harness,
+                provider=request.provider,
+                model=request.model,
+                job_id=job.id,
+            )
+            _transition_job(job, "queued", f"Run {run['id']} created in runtime queue")
+            await _save_job_to_db(job)
+        except Exception as e:
+            _transition_job(job, "failed", f"Failed to create runtime run: {e}")
+            await _save_job_to_db(job)
 
     return job
 

@@ -1165,7 +1165,10 @@ async def update_worker_status(
             return None
         row.status = status
         row.updated_at = datetime.now(timezone.utc)
-        if active_run_id is not None:
+        # Clear active_run_id when worker is idle or stopped
+        if status in ("idle", "stopped"):
+            row.active_run_id = None
+        elif active_run_id is not None:
             row.active_run_id = active_run_id
         if error_message is not None:
             row.error_message = error_message
@@ -1256,8 +1259,12 @@ async def list_runs_by_board(
     issue_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
+    order: str = "desc",
 ) -> List[dict]:
-    """List runs for a board, newest first. Optional filters for issue_id and status."""
+    """List runs for a board. Optional filters for issue_id and status.
+
+    order: 'desc' (newest first, default) or 'asc' (oldest first, for FIFO claiming).
+    """
     try:
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
@@ -1266,7 +1273,11 @@ async def list_runs_by_board(
                 stmt = stmt.where(AgentRun.issue_id == issue_id)
             if status:
                 stmt = stmt.where(AgentRun.status == status)
-            stmt = stmt.order_by(AgentRun.created_at.desc()).limit(limit)
+            if order == "asc":
+                stmt = stmt.order_by(AgentRun.created_at.asc())
+            else:
+                stmt = stmt.order_by(AgentRun.created_at.desc())
+            stmt = stmt.limit(limit)
             result = await session.execute(stmt)
             return [r.to_dict() for r in result.scalars().all()]
     except Exception as e:

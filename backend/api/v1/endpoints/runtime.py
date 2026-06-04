@@ -1,18 +1,49 @@
-"""Read-only API endpoints for the Agent Runtime.
+"""Agent Runtime API endpoints.
 
-Phase 1 exposes only GET endpoints for workers, runs, and run events.
+Phase 1: read-only endpoints for workers, runs, and run events.
+Phase 2: write endpoints for worker registration, heartbeat, run lifecycle.
+
 All queries are filtered by board_id for board isolation.
-No write endpoints — the runtime does not start workers yet.
 """
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Workers
+# Request models
+# ---------------------------------------------------------------------------
+
+class WorkerRegisterRequest(BaseModel):
+    worker_id: str = Field(..., min_length=1, description="Unique worker ID")
+    board_id: str = Field("board-default", description="Board this worker serves")
+    worker_type: str = Field(..., min_length=1, description="Worker type (claude-code, codex, etc.)")
+    harness: Optional[str] = Field(None, description="Harness identifier")
+    capabilities: Optional[list] = Field(default_factory=list)
+    max_concurrency: int = Field(1, ge=1, le=10)
+
+
+class WorkerHeartbeatRequest(BaseModel):
+    status: Optional[str] = Field(None, description="Optional status update")
+
+
+class RunClaimRequest(BaseModel):
+    board_id: str = Field("board-default", description="Board to claim from")
+
+
+class RunCompleteRequest(BaseModel):
+    result_summary: Optional[str] = Field(None, description="Summary of the run result")
+
+
+class RunFailRequest(BaseModel):
+    error_message: str = Field(..., min_length=1, description="Error description")
+
+
+# ---------------------------------------------------------------------------
+# Workers — Read
 # ---------------------------------------------------------------------------
 
 @router.get("/runtime/workers")
@@ -36,7 +67,41 @@ async def get_worker(worker_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Runs
+# Workers — Write
+# ---------------------------------------------------------------------------
+
+@router.post("/runtime/workers")
+async def register_worker(request: WorkerRegisterRequest):
+    """Register a new worker or update an existing one."""
+    from db import repository as repo
+    worker = await repo.upsert_worker(
+        id=request.worker_id,
+        board_id=request.board_id,
+        worker_type=request.worker_type,
+        harness=request.harness,
+        capabilities=request.capabilities,
+        max_concurrency=request.max_concurrency,
+        status="idle",
+    )
+    return worker
+
+
+@router.post("/runtime/workers/{worker_id}/heartbeat")
+async def worker_heartbeat(worker_id: str, request: WorkerHeartbeatRequest):
+    """Update worker heartbeat timestamp and optional status."""
+    from db import repository as repo
+    worker = await repo.get_worker(worker_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail=f"Worker '{worker_id}' not found")
+
+    result = await repo.update_worker_heartbeat(worker_id)
+    if request.status:
+        result = await repo.update_worker_status(worker_id, request.status)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Runs — Read
 # ---------------------------------------------------------------------------
 
 @router.get("/runtime/runs")
@@ -68,6 +133,87 @@ async def get_run(run_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Runs — Write (worker lifecycle)
+# ---------------------------------------------------------------------------
+
+@router.post("/runtime/runs/claim")
+async def claim_run(request: RunClaimRequest):
+    """Claim the next pending run for a worker.
+
+    The worker_id is passed via query parameter since this is called by
+    the worker process. In Phase 2 this would be authenticated.
+    """
+    from core.runtime.orchestrator import claim_next_run
+    from db import repository as repo
+
+    # Find an idle worker to claim, or use the requesting worker
+    # For now, list idle workers and claim for the first one
+    workers = await repo.list_workers_by_board(request.board_id)
+    idle_worker = next((w for w in workers if w["status"] == "idle"), None)
+    if not idle_worker:
+        return {"run": None, "message": "No idle workers available"}
+
+    run = await claim_next_run(idle_worker["id"], request.board_id)
+    if not run:
+        return {"run": None, "message": "No pending runs to claim"}
+    return {"run": run, "worker": idle_worker["id"]}
+
+
+@router.post("/runtime/runs/{run_id}/start")
+async def start_run_endpoint(run_id: str):
+    """Transition a claimed run to running."""
+    from core.runtime.orchestrator import start_run
+    from db import repository as repo
+
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if run["status"] != "claimed":
+        raise HTTPException(status_code=409, detail=f"Run is in '{run['status']}' state, expected 'claimed'")
+
+    worker_id = run.get("workerId")
+    if not worker_id:
+        raise HTTPException(status_code=409, detail="Run has no assigned worker")
+
+    result = await start_run(run_id, worker_id)
+    return result
+
+
+@router.post("/runtime/runs/{run_id}/complete")
+async def complete_run_endpoint(run_id: str, request: RunCompleteRequest):
+    """Transition a running run to completed."""
+    from core.runtime.orchestrator import complete_run
+    from db import repository as repo
+
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if run["status"] != "running":
+        raise HTTPException(status_code=409, detail=f"Run is in '{run['status']}' state, expected 'running'")
+
+    worker_id = run.get("workerId")
+    result = await complete_run(run_id, worker_id, result_summary=request.result_summary)
+    return result
+
+
+@router.post("/runtime/runs/{run_id}/fail")
+async def fail_run_endpoint(run_id: str, request: RunFailRequest):
+    """Transition a running run to failed."""
+    from core.runtime.orchestrator import fail_run
+    from db import repository as repo
+
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if run["status"] not in ("claimed", "running"):
+        raise HTTPException(status_code=409, detail=f"Run is in '{run['status']}' state, expected 'claimed' or 'running'")
+
+    worker_id = run.get("workerId")
+    result = await fail_run(run_id, worker_id, error_message=request.error_message)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Run Events
 # ---------------------------------------------------------------------------
 
@@ -78,7 +224,6 @@ async def list_run_events(
 ):
     """List events for a run, ordered by created_at ASC (oldest first)."""
     from db import repository as repo
-    # Verify run exists
     run = await repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
