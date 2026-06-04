@@ -134,6 +134,8 @@ const submit = async () => {
 .new-issue__panel {
   position: relative;
   width: min(560px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
   padding: 18px;
   background: var(--canvas);
   border: 1px solid var(--hairline);

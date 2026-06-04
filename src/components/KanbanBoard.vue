@@ -377,7 +377,9 @@ const handleStartIssue = (issueId: string) => {
   grid-auto-flow: column;
   grid-auto-columns: minmax(280px, 320px);
   gap: 12px;
+  flex: 1;
   min-height: 0;
+  overflow-y: auto;
   flex: 1;
   overflow-x: auto;
   overflow-y: hidden;

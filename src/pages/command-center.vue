@@ -49,7 +49,7 @@ onMounted(async () => {
   min-width: 0;
   padding: 22px;
   gap: 18px;
-  overflow: hidden;
+  overflow: auto;
 }
 .command-center__topbar {
   display: flex;
