@@ -57,6 +57,8 @@ __all__ = [
     "get_issue",
     "upsert_issue",
     "update_issue_status",
+    "update_issue_pr_url",
+    "update_issue_ci_status",
     "next_issue_key",
     "upsert_job",
     "get_job",
@@ -127,6 +129,8 @@ def _issue_model_to_dict(issue: IssueModel) -> dict:
         "status": issue.status,
         "priority": issue.priority or "medium",
         "profile": issue.profile or "general",
+        "pr_url": issue.pr_url,
+        "ci_status": issue.ci_status,
         "created_at": issue.created_at.isoformat() if issue.created_at else _utc_now(),
         "updated_at": issue.updated_at.isoformat() if issue.updated_at else _utc_now(),
     }
@@ -284,6 +288,48 @@ async def update_issue_status(issue_id: str, status: str) -> Optional[dict]:
             return _issue_model_to_dict(issue)
     except Exception as e:
         logger.warning(f"Failed to update issue {issue_id} status: {e}")
+        return None
+
+
+async def update_issue_pr_url(issue_id: str, pr_url: str) -> Optional[dict]:
+    """Update issue PR URL. Returns updated dict or None if not found."""
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            issue = result.scalar_one_or_none()
+            if not issue:
+                return None
+            issue.pr_url = pr_url
+            issue.updated_at = now
+            await session.commit()
+            return _issue_model_to_dict(issue)
+    except Exception as e:
+        logger.warning(f"Failed to update issue {issue_id} pr_url: {e}")
+        return None
+
+
+async def update_issue_ci_status(issue_id: str, ci_status: str) -> Optional[dict]:
+    """Update issue CI status. Returns updated dict or None if not found."""
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            issue = result.scalar_one_or_none()
+            if not issue:
+                return None
+            issue.ci_status = ci_status
+            issue.updated_at = now
+            await session.commit()
+            return _issue_model_to_dict(issue)
+    except Exception as e:
+        logger.warning(f"Failed to update issue {issue_id} ci_status: {e}")
         return None
 
 

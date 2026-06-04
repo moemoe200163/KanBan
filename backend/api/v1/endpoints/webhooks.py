@@ -175,6 +175,66 @@ async def _update_job_status_from_ci(job_id: str, event_type: str, metadata: dic
     logger.info(f"Updated job {job_id} status to {new_status} from CI webhook")
 
 
+async def _update_issue_from_ci_webhook(job_id: str, event_type: str, metadata: dict) -> None:
+    """
+    Update the Issue record linked to an ECC job with CI status.
+
+    Looks up the job in the DB to find its issue_id, then updates
+    the issue's ci_status field.
+    """
+    from db import repository as repo
+
+    job = await repo.get_job(job_id)
+    if not job:
+        logger.warning(f"CI webhook: job {job_id} not found, skipping issue update")
+        return
+
+    issue_id = job.get("issue_id")
+    if not issue_id:
+        logger.warning(f"CI webhook: job {job_id} has no issue_id, skipping")
+        return
+
+    # Map CI event to issue ci_status
+    ci_status_map = {
+        "build_success": "passed",
+        "build_failure": "failed",
+        "deployment": "passed",
+    }
+    ci_status = ci_status_map.get(event_type)
+    if ci_status:
+        await repo.update_issue_ci_status(issue_id, ci_status)
+        logger.info(f"Updated issue {issue_id} ci_status to {ci_status} from CI webhook")
+
+
+async def _update_issue_from_pr_webhook(job_id: str, pr_number: int, title: str, event_type: str) -> None:
+    """
+    Update the Issue record linked to an ECC job with PR URL.
+
+    On pr_opened events, sets the issue's pr_url to a constructed GitHub URL.
+    The actual PR URL should come from the metadata; here we use pr_number + title
+    as a fallback.
+    """
+    from db import repository as repo
+
+    job = await repo.get_job(job_id)
+    if not job:
+        logger.warning(f"PR webhook: job {job_id} not found, skipping issue update")
+        return
+
+    issue_id = job.get("issue_id")
+    if not issue_id:
+        logger.warning(f"PR webhook: job {job_id} has no issue_id, skipping")
+        return
+
+    if event_type == "pr_opened":
+        # The PR URL should be provided in metadata in production.
+        # Construct a placeholder if not available.
+        metadata = job.get("metadata") or {}
+        pr_url = metadata.get("pr_url", f"https://github.com/org/repo/pull/{pr_number}")
+        await repo.update_issue_pr_url(issue_id, pr_url)
+        logger.info(f"Updated issue {issue_id} pr_url from PR webhook")
+
+
 # =============================================================================
 # CI Webhook Endpoint
 # =============================================================================
@@ -240,6 +300,14 @@ async def receive_ci_webhook(
     # Schedule background update of job status
     background_tasks.add_task(
         _update_job_status_from_ci,
+        payload.job_id,
+        payload.event_type,
+        payload.metadata or {},
+    )
+
+    # Also update the linked Issue's ci_status
+    background_tasks.add_task(
+        _update_issue_from_ci_webhook,
         payload.job_id,
         payload.event_type,
         payload.metadata or {},
@@ -323,6 +391,15 @@ async def receive_pr_webhook(
         payload.job_id,
         payload.event_type,
         {"pr_number": payload.pr_number, "title": payload.title},
+    )
+
+    # Also update the linked Issue's pr_url
+    background_tasks.add_task(
+        _update_issue_from_pr_webhook,
+        payload.job_id,
+        payload.pr_number,
+        payload.title,
+        payload.event_type,
     )
 
     return PRWebhookResponse(

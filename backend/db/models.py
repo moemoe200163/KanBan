@@ -49,6 +49,7 @@ class Issue(Base):
     story_points = Column(String(8), nullable=True)
     dependencies = Column(JSON, nullable=True, default=list)
     pr_url = Column(String(512), nullable=True)
+    ci_status = Column(String(32), nullable=True, index=True)  # pending | passed | failed
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -74,6 +75,7 @@ class Issue(Base):
             "storyPoints": self.story_points,
             "dependencies": self.dependencies or [],
             "prUrl": self.pr_url,
+            "ciStatus": self.ci_status,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

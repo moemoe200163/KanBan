@@ -107,6 +107,8 @@ async def get_board(
             status=issue_dict["status"],
             priority=issue_dict.get("priority", "medium"),
             profile=issue_dict.get("profile", "general"),
+            prUrl=issue_dict.get("pr_url"),
+            ciStatus=issue_dict.get("ci_status"),
             created_at=issue_dict.get("created_at", ""),
             updated_at=issue_dict.get("updated_at", ""),
             createdAt=issue_dict.get("created_at"),
