@@ -17,6 +17,7 @@ from core.kanban_protocol.schemas import (
     HandoffCreateRequest,
     HandoffDispatchRequest,
     HandoffPreviewResponse,
+    HandoffReviewRequest,
 )
 from core.kanban_protocol.payloads import PayloadValidationError
 from core.kanban_protocol.scope_guard import ScopeDeniedError
@@ -215,6 +216,32 @@ async def complete_handoff(
                 "lane": exc.lane,
                 "errors": exc.errors,
             },
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Review endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/review"
+)
+async def review_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffReviewRequest,
+):
+    await _resolve_handoff(board_id, issue_id, handoff_id)
+    try:
+        return await _svc.review(
+            handoff_id=handoff_id,
+            decision=body.decision,
+            actor=body.actor,
+            comment=body.comment,
         )
     except (ValueError, ScopeDeniedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))

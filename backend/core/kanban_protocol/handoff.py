@@ -162,6 +162,53 @@ class HandoffService:
             set_completed_at=True,
         )
 
+    async def review(
+        self,
+        *,
+        handoff_id: str,
+        decision: str,
+        actor: Optional[str],
+        comment: Optional[str] = None,
+    ) -> dict:
+        """Reviewer decides on a completed handoff: approve, reject, or request_changes."""
+        if decision not in ("approve", "reject", "request_changes"):
+            raise ValueError(
+                f"Invalid decision '{decision}'; "
+                "must be 'approve', 'reject', or 'request_changes'"
+            )
+
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        # Guard: reject re-review before status check so the message is clear
+        # even after a first review moved the status away from "completed".
+        if current.get("decision") is not None:
+            raise ValueError(
+                f"Handoff '{handoff_id}' already reviewed "
+                f"with decision '{current['decision']}'"
+            )
+        if current["status"] != "completed":
+            raise ValueError(
+                f"Cannot review handoff in status '{current['status']}'; "
+                "only 'completed' handoffs can be reviewed"
+            )
+
+        # Route based on decision.
+        if decision == "approve":
+            new_status = "approved"
+        else:
+            # reject or request_changes — route back to from_lane.
+            new_status = "rejected" if decision == "reject" else "rework"
+
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status=new_status,
+            decision=decision,
+            review_comment=comment,
+            reviewed_by=actor,
+            set_reviewed_at=True,
+        )
+
     async def block(self, *, handoff_id: str, actor: Optional[str], reason: str) -> dict:
         if not reason or not reason.strip():
             raise ValueError("block_reason must be a non-empty string")

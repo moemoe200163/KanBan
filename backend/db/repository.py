@@ -788,6 +788,10 @@ async def update_issue_handoff(
     actor_field: Optional[str] = None,
     actor_value: Optional[str] = None,
     set_completed_at: bool = False,
+    decision: Optional[str] = None,
+    review_comment: Optional[str] = None,
+    reviewed_by: Optional[str] = None,
+    set_reviewed_at: bool = False,
 ) -> Optional[dict]:
     """Update a handoff's status and optional audit fields."""
     from datetime import datetime, timezone
@@ -807,6 +811,15 @@ async def update_issue_handoff(
             setattr(row, actor_field, actor_value)
         if set_completed_at:
             row.completed_at = datetime.now(timezone.utc)
+        # Review gate fields
+        if decision is not None:
+            row.decision = decision
+        if review_comment is not None:
+            row.review_comment = review_comment
+        if reviewed_by is not None:
+            row.reviewed_by = reviewed_by
+        if set_reviewed_at:
+            row.reviewed_at = datetime.now(timezone.utc)
         row.updated_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(row)

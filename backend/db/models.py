@@ -520,6 +520,12 @@ class IssueHandoff(Base):
     )
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Review gate fields — nullable, populated only after a review decision.
+    decision = Column(String(32), nullable=True)  # 'approve' | 'reject' | 'request_changes'
+    review_comment = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
+
     __table_args__ = (
         Index("ix_issue_handoffs_board_status", "board_id", "status"),
         Index("ix_issue_handoffs_issue_created", "issue_id", "created_at"),
@@ -544,4 +550,8 @@ class IssueHandoff(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+            "decision": self.decision,
+            "reviewComment": self.review_comment,
+            "reviewedAt": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "reviewedBy": self.reviewed_by,
         }
