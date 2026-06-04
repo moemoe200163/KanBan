@@ -322,6 +322,10 @@ export interface Handoff {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  decision: 'approve' | 'reject' | 'request_changes' | null
+  reviewComment: string | null
+  reviewedAt: string | null
+  reviewedBy: string | null
 }
 
 export interface WorkerLane {
@@ -374,6 +378,12 @@ export interface HandoffDispatchRequest {
 export interface HandoffBlockRequest {
   actor?: string | null
   blockReason: string
+}
+
+export interface HandoffReviewRequest {
+  decision: 'approve' | 'reject' | 'request_changes'
+  actor?: string | null
+  comment?: string | null
 }
 
 // ============================================================================

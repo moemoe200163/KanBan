@@ -19,6 +19,7 @@ const emit = defineEmits<{
   block: [handoffId: string]
   unblock: [handoffId: string]
   cancel: [handoffId: string]
+  review: [payload: { handoffId: string; decision: 'approve' | 'reject' | 'request_changes'; comment?: string }]
 }>()
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
@@ -28,6 +29,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   completed: { label: 'Completed', color: 'text-zinc-300 bg-zinc-700' },
   blocked: { label: 'Blocked', color: 'text-red-400 bg-red-900/30' },
   cancelled: { label: 'Cancelled', color: 'text-zinc-500 bg-zinc-800/50' },
+  approved: { label: 'Approved', color: 'text-emerald-400 bg-emerald-900/30' },
+  rejected: { label: 'Rejected', color: 'text-red-400 bg-red-900/30' },
+  rework: { label: 'Rework', color: 'text-amber-400 bg-amber-900/30' },
 }
 
 const cfg = computed(() => STATUS_CONFIG[props.handoff.status] ?? STATUS_CONFIG.pending)
@@ -82,6 +86,21 @@ const showEvidenceToggle = computed(
       class="mb-2 px-2 py-1 rounded bg-red-900/20 text-red-400 text-[11px]"
     >
       {{ handoff.blockReason }}
+    </div>
+
+    <!-- Review decision badge -->
+    <div
+      v-if="handoff.decision"
+      class="mb-2 px-2 py-1 rounded text-[11px]"
+      :class="{
+        'bg-emerald-900/20 text-emerald-400': handoff.decision === 'approve',
+        'bg-amber-900/20 text-amber-400': handoff.decision === 'request_changes',
+        'bg-red-900/20 text-red-400': handoff.decision === 'reject',
+      }"
+      data-testid="review-decision-badge"
+    >
+      {{ handoff.decision === 'approve' ? 'Approved' : handoff.decision === 'request_changes' ? 'Rework Requested' : 'Rejected' }}
+      <span v-if="handoff.reviewedBy" class="text-zinc-500"> by {{ handoff.reviewedBy }}</span>
     </div>
 
     <!-- Payload summary -->
@@ -154,6 +173,35 @@ const showEvidenceToggle = computed(
         <!-- fallback (boolean, null, object) -->
         <div v-else class="text-zinc-300">{{ String(value) }}</div>
       </div>
+    </div>
+
+    <!-- Review actions — completed review handoffs, not yet decided -->
+    <div
+      v-if="handoff.status === 'completed' && handoff.toLane === 'review' && !handoff.decision"
+      class="flex flex-wrap gap-1.5 mt-2"
+      data-testid="review-actions"
+    >
+      <button
+        class="px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 text-[11px] transition-colors"
+        data-testid="review-approve-btn"
+        @click="emit('review', { handoffId: handoff.id, decision: 'approve' })"
+      >
+        Approve
+      </button>
+      <button
+        class="px-2 py-1 rounded bg-amber-900/30 text-amber-400 hover:bg-amber-900/50 text-[11px] transition-colors"
+        data-testid="review-rework-btn"
+        @click="emit('review', { handoffId: handoff.id, decision: 'request_changes' })"
+      >
+        Request Rework
+      </button>
+      <button
+        class="px-2 py-1 rounded bg-red-900/20 text-red-400/70 hover:bg-red-900/40 text-[11px] transition-colors"
+        data-testid="review-reject-btn"
+        @click="emit('review', { handoffId: handoff.id, decision: 'reject' })"
+      >
+        Reject
+      </button>
     </div>
 
     <!-- Actions -->

@@ -1743,6 +1743,19 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       }
     },
 
+    async reviewHandoff(issueId: string, handoffId: string, req: { decision: 'approve' | 'reject' | 'request_changes'; actor?: string; comment?: string }): Promise<Handoff | null> {
+      const ctx = this._handoffCtx(issueId)
+      if (!ctx) return null
+      try {
+        const h = await ctx.api.reviewHandoff(handoffId, req)
+        ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
+        return h
+      } catch (e) {
+        console.warn('[BoardStore] reviewHandoff failed:', e)
+        return null
+      }
+    },
+
     async blockHandoff(issueId: string, handoffId: string, reason: string, actor?: string): Promise<Handoff | null> {
       const ctx = this._handoffCtx(issueId)
       if (!ctx) return null

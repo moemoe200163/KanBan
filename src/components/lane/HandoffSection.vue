@@ -188,6 +188,19 @@ async function handleCancel(handoffId: string) {
   if (!issue.value) return
   await boardStore.cancelHandoff(issue.value.id, handoffId, 'user')
 }
+
+async function handleReview(payload: { handoffId: string; decision: 'approve' | 'reject' | 'request_changes'; comment?: string }) {
+  if (!issue.value) return
+  const confirmed = window.confirm(
+    `Are you sure you want to ${payload.decision} this handoff? This action cannot be undone.`
+  )
+  if (!confirmed) return
+  await boardStore.reviewHandoff(issue.value.id, payload.handoffId, {
+    decision: payload.decision,
+    actor: 'user',
+    comment: payload.comment,
+  })
+}
 </script>
 
 <template>
@@ -290,6 +303,7 @@ async function handleCancel(handoffId: string) {
         @block="handleBlock"
         @unblock="handleUnblock"
         @cancel="handleCancel"
+        @review="handleReview"
       />
     </div>
 

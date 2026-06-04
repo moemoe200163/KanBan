@@ -12,6 +12,7 @@ import type {
   HandoffCreateRequest,
   HandoffDispatchRequest,
   HandoffBlockRequest,
+  HandoffReviewRequest,
 } from '~/types'
 
 const BOARD_ID = 'board-default'
@@ -88,6 +89,13 @@ export function useKanbanProtocol(issueId: string) {
     return _post<Handoff>(`${base.value}/${handoffId}/cancel`, { actor })
   }
 
+  function reviewHandoff(
+    handoffId: string,
+    req: HandoffReviewRequest,
+  ): Promise<Handoff> {
+    return _post<Handoff>(`${base.value}/${handoffId}/review`, req)
+  }
+
   // ---- comments ----
 
   function addComment(
@@ -120,6 +128,7 @@ export function useKanbanProtocol(issueId: string) {
     blockHandoff,
     unblockHandoff,
     cancelHandoff,
+    reviewHandoff,
     addComment,
     previewHandoff,
   }
