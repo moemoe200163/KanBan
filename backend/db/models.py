@@ -555,3 +555,64 @@ class IssueHandoff(Base):
             "reviewedAt": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "reviewedBy": self.reviewed_by,
         }
+
+
+class LLMProviderConfig(Base):
+    """
+    Persistent LLM provider configuration.
+
+    Stores API keys (encrypted), base URLs, model selections, and
+    health check results. Replaces the in-memory stub in registry.py.
+    """
+    __tablename__ = "llm_provider_configs"
+
+    id = Column(String(64), primary_key=True)  # e.g. "llm_minimax"
+    provider_id = Column(String(32), unique=True, nullable=False)
+    display_name = Column(String(128), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    base_url = Column(String(512), nullable=True)
+    endpoint_path = Column(String(128), nullable=True)
+    api_shape = Column(String(32), nullable=True)  # openai-chat | openai-responses | anthropic-messages | ollama
+    auth_type = Column(String(32), nullable=True)   # bearer | x-api-key | api-key | none
+    model = Column(String(128), nullable=True)
+    api_key_encrypted = Column(String(1024), nullable=True)
+    api_key_prefix = Column(String(16), nullable=True)
+    api_key_last4 = Column(String(8), nullable=True)
+    last_test_status = Column(String(32), nullable=True)
+    last_test_at = Column(DateTime(timezone=True), nullable=True)
+    last_latency_ms = Column(Integer, nullable=True)
+    last_error_code = Column(String(32), nullable=True)
+    last_error_message = Column(String(512), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "providerId": self.provider_id,
+            "displayName": self.display_name,
+            "enabled": self.enabled,
+            "baseUrl": self.base_url,
+            "endpointPath": self.endpoint_path,
+            "apiShape": self.api_shape,
+            "authType": self.auth_type,
+            "model": self.model,
+            "apiKeyPrefix": self.api_key_prefix,
+            "apiKeyLast4": self.api_key_last4,
+            "lastTestStatus": self.last_test_status,
+            "lastTestAt": self.last_test_at.isoformat() if self.last_test_at else None,
+            "lastLatencyMs": self.last_latency_ms,
+            "lastErrorCode": self.last_error_code,
+            "lastErrorMessage": self.last_error_message,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }

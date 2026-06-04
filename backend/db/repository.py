@@ -68,6 +68,12 @@ __all__ = [
     "create_issue_comment",
     "list_issue_artifacts",
     "create_issue_artifact",
+    # LLM Provider Config
+    "get_llm_provider_config",
+    "list_llm_provider_configs",
+    "upsert_llm_provider_config",
+    "update_llm_provider_health",
+    "seed_llm_provider_configs",
 ]
 
 
@@ -870,3 +876,175 @@ async def create_ecc_job_safe_runner(
         await session.commit()
         await session.refresh(row)
     return row.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# LLM Provider Config
+# ---------------------------------------------------------------------------
+
+async def get_llm_provider_config(provider_id: str) -> Optional[dict]:
+    """Get a provider config by provider_id (e.g. 'minimax')."""
+    from db.models import LLMProviderConfig
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.execute(
+                select(LLMProviderConfig).where(LLMProviderConfig.provider_id == provider_id)
+            )
+            result = row.scalar_one_or_none()
+            return result.to_dict() if result else None
+    except Exception as e:
+        logger.warning(f"Failed to get LLM provider config {provider_id}: {e}")
+        return None
+
+
+async def list_llm_provider_configs() -> list[dict]:
+    """List all provider configs."""
+    from db.models import LLMProviderConfig
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            rows = await session.execute(
+                select(LLMProviderConfig).order_by(LLMProviderConfig.provider_id)
+            )
+            return [r.to_dict() for r in rows.scalars()]
+    except Exception as e:
+        logger.warning(f"Failed to list LLM provider configs: {e}")
+        return []
+
+
+async def upsert_llm_provider_config(
+    *,
+    provider_id: str,
+    display_name: str,
+    enabled: bool = True,
+    base_url: Optional[str] = None,
+    endpoint_path: Optional[str] = None,
+    api_shape: Optional[str] = None,
+    auth_type: Optional[str] = None,
+    model: Optional[str] = None,
+    api_key_encrypted: Optional[str] = None,
+    api_key_prefix: Optional[str] = None,
+    api_key_last4: Optional[str] = None,
+) -> dict:
+    """Create or update a provider config."""
+    from db.models import LLMProviderConfig
+
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.execute(
+            select(LLMProviderConfig).where(LLMProviderConfig.provider_id == provider_id)
+        )
+        existing = row.scalar_one_or_none()
+
+        if existing:
+            existing.display_name = display_name
+            existing.enabled = enabled
+            if base_url is not None:
+                existing.base_url = base_url
+            if endpoint_path is not None:
+                existing.endpoint_path = endpoint_path
+            if api_shape is not None:
+                existing.api_shape = api_shape
+            if auth_type is not None:
+                existing.auth_type = auth_type
+            if model is not None:
+                existing.model = model
+            if api_key_encrypted is not None:
+                existing.api_key_encrypted = api_key_encrypted
+                existing.api_key_prefix = api_key_prefix
+                existing.api_key_last4 = api_key_last4
+            existing.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            await session.refresh(existing)
+            return existing.to_dict()
+        else:
+            new_id = f"llm_{provider_id}"
+            new_row = LLMProviderConfig(
+                id=new_id,
+                provider_id=provider_id,
+                display_name=display_name,
+                enabled=enabled,
+                base_url=base_url,
+                endpoint_path=endpoint_path,
+                api_shape=api_shape,
+                auth_type=auth_type,
+                model=model,
+                api_key_encrypted=api_key_encrypted,
+                api_key_prefix=api_key_prefix,
+                api_key_last4=api_key_last4,
+            )
+            session.add(new_row)
+            await session.commit()
+            await session.refresh(new_row)
+            return new_row.to_dict()
+
+
+async def update_llm_provider_health(
+    provider_id: str,
+    *,
+    status: str,
+    latency_ms: Optional[int] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> Optional[dict]:
+    """Update health check results for a provider."""
+    from db.models import LLMProviderConfig
+
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.execute(
+            select(LLMProviderConfig).where(LLMProviderConfig.provider_id == provider_id)
+        )
+        existing = row.scalar_one_or_none()
+        if not existing:
+            return None
+        existing.last_test_status = status
+        existing.last_test_at = datetime.now(timezone.utc)
+        existing.last_latency_ms = latency_ms
+        existing.last_error_code = error_code
+        existing.last_error_message = error_message
+        existing.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(existing)
+        return existing.to_dict()
+
+
+async def seed_llm_provider_configs() -> int:
+    """Seed default provider configs if none exist. Returns count of seeded rows."""
+    from db.models import LLMProviderConfig
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            count = await session.execute(select(func.count(LLMProviderConfig.id)))
+            if count.scalar() > 0:
+                return 0
+
+            defaults = [
+                ("minimax", "MiniMax", "https://api.minimax.io/v1", "/chat/completions", "openai-chat", "bearer", "MiniMax-M3"),
+                ("openai", "OpenAI", "https://api.openai.com/v1", "/responses", "openai-responses", "bearer", "gpt-4o"),
+                ("anthropic", "Anthropic", "https://api.anthropic.com/v1", "/messages", "anthropic-messages", "x-api-key", "claude-sonnet-4-20250514"),
+                ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", "/chat/completions", "openai-chat", "api-key", "MiMo-7B"),
+                ("ollama", "Ollama", "http://localhost:11434", "/api/tags", "ollama", "none", "llama3"),
+            ]
+
+            for pid, name, base, endpoint, shape, auth, model in defaults:
+                session.add(LLMProviderConfig(
+                    id=f"llm_{pid}",
+                    provider_id=pid,
+                    display_name=name,
+                    enabled=True,
+                    base_url=base,
+                    endpoint_path=endpoint,
+                    api_shape=shape,
+                    auth_type=auth,
+                    model=model,
+                ))
+            await session.commit()
+            return len(defaults)
+    except Exception as e:
+        logger.warning(f"Failed to seed LLM provider configs: {e}")
+        return 0

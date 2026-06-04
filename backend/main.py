@@ -65,6 +65,11 @@ async def lifespan(app: FastAPI):
         audit_seeded = await repo.seed_audit_logs_from_jobs()
         if audit_seeded:
             logger.info(f"Audit logs seeded with {audit_seeded} entries")
+
+        # Seed default LLM provider configs (one-time)
+        llm_seeded = await repo.seed_llm_provider_configs()
+        if llm_seeded:
+            logger.info(f"Seeded {llm_seeded} default LLM provider configs")
     except Exception:
         logger.exception("Database initialization failed during startup")
         raise
