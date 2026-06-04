@@ -59,7 +59,7 @@ def fresh_db(tmp_path, monkeypatch):
     new_engine.sync_engine.dispose()
 
 
-def _create_accept_complete(request: TestClient, payload: dict, to_lane: str = "frontend") -> dict:
+def _create_accept_complete(payload: dict, to_lane: str = "frontend") -> dict:
     """Helper: create handoff -> accept -> complete with the given payload. Returns complete response."""
     create_resp = client.post(
         f"/api/v1/boards/board-default/issues/issue-art-1/handoffs",
@@ -88,7 +88,7 @@ def test_complete_handoff_creates_screenshot_artifacts(fresh_db):
         "diff_summary": "Changed login flow",
         "screenshots": ["login.png", "dashboard.png"],
     }
-    _create_accept_complete(client, payload)
+    _create_accept_complete(payload)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     assert resp.status_code == 200
@@ -102,12 +102,20 @@ def test_complete_handoff_creates_screenshot_artifacts(fresh_db):
     for s in screenshots:
         assert s["source"] == "handoff_complete"
         assert s["pathOrUrl"] == s["title"]
+        assert s["summary"] is not None
+        assert s["summary"].startswith("Screenshot from handoff")
+
+    diff_arts = [a for a in artifacts if a["artifactType"] == "diff_summary"]
+    assert len(diff_arts) == 1
+    assert diff_arts[0]["title"] == "Diff Summary"
+    assert diff_arts[0]["summary"] == "Changed login flow"
+    assert diff_arts[0]["source"] == "handoff_complete"
 
 
 def test_complete_handoff_creates_diff_summary_artifact(fresh_db):
     """Completing with diff_summary creates one diff_summary artifact."""
     payload = {"diff_summary": "Refactored auth module"}
-    _create_accept_complete(client, payload)
+    _create_accept_complete(payload)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]
@@ -125,7 +133,7 @@ def test_complete_handoff_creates_test_log_artifact(fresh_db):
         "diff_summary": "Added test coverage",
         "test_results": "42 passed, 0 failed",
     }
-    _create_accept_complete(client, payload, to_lane="backend")
+    _create_accept_complete(payload, to_lane="backend")
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]
@@ -143,7 +151,7 @@ def test_complete_handoff_empty_payload_no_artifacts(fresh_db):
     # To prove that *only* diff_summary artifacts appear (no screenshots, no test_log),
     # we complete with just the required fields and verify no extra artifact types.
     payload = {"diff_summary": "Minimal completion"}
-    _create_accept_complete(client, payload)
+    _create_accept_complete(payload)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]
