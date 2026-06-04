@@ -103,8 +103,26 @@ async def lifespan(app: FastAPI):
     try:
         from core.adapters.registry import HarnessRegistry
         from core.adapters.claude_local import ClaudeLocalAdapter
+        from core.adapters.safe_runner import SafeRunAdapter
+        from core.adapters.api_model import APIModelAdapter
+
+        # Harness adapters (keyed by harness type)
         HarnessRegistry.register("claude-code", ClaudeLocalAdapter)
-        logger.info("HarnessRegistry: registered claude-code adapter")
+        HarnessRegistry.register("safe-runner", SafeRunAdapter)
+        HarnessRegistry.register("api-model", APIModelAdapter)
+
+        # Provider adapters (keyed by provider_id — used when run.provider is set)
+        # These share the same APIModelAdapter class but are resolved per-provider.
+        from core.llm.providers import PROVIDERS
+        for prov in PROVIDERS:
+            if prov.adapter in ("api-chat", "api-responses"):
+                HarnessRegistry.register_provider(prov.id, APIModelAdapter)
+
+        logger.info(
+            "HarnessRegistry: harness=%s, providers=%s",
+            HarnessRegistry.list_supported(),
+            HarnessRegistry.list_providers(),
+        )
     except Exception:
         logger.exception("HarnessRegistry registration failed (non-fatal)")
 

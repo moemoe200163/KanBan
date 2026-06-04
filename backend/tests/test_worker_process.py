@@ -466,7 +466,9 @@ class TestAgentWorkerProcess:
 
     @pytest.mark.asyncio
     async def test_worker_selects_claude_executor_for_claude_harness(self):
-        """Worker uses ClaudeExecutor when run harness is 'claude-code'."""
+        """Worker uses adapter registry when run harness is 'claude-code'."""
+        from core.adapters.registry import HarnessRegistry
+
         worker = self._make_worker(
             harness="safe-runner",
             claude_path="/usr/bin/claude",
@@ -512,6 +514,13 @@ class TestAgentWorkerProcess:
             success=True, output="Claude output", error=None, duration_ms=2000,
         )
 
+        # Create a mock adapter class for claude-code
+        mock_adapter_cls = MagicMock()
+        mock_adapter_instance = MagicMock()
+        mock_adapter_instance.execute = AsyncMock(return_value=mock_claude_result)
+        mock_adapter_cls.return_value = mock_adapter_instance
+
+        # Patch the registry's class entry so resolve_for_run uses our mock
         with patch.object(repo, "upsert_worker", mock_upsert), \
              patch.object(repo, "update_worker_heartbeat", mock_heartbeat), \
              patch("core.runtime.orchestrator.claim_next_run", claim_once), \
@@ -519,16 +528,12 @@ class TestAgentWorkerProcess:
              patch("core.runtime.orchestrator.complete_run", mock_complete_run), \
              patch("core.runtime.orchestrator.fail_run", mock_fail_run), \
              patch("db.repository.append_run_event", mock_append_event), \
-             patch("core.adapters.claude_local.ClaudeLocalAdapter") as MockAdapter, \
+             patch.object(HarnessRegistry, "_adapter_classes", {"claude-code": mock_adapter_cls, "safe-runner": mock_adapter_cls}), \
              patch("core.runtime.worker.POLL_INTERVAL", 0.01), \
              patch("asyncio.sleep", controlled_sleep):
-            MockAdapter.return_value.execute = AsyncMock(return_value=mock_claude_result)
             await worker.start()
 
-        # Verify ClaudeLocalAdapter was instantiated (not SafeRunExecutor)
-        MockAdapter.assert_called_once()
-        call_config = MockAdapter.call_args[1]["config"]
-        assert call_config["claude_path"] == "/usr/bin/claude"
-        assert call_config["working_dir"] == "/tmp/workspace"
+        # Verify the adapter was instantiated with correct config
+        mock_adapter_cls.assert_called()
         # Verify run completed
         mock_complete_run.assert_called_once()

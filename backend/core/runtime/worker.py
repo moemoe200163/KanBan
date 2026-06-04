@@ -314,10 +314,6 @@ class AgentWorkerProcess:
                     model=run.get("model"),
                 )
 
-                # Select executor based on provider/harness
-                run_provider = run.get("provider")
-                run_model = run.get("model")
-
                 # Log callback — pushes to DB + WebSocket via repo
                 async def _on_log(message: str) -> None:
                     from db.repository import append_run_event
@@ -329,30 +325,27 @@ class AgentWorkerProcess:
                         extra_metadata={"level": "info"},
                     )
 
-                # Execute — route to the right executor
-                if run_provider:
-                    # API model execution (MiniMax, OpenAI, Claude, etc.)
-                    from core.runtime.api_model_executor import APIModelExecutor
-                    api_executor = APIModelExecutor(timeout=ctx.timeout)
+                # Execute — resolve adapter via HarnessRegistry
+                from core.adapters.registry import HarnessRegistry
+                adapter = HarnessRegistry.resolve_for_run(run)
+
+                if adapter:
                     prompt = _build_api_prompt(ctx)
-                    api_result = await api_executor.execute(
-                        provider_id=run_provider,
-                        model=run_model or "",
+                    exec_result = await adapter.execute(
+                        task_id=run_id,
                         prompt=prompt,
+                        workspace=self._workspace_path,
                         on_log=_on_log,
                     )
-                    result = api_result.output if api_result.success else f"FAILED: {api_result.error}"
-                    if not api_result.success:
-                        raise RuntimeError(api_result.error or "API execution failed")
-                elif run_harness == "claude-code":
-                    # Claude CLI execution
-                    executor = ClaudeExecutor(
-                        claude_path=self._claude_path,
-                        workspace_path=self._workspace_path,
+                    result = (
+                        exec_result.output
+                        if exec_result.success
+                        else f"FAILED: {exec_result.error}"
                     )
-                    result = await executor.execute(ctx, _on_log)
+                    if not exec_result.success:
+                        raise RuntimeError(exec_result.error or "Execution failed")
                 else:
-                    # Safe runner (default)
+                    # No adapter found — use safe runner as ultimate fallback
                     result = await self._executor.execute(ctx, _on_log)
 
                 # Complete
