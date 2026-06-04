@@ -153,11 +153,49 @@ async def complete_handoff(
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
-        return await _svc.complete(
+        result = await _svc.complete(
             handoff_id=handoff_id,
             actor=body.actor,
             payload=body.payload,
         )
+
+        # Auto-create artifacts from typed payload fields.
+        payload = body.payload or {}
+
+        for shot in (payload.get("screenshots") or []):
+            await repo.create_issue_artifact(
+                issue_id=issue_id,
+                title=shot,
+                artifact_type="screenshot",
+                job_id=None,
+                source="handoff_complete",
+                path_or_url=shot,
+                summary=f"Screenshot from handoff {handoff_id}",
+            )
+
+        if payload.get("diff_summary"):
+            await repo.create_issue_artifact(
+                issue_id=issue_id,
+                title="Diff Summary",
+                artifact_type="diff_summary",
+                job_id=None,
+                source="handoff_complete",
+                path_or_url=None,
+                summary=payload["diff_summary"],
+            )
+
+        if payload.get("test_results"):
+            await repo.create_issue_artifact(
+                issue_id=issue_id,
+                title="Test Results",
+                artifact_type="test_log",
+                job_id=None,
+                source="handoff_complete",
+                path_or_url=None,
+                summary=payload["test_results"],
+            )
+
+        return result
     except PayloadValidationError as exc:
         raise HTTPException(
             status_code=422,
