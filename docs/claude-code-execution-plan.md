@@ -1,28 +1,36 @@
 # Claude Code Execution Plan
 
-This plan is for the next agent taking over DevFlow. The goal is not to finish the Paperclip architecture. The goal is to restore and prove the smallest working product loop.
+This plan is for the next agent taking over DevFlow. The goal is to continue building product features on top of the proven P0 loop.
 
 ## Current Diagnosis
 
-DevFlow has useful pieces, but the product loop is not yet stable.
+DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete.
 
 Working:
 
-- Frontend builds and typechecks.
-- Frontend preview responds on `http://127.0.0.1:3010`.
-- Backend starts on `http://127.0.0.1:8000`.
-- `GET /health` works.
-- `GET /api/v1/ecc/jobs` works.
-- Adapter-related files exist.
+- Frontend builds, typechecks, and serves on `http://127.0.0.1:3010`.
+- Backend starts clean on `http://127.0.0.1:8000` (no DB warnings).
+- `GET /api/v1/board` returns seed issues with non-empty columns.
+- `GET /health` and `GET /api/v1/ecc/jobs` work.
+- ECC dispatch creates jobs and returns immediately.
+- Safe runner transitions jobs through `queued -> running -> review_required`.
+- Job state visible in UI (card detail panel, sidebar logs).
+- E2E suite: 37 passed, 13 skipped (mobile), 0 failed.
+- Backend tests: 211/211 passed.
+- Single sidebar path (`src/components/sidebar/Sidebar.vue`).
+- Handoff typed payload with lane-specific Pydantic validation (P1.5).
+- Structured 422 error responses for invalid payloads (P1.5).
+- Evidence display in HandoffCard for completed handoffs (P1.6).
+- `ClaudeLocalAdapter` and safe runner path exist in `backend/core/adapters/`.
 
-Not working or not proven:
+Not yet done:
 
-- `/api/v1/board` returns empty columns, so the board has zero cards.
-- Backend startup reports a database initialization warning.
-- Backend smoke tests currently fail.
-- ECC dispatch is too eager to enter adapter/real execution before the P0 loop is stable.
-- E2E tests exist but Playwright is not installed in `devDependencies`.
-- Two sidebar implementations exist and should be consolidated later.
+- Real Claude/ECC execution (safe runner is default; real execution opt-in only).
+- Artifacts v1 — typed evidence/artifact references on issues.
+- Review Gate — structured completion result with decision routing.
+- Delivery Orchestrator.
+- Session resume.
+- PR/CI automation.
 
 ## Product Completion Principle
 
@@ -44,18 +52,22 @@ Issue exists
 
 | Priority | Work Item | Concrete Task | Acceptance Criteria | Do Not Do Yet |
 |---|---|---|---|---|
-| P0 | Restore visible board data | Make `GET /api/v1/board` return seed issues, or make frontend fallback when the API returns empty columns | Opening `http://127.0.0.1:3010/` shows non-empty cards across columns | Do not redesign the board while fixing data |
-| P0 | Fix backend DB startup warning | Fix async SQLAlchemy table creation in `backend/db/database.py` | Backend starts without `greenlet_spawn` warning | Do not add migrations yet |
-| P0 | Make tests green | Fix route/test mismatch and unstable dispatch behavior | `PYTHONPATH=backend pytest -q backend/tests` passes | Do not rewrite all tests |
-| P0 | Stabilize ECC dispatch semantics | `POST /api/v1/ecc/dispatch` creates a job and returns immediately | API response contains job id, status `queued`, events array | Do not block request on real Claude/ECC execution |
-| P0 | Add safe runner loop | Implement an `ExecutionContext` or narrow runner that emits fake/safe logs first | Job transitions `queued -> running -> review_required` with events | Do not enable real Claude Code by default |
-| P0 | Show job state in UI | Ensure card/detail panel show job id/status/message/logs | Moving a card creates visible job state | Do not add multi-harness UI complexity |
-| P1 | Consolidate sidebar direction | Choose either `AppSidebar.vue` or `components/sidebar/Sidebar.vue` | Only one sidebar path is active and matches `Design.md` | Do not keep duplicate design systems |
-| P1 | E2E setup | Install or remove Playwright from required gates | `npm run e2e` either runs or is clearly documented as pending | Do not pretend E2E is complete without dependency |
-| P1 | Adapter integration | Wrap the proven P0 runner into `ClaudeLocalAdapter` | Adapter calls the same proven execution path | Do not add Codex/Cursor/Gemini behavior yet |
+| ~~P0~~ | ~~Restore visible board data~~ | ~~Done~~ | ~~Board shows non-empty cards~~ | — |
+| ~~P0~~ | ~~Fix backend DB startup warning~~ | ~~Done~~ | ~~No greenlet_spawn warning~~ | — |
+| ~~P0~~ | ~~Make tests green~~ | ~~Done~~ | ~~211/211 backend tests pass~~ | — |
+| ~~P0~~ | ~~Stabilize ECC dispatch~~ | ~~Done~~ | ~~Job created, returns immediately~~ | — |
+| ~~P0~~ | ~~Add safe runner loop~~ | ~~Done~~ | ~~queued -> running -> review_required~~ | — |
+| ~~P0~~ | ~~Show job state in UI~~ | ~~Done~~ | ~~Card detail shows job/logs~~ | — |
+| ~~P1~~ | ~~Consolidate sidebar~~ | ~~Done~~ | ~~Single sidebar path~~ | — |
+| ~~P1~~ | ~~E2E setup~~ | ~~Done~~ | ~~37/37 e2e tests pass~~ | — |
+| ~~P1~~ | ~~Adapter integration~~ | ~~Done~~ | ~~ClaudeLocalAdapter exists, safe runner proven~~ | — |
+| ~~P1~~ | ~~Handoff typed payload (P1.5)~~ | ~~Done~~ | ~~Lane-specific Pydantic + structured 422~~ | — |
+| ~~P1~~ | ~~Evidence display (P1.6)~~ | ~~Done~~ | ~~HandoffCard toggle + type-aware body~~ | — |
+| P2 | Artifacts v1 | Typed evidence/artifact references on issues | Issues can link to external artifacts with typed metadata | Do not build full file storage |
+| P2 | Review Gate | Structured completion result with decision routing | Completed handoffs route to accept/reject/rework based on structured fields | Do not add ML-based routing |
 | P2 | Real Claude/ECC execution | Enable real command execution behind env flag | Safe runner remains default; real runner opt-in works locally | Do not run arbitrary commands from user input |
-| P2 | Persistence | Persist issues/jobs/events with SQLite/Postgres | Restart does not lose board/job state | Do not build full multi-tenant schema |
-| P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P0/P1 are green |
+| P3 | Delivery Orchestrator | Automated delivery pipeline | Handoff → review → merge/release flow | Do not start before P2 is green |
+| P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |
 | P3 | Session resume | Add Paperclip-style session persistence | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
 
 ## Required Verification

@@ -16,6 +16,7 @@ e2e/playwright-report/
 __pycache__/
 *.py[cod]
 backend/devflow.db
+backend/e2e_e2e.db
 devflow_e2e.db
 *.png
 *.jpg
