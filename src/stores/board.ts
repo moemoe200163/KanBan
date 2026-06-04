@@ -1751,7 +1751,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         // Backend returns { handoff, routing }. Extract the updated handoff.
         const h: Handoff = resp.handoff ?? resp
         ctx.issue.handoffs = ctx.issue.handoffs.map(x => x.id === handoffId ? h : x)
-        // If routing created a new handoff (rework/reject), append it.
+        // If routing created a new handoff (rework/reject/approve), append it.
         if (resp.routing?.next_handoff) {
           ctx.issue.handoffs.push(resp.routing.next_handoff)
         }

@@ -301,7 +301,7 @@ export const HARNESS_CONFIGS: HarnessConfig[] = [
 // Kanban Protocol — Handoff Types
 // ============================================================================
 
-export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled'
+export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled' | 'approved' | 'rejected' | 'rework'
 
 export type RetryPolicy = 'none' | 'fixed' | 'exponential'
 

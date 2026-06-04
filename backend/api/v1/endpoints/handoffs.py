@@ -403,7 +403,27 @@ async def advance_handoff(
             "only approved handoffs can be advanced",
         )
 
+    # Guard: reject if a next handoff was already created (e.g. by approve routing).
+    # Prevents duplicate handoff creation from double-advance.
+    existing_handoffs = await repo.list_issue_handoffs(
+        issue_id=issue_id, board_id=board_id
+    )
     to_lane = handoff.get("toLane", "")
+    already_advanced = any(
+        h.get("fromLane") == to_lane
+        and h.get("id") != handoff_id
+        and (
+            (h.get("payload") or {}).get("approved_from_review") == handoff_id
+            or (h.get("payload") or {}).get("advanced_from_review") == handoff_id
+        )
+        for h in existing_handoffs
+    )
+    if already_advanced:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Handoff '{handoff_id}' already has a next handoff; cannot advance again",
+        )
+
     try:
         lane = get_lane(to_lane)
     except KeyError as exc:
