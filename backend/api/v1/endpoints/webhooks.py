@@ -10,7 +10,9 @@ from typing import Optional, List, AsyncIterator
 from uuid import uuid4
 import hmac
 import hashlib
+import json
 import os
+import re
 import logging
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Header, Request
@@ -22,6 +24,21 @@ router = APIRouter()
 
 # Webhook secret from environment variable (never hardcoded)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
+
+# =============================================================================
+# Issue Key Extraction
+# =============================================================================
+
+_ISSUE_KEY_PATTERN = re.compile(r"(?:DEV-)(\d+)", re.IGNORECASE)
+
+
+def extract_issue_key(text: str) -> "str | None":
+    """Extract issue key (e.g. DEV-123) from text. Returns normalized uppercase or None."""
+    match = _ISSUE_KEY_PATTERN.search(text)
+    if match:
+        return f"DEV-{match.group(1)}"
+    return None
 
 
 # =============================================================================
@@ -464,3 +481,125 @@ async def list_webhook_events(
         )
         for e in events
     ]
+
+
+# =============================================================================
+# GitHub Webhook Endpoint (real GitHub payloads)
+# =============================================================================
+
+@router.post("/webhooks/github", tags=["Webhooks"])
+async def receive_github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),
+    x_github_delivery: Optional[str] = Header(None, alias="X-GitHub-Delivery"),
+):
+    """Receive real GitHub webhook payloads.
+
+    Handles pull_request and workflow_run events.
+    Returns 200 for all valid requests (GitHub expects 2xx for success).
+    """
+    body = await request.body()
+
+    # Verify signature
+    if x_hub_signature_256 and not verify_webhook_signature(body, x_hub_signature_256):
+        logger.warning("GitHub webhook signature verification failed (delivery=%s)", x_github_delivery)
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # Parse payload
+    try:
+        payload = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Store event for audit
+    event_type = f"github_{x_github_event or 'unknown'}"
+    headers = {
+        "x_github_event": x_github_event or "",
+        "x_github_delivery": x_github_delivery or "",
+        "user_agent": request.headers.get("user-agent", ""),
+    }
+    await _save_webhook_event(event_type=event_type, payload=payload, headers=headers)
+
+    # Route to handler
+    if x_github_event == "pull_request":
+        background_tasks.add_task(_handle_github_pr_event, payload)
+    elif x_github_event == "workflow_run":
+        background_tasks.add_task(_handle_github_workflow_run_event, payload)
+    else:
+        logger.debug("GitHub webhook: unhandled event type '%s'", x_github_event)
+
+    return {"status": "accepted", "event": x_github_event, "delivery": x_github_delivery}
+
+
+# =============================================================================
+# GitHub Event Handlers
+# =============================================================================
+
+async def _handle_github_pr_event(payload: dict) -> None:
+    """Handle GitHub pull_request webhook event."""
+    from db import repository as repo
+
+    action = payload.get("action")
+    pr = payload.get("pull_request", {})
+    if not pr:
+        return
+
+    # Extract issue key from branch → title → body → labels
+    issue_key = (
+        extract_issue_key(pr.get("head", {}).get("ref", ""))
+        or extract_issue_key(pr.get("title", ""))
+        or extract_issue_key(pr.get("body", ""))
+        or extract_issue_key(" ".join(l.get("name", "") for l in pr.get("labels", [])))
+    )
+    if not issue_key:
+        logger.debug("GitHub PR event: no issue key in PR #%s", pr.get("number"))
+        return
+
+    issue = await repo.find_issue_by_key(issue_key)
+    if not issue:
+        return
+
+    if action == "opened":
+        await repo.update_issue_pr_url(issue["id"], pr.get("html_url", ""))
+        await repo.update_issue_ci_status(issue["id"], "pending")
+        logger.info("Issue %s: pr_url set, ci_status=pending (PR #%s opened)", issue_key, pr.get("number"))
+    elif action == "closed" and pr.get("merged"):
+        await repo.update_issue_status(issue["id"], "done")
+        logger.info("Issue %s: status=done (PR #%s merged)", issue_key, pr.get("number"))
+
+
+async def _handle_github_workflow_run_event(payload: dict) -> None:
+    """Handle GitHub workflow_run webhook event."""
+    from db import repository as repo
+
+    action = payload.get("action")
+    if action != "completed":
+        return
+
+    wr = payload.get("workflow_run", {})
+    conclusion = wr.get("conclusion")
+    head_branch = wr.get("head_branch", "")
+
+    status_map = {
+        "success": "passed",
+        "failure": "failed",
+        "cancelled": "failed",
+        "timed_out": "failed",
+    }
+    ci_status = status_map.get(conclusion)
+    if not ci_status:
+        return
+
+    issue_key = extract_issue_key(head_branch)
+    if not issue_key:
+        logger.debug("GitHub workflow_run: no issue key from branch '%s'", head_branch)
+        return
+
+    issue = await repo.find_issue_by_key(issue_key)
+    if not issue:
+        return
+
+    await repo.update_issue_ci_status(issue["id"], ci_status)
+    logger.info("Issue %s: ci_status=%s (workflow_run %s)", issue_key, ci_status, conclusion)

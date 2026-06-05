@@ -59,6 +59,7 @@ __all__ = [
     "update_issue_status",
     "update_issue_pr_url",
     "update_issue_ci_status",
+    "find_issue_by_key",
     "list_handoffs_by_status",
     "next_issue_key",
     "upsert_job",
@@ -333,6 +334,23 @@ async def update_issue_ci_status(issue_id: str, ci_status: str) -> Optional[dict
             return _issue_model_to_dict(issue)
     except Exception as e:
         logger.warning(f"Failed to update issue {issue_id} ci_status: {e}")
+        return None
+
+
+async def find_issue_by_key(key: str) -> "Optional[dict]":
+    """Find issue by exact key (e.g. DEV-123). Returns dict or None."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.key == key)
+            )
+            issue = result.scalar_one_or_none()
+            if not issue:
+                return None
+            return _issue_model_to_dict(issue)
+    except Exception as e:
+        logger.warning(f"Failed to find issue by key {key}: {e}")
         return None
 
 
