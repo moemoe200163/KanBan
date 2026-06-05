@@ -235,3 +235,34 @@ class TestCreateJobForHandoffBoardId:
 
             call_kwargs = mock_create.call_args[1]
             assert call_kwargs["board_id"] == "board-default"
+
+
+# ---------------------------------------------------------------------------
+# kanban_show forwards board_id to list_issue_artifacts
+# ---------------------------------------------------------------------------
+
+class TestKanbanShowArtifactBoardScope:
+    @pytest.mark.asyncio
+    async def test_kanban_show_passes_board_id_to_artifacts(self):
+        """kanban_show must forward ctx.board_id when listing artifacts."""
+        from core.kanban_protocol.tools import kanban_show, KanbanToolContext
+
+        fake_issue = {"id": "i1", "key": "DEV-100", "board_id": "scope-board"}
+
+        mock_list_issues = AsyncMock(return_value=[fake_issue])
+        mock_list_handoffs = AsyncMock(return_value=[])
+        mock_list_artifacts = AsyncMock(return_value=[])
+
+        with patch("db.repository.list_issues", mock_list_issues), \
+             patch("db.repository.list_issue_handoffs", mock_list_handoffs), \
+             patch("db.repository.list_issue_artifacts", mock_list_artifacts):
+            ctx = KanbanToolContext(
+                board_id="scope-board",
+                issue_key="DEV-100",
+            )
+            result = await kanban_show(ctx)
+
+        assert result.ok is True
+        mock_list_artifacts.assert_called_once_with(
+            issue_id="i1", board_id="scope-board"
+        )

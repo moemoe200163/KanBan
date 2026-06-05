@@ -75,7 +75,7 @@ async def kanban_show(ctx: KanbanToolContext) -> ToolResult:
 
         # Enrich with handoffs and artifacts
         handoffs = await repo.list_issue_handoffs(issue_id=issue["id"], board_id=ctx.board_id)
-        artifacts = await repo.list_issue_artifacts(issue_id=issue["id"])
+        artifacts = await repo.list_issue_artifacts(issue_id=issue["id"], board_id=ctx.board_id)
 
         return ToolResult(ok=True, tool="kanban_show", data={
             "issue": issue,
