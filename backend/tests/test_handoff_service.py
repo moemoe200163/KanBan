@@ -656,6 +656,33 @@ async def test_complete_delivery_with_typed_payload(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_complete_delivery_transitions_issue_to_done(fresh_db):
+    """Completing a delivery handoff should mark the issue as 'done'."""
+    from db import repository as repo
+
+    svc = HandoffService()
+    # Ensure issue exists with in_progress status
+    await repo.upsert_issue({
+        "id": "issue-1", "key": "DEV-300", "board_id": "board-default",
+        "title": "Delivery test", "status": "in_progress",
+    })
+
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="delivery",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"release_notes": "shipped v1.0", "approver": "alice"},
+    )
+
+    issue = await repo.get_issue("issue-1")
+    assert issue["status"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_complete_qa_raises_payload_validation_error_for_bad_coverage(fresh_db):
     from core.kanban_protocol.payloads import PayloadValidationError
 

@@ -154,7 +154,7 @@ class HandoffService:
 
         merged_payload = validated.model_dump(mode="json")
 
-        return await repo.update_issue_handoff(
+        result = await repo.update_issue_handoff(
             handoff_id,
             status="completed",
             payload=merged_payload,
@@ -162,6 +162,13 @@ class HandoffService:
             actor_value=actor,
             set_completed_at=True,
         )
+
+        # Post-delivery issue status sync: delivery is the terminal lane,
+        # so completing it means the issue is done.
+        if current["toLane"] == "delivery":
+            await repo.update_issue_status(current["issueId"], "done")
+
+        return result
 
     async def system_complete(
         self,
