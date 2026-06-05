@@ -101,6 +101,19 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
     }
   }
 
+  const fetchRunsByJobId = async (jobId: string): Promise<RuntimeRun[]> => {
+    try {
+      const params = new URLSearchParams({ board_id: 'board-default', job_id: jobId, limit: '50' })
+      const res = await fetch(`${API_BASE}/runtime/runs?${params}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      return data.runs ?? []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch runs'
+      return []
+    }
+  }
+
   const fetchRunLogs = async (runId: string): Promise<RuntimeLog[]> => {
     try {
       const res = await fetch(`${API_BASE}/runtime/runs/${runId}/logs`)
@@ -158,6 +171,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
     lastUpdated,
     fetchWorkers,
     fetchRuns,
+    fetchRunsByJobId,
     fetchRunLogs,
     fetchRoles,
     refresh,

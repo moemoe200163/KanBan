@@ -1369,11 +1369,12 @@ async def get_run(run_id: str) -> Optional[dict]:
 async def list_runs_by_board(
     board_id: str = "board-default",
     issue_id: Optional[str] = None,
+    job_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
     order: str = "desc",
 ) -> List[dict]:
-    """List runs for a board. Optional filters for issue_id and status.
+    """List runs for a board. Optional filters for issue_id, job_id, and status.
 
     order: 'desc' (newest first, default) or 'asc' (oldest first, for FIFO claiming).
     """
@@ -1383,6 +1384,8 @@ async def list_runs_by_board(
             stmt = select(AgentRun).where(AgentRun.board_id == board_id)
             if issue_id:
                 stmt = stmt.where(AgentRun.issue_id == issue_id)
+            if job_id:
+                stmt = stmt.where(AgentRun.job_id == job_id)
             if status:
                 stmt = stmt.where(AgentRun.status == status)
             if order == "asc":

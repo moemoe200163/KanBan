@@ -135,6 +135,7 @@ async def worker_heartbeat(worker_id: str, request: WorkerHeartbeatRequest):
 async def list_runs(
     board_id: str = Query(DEFAULT_BOARD_ID, description="Board to list runs for"),
     issue_id: Optional[str] = Query(None, description="Filter by issue ID"),
+    job_id: Optional[str] = Query(None, description="Filter by linked ECC job ID"),
     status: Optional[str] = Query(None, description="Filter by run status"),
     limit: int = Query(100, ge=1, le=500, description="Max runs to return"),
 ):
@@ -147,6 +148,7 @@ async def list_runs(
     runs = await repo.list_runs_by_board(
         board_id=board_id,
         issue_id=issue_id,
+        job_id=job_id,
         status=status,
         limit=limit,
     )

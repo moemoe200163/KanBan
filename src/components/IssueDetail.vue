@@ -2,11 +2,13 @@
 import { useBoardStore } from '~/stores/board'
 import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
 import type { ECCLogEntry } from '~/types'
+import { useRuntime } from '~/composables/useRuntime'
 import { Bot, FileText, X } from 'lucide-vue-next'
 import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
 
 const boardStore = useBoardStore()
+const { fetchRunsByJobId, fetchRunLogs } = useRuntime()
 
 const issue = computed(() => boardStore.selectedIssue)
 const activeTab = computed(() => boardStore.activeDetailTab)
@@ -21,20 +23,30 @@ const currentJob = computed(() => {
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0] ?? null
 })
 
+// P4: AgentRun events fetched from the runtime API, merged into timeline
+const runEvents = ref<Array<ECCLogEntry>>([])
+
 const timelineLogs = computed<ECCLogEntry[]>(() => {
-  if (currentJob.value) {
-    return currentJob.value.events
-      .slice()
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-      .map(event => ({
-        id: `jobevt_${currentJob.value?.id}_${event.timestamp}_${event.status}`,
-        timestamp: event.timestamp,
-        phase: _inferPhase(event.message, event.status),
-        content: event.message,
-        confidence: event.status === 'review_required' ? 0.95 : 0.75
-      }))
+  const jobLogs = currentJob.value
+    ? currentJob.value.events
+        .slice()
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+        .map(event => ({
+          id: `jobevt_${currentJob.value?.id}_${event.timestamp}_${event.status}`,
+          timestamp: event.timestamp,
+          phase: _inferPhase(event.message, event.status),
+          content: event.message,
+          confidence: event.status === 'review_required' ? 0.95 : 0.75
+        }))
+    : issue.value?.eccLogs ?? []
+
+  // Merge AgentRun events (fetched separately) into the timeline
+  if (runEvents.value.length > 0) {
+    const merged = [...jobLogs, ...runEvents.value]
+    merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    return merged
   }
-  return issue.value?.eccLogs ?? []
+  return jobLogs
 })
 
 const statusConfig = computed(() => {
@@ -177,6 +189,43 @@ watch(
     } else {
       // pollIssueJob returned null (no job on the server) — nothing to stop later.
       stopPolling = null
+    }
+  },
+  { immediate: true }
+)
+
+// P4: Fetch AgentRun events when ecc-logs tab is active and a job is linked
+watch(
+  [activeTab, currentJob],
+  async ([tab, job]) => {
+    if (tab !== 'ecc-logs' || !job) {
+      runEvents.value = []
+      return
+    }
+    try {
+      const linkedRuns = await fetchRunsByJobId(job.id)
+      if (linkedRuns.length === 0) {
+        runEvents.value = []
+        return
+      }
+      // Fetch events for all linked runs and merge
+      const allEvents = await Promise.all(
+        linkedRuns.map(async (run) => {
+          const logs = await fetchRunLogs(run.id)
+          return logs.map(log => ({
+            id: `runevt_${log.id}`,
+            timestamp: log.createdAt ?? new Date().toISOString(),
+            phase: (['observation', 'reasoning', 'action', 'output', 'error'].includes(log.eventType)
+              ? log.eventType
+              : 'observation') as ECCLogEntry['phase'],
+            content: log.message ?? '',
+            confidence: 0.85,
+          }))
+        })
+      )
+      runEvents.value = allEvents.flat()
+    } catch {
+      runEvents.value = []
     }
   },
   { immediate: true }
