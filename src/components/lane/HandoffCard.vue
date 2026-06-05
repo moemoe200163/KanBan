@@ -22,6 +22,8 @@ const emit = defineEmits<{
   review: [payload: { handoffId: string; decision: 'approve' | 'reject' | 'request_changes'; comment?: string }]
 }>()
 
+const reviewComment = ref('')
+
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   pending: { label: 'Pending', color: 'text-zinc-400 bg-zinc-800' },
   accepted: { label: 'Accepted', color: 'text-blue-400 bg-blue-900/30' },
@@ -178,30 +180,40 @@ const showEvidenceToggle = computed(
     <!-- Review actions — completed review handoffs, not yet decided -->
     <div
       v-if="handoff.status === 'completed' && handoff.toLane === 'review' && !handoff.decision"
-      class="flex flex-wrap gap-1.5 mt-2"
+      class="mt-2 space-y-2"
       data-testid="review-actions"
     >
-      <button
-        class="px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 text-[11px] transition-colors"
-        data-testid="review-approve-btn"
-        @click="emit('review', { handoffId: handoff.id, decision: 'approve' })"
-      >
-        Approve
-      </button>
-      <button
-        class="px-2 py-1 rounded bg-amber-900/30 text-amber-400 hover:bg-amber-900/50 text-[11px] transition-colors"
-        data-testid="review-rework-btn"
-        @click="emit('review', { handoffId: handoff.id, decision: 'request_changes' })"
-      >
-        Request Rework
-      </button>
-      <button
-        class="px-2 py-1 rounded bg-red-900/20 text-red-400/70 hover:bg-red-900/40 text-[11px] transition-colors"
-        data-testid="review-reject-btn"
-        @click="emit('review', { handoffId: handoff.id, decision: 'reject' })"
-      >
-        Reject
-      </button>
+      <textarea
+        v-model="reviewComment"
+        placeholder="Review comment (optional)"
+        rows="2"
+        class="w-full px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 text-[11px]
+               placeholder:text-zinc-500 resize-none focus:outline-none focus:border-zinc-500"
+        data-testid="review-comment-input"
+      />
+      <div class="flex flex-wrap gap-1.5">
+        <button
+          class="px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 text-[11px] transition-colors"
+          data-testid="review-approve-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'approve', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Approve
+        </button>
+        <button
+          class="px-2 py-1 rounded bg-amber-900/30 text-amber-400 hover:bg-amber-900/50 text-[11px] transition-colors"
+          data-testid="review-rework-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'request_changes', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Request Rework
+        </button>
+        <button
+          class="px-2 py-1 rounded bg-red-900/20 text-red-400/70 hover:bg-red-900/40 text-[11px] transition-colors"
+          data-testid="review-reject-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'reject', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Reject
+        </button>
+      </div>
     </div>
 
     <!-- Actions -->

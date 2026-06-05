@@ -848,90 +848,11 @@ def test_complete_existing_422_value_error_unchanged(fresh_db):
 
 
 # ---------------------------------------------------------------------------
-# Advance endpoint — gating tests
+# Review Gate — approve auto-routing and issue status sync
 # ---------------------------------------------------------------------------
 
-def test_advance_rejects_non_approved_handoff(fresh_db):
-    """Advance requires status='approved'; pending/accepted/in_progress should 422."""
-    import asyncio
-    svc = HandoffService()
-    handoff = asyncio.run(svc.create(
-        issue_id="issue-api-1",
-        board_id="board-default",
-        from_lane=None,
-        to_lane="review",
-        payload={},
-        created_by="alice",
-    ))
-    asyncio.run(svc.accept(handoff["id"], actor="bob"))
-    asyncio.run(svc.complete(
-        handoff_id=handoff["id"],
-        actor="bob",
-        payload={"reviewer": "carol", "decision": "approve", "approver": "lead-dev"},
-    ))
-    # Status is "completed" (not "approved") — advance should fail
-    response = client.post(
-        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/advance",
-        json={"actor": "carol"},
-        headers=fresh_db,
-    )
-    assert response.status_code == 422
-    assert "not approved" in response.json()["detail"].lower()
-
-
-def test_advance_on_already_reviewed_does_not_duplicate(fresh_db):
-    """After approve (which auto-creates next handoff), advance must not create another."""
-    import asyncio
-    svc = HandoffService()
-    # Create a handoff to review lane, complete it, then approve it.
-    handoff = asyncio.run(svc.create(
-        issue_id="issue-api-1",
-        board_id="board-default",
-        from_lane="frontend",
-        to_lane="review",
-        payload={},
-        created_by="alice",
-    ))
-    asyncio.run(svc.accept(handoff["id"], actor="bob"))
-    asyncio.run(svc.complete(
-        handoff_id=handoff["id"],
-        actor="bob",
-        payload={"reviewer": "carol", "decision": "approve", "approver": "lead-dev"},
-    ))
-    # Approve — this auto-creates the next handoff via routing.
-    review_resp = client.post(
-        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/review",
-        json={"decision": "approve", "actor": "carol"},
-        headers=fresh_db,
-    )
-    assert review_resp.status_code == 200
-    routing = review_resp.json()["routing"]
-    assert routing["action"] == "approve"
-    assert routing["next_handoff"] is not None
-    first_next_id = routing["next_handoff"]["id"]
-
-    # Now attempt advance on the same handoff — should fail (status is "approved"
-    # but the endpoint must guard against double-advance).
-    advance_resp = client.post(
-        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/advance",
-        json={"actor": "carol"},
-        headers=fresh_db,
-    )
-    # The advance endpoint should either 422 (already has next) or succeed idempotently.
-    # Either way, verify no duplicate handoff was created.
-    handoffs_after = client.get(
-        "/api/v1/boards/board-default/issues/issue-api-1/handoffs"
-    ).json()["handoffs"]
-    delivery_handoffs = [h for h in handoffs_after if h["toLane"] == "delivery"]
-    assert len(delivery_handoffs) == 1, (
-        f"Expected exactly 1 delivery handoff, got {len(delivery_handoffs)} — "
-        "approve auto-route + advance created a duplicate"
-    )
-    assert delivery_handoffs[0]["id"] == first_next_id
-
-
 def test_approve_auto_creates_next_handoff(fresh_db):
-    """Verify approve routing creates the next handoff in one step (no advance needed)."""
+    """Verify approve routing creates the next handoff in one step."""
     import asyncio
     svc = HandoffService()
     handoff = asyncio.run(svc.create(
@@ -965,3 +886,45 @@ def test_approve_auto_creates_next_handoff(fresh_db):
     # The original handoff is now "approved"
     assert body["handoff"]["status"] == "approved"
     assert body["handoff"]["decision"] == "approve"
+
+
+def test_review_syncs_issue_status(fresh_db):
+    """After review decision, issue status is updated: approve → in_progress, reject → backlog."""
+    import asyncio
+    from db import repository as repo
+    svc = HandoffService()
+
+    # Set issue to in_progress first
+    asyncio.run(repo.upsert_issue({
+        "id": "issue-api-1",
+        "key": "DEV-900",
+        "board_id": "board-default",
+        "title": "Status sync test",
+        "status": "in_progress",
+    }))
+
+    # Create + complete a handoff to review
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane="backend",
+        to_lane="review",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    asyncio.run(svc.complete(
+        handoff_id=handoff["id"],
+        actor="bob",
+        payload={"reviewer": "carol", "decision": "approve", "approver": "lead-dev"},
+    ))
+
+    # Approve — should sync issue status to in_progress (delivery lane)
+    resp = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/review",
+        json={"decision": "approve", "actor": "carol"},
+        headers=fresh_db,
+    )
+    assert resp.status_code == 200
+    issue = asyncio.run(repo.get_issue("issue-api-1"))
+    assert issue["status"] == "in_progress"

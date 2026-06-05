@@ -322,6 +322,22 @@ class HandoffService:
                 )
                 routing = {"action": "approve", "next_handoff": next_h, "next_lane": target_lane}
 
+        # --- Issue status sync ---
+        _status_map = {
+            "delivery": "in_progress",
+            "frontend": "in_progress",
+            "backend": "in_progress",
+            "qa": "in_progress",
+            "review": "human_review",
+            "triage": "backlog",
+        }
+        target = routing.get("next_lane")
+        if target and target in _status_map:
+            await repo.update_issue_status(issue_id, _status_map[target])
+        elif decision == "reject":
+            # Reject without routing → move to backlog
+            await repo.update_issue_status(issue_id, "backlog")
+
         return {"handoff": updated, "routing": routing}
 
     async def block(self, *, handoff_id: str, actor: Optional[str], reason: str) -> dict:

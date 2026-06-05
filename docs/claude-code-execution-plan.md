@@ -4,7 +4,7 @@ This plan is for the next agent taking over DevFlow. The goal is to continue bui
 
 ## Current Diagnosis
 
-DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete. P4 (Log Sync + Evidence Panel) and P5 (Real LLM Pipeline) are complete.
+DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete. P2 (Artifacts v1, Review Gate) are complete. P4 (Log Sync + Evidence Panel) and P5 (Real LLM Pipeline) are complete.
 
 Working:
 
@@ -31,8 +31,6 @@ Working:
 Not yet done:
 
 - Real Claude/ECC execution (safe runner is default; real execution opt-in only).
-- Artifacts v1 — typed evidence/artifact references on issues.
-- Review Gate — structured completion result with decision routing.
 - Delivery Orchestrator.
 - Session resume.
 - PR/CI automation.
@@ -68,8 +66,8 @@ Issue exists
 | ~~P1~~ | ~~Adapter integration~~ | ~~Done~~ | ~~ClaudeLocalAdapter exists, safe runner proven~~ | — |
 | ~~P1~~ | ~~Handoff typed payload (P1.5)~~ | ~~Done~~ | ~~Lane-specific Pydantic + structured 422~~ | — |
 | ~~P1~~ | ~~Evidence display (P1.6)~~ | ~~Done~~ | ~~HandoffCard toggle + type-aware body~~ | — |
-| P2 | Artifacts v1 | Typed evidence/artifact references on issues | Issues can link to external artifacts with typed metadata | Do not build full file storage |
-| P2 | Review Gate | Structured completion result with decision routing | Completed handoffs route to accept/reject/rework based on structured fields | Do not add ML-based routing |
+| ~~P2~~ | ~~Artifacts v1~~ | ~~Done~~ | ~~Issues can link to external artifacts with typed metadata~~ | — |
+| ~~P2~~ | ~~Review Gate~~ | ~~Done~~ | ~~Completed handoffs route to accept/reject/rework based on structured fields~~ | — |
 | P2 | Real Claude/ECC execution | Enable real command execution behind env flag | Safe runner remains default; real runner opt-in works locally | Do not run arbitrary commands from user input |
 | P3 | Delivery Orchestrator | Automated delivery pipeline | Handoff → review → merge/release flow | Do not start before P2 is green |
 | P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |

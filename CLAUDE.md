@@ -126,8 +126,8 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 5. ~~Review Queue~~ ✅
 6. ~~Handoff typed payload (P1.5)~~ ✅
 7. ~~Issue Detail evidence display (P1.6)~~ ✅
-8. Artifacts v1 — typed evidence/artifact references on issues
-9. Review Gate — structured completion result with decision routing
+8. ~~Artifacts v1 — typed evidence/artifact references on issues~~ ✅
+9. ~~Review Gate — structured completion result with decision routing~~ ✅
 10. Delivery Orchestrator
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
