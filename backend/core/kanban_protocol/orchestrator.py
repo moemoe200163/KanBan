@@ -16,6 +16,7 @@ async def create_job_for_handoff(
     to_lane: str,
     profile: str,
     actor: Optional[str],
+    board_id: str = "board-default",
 ) -> dict:
     """Create a JobModel row using the existing P0 dispatch path."""
     # Lazy import to avoid pulling the existing dispatch path during
@@ -38,4 +39,5 @@ async def create_job_for_handoff(
         profile=profile,
         harness="safe-runner",
         handoff_id=handoff_id,
+        board_id=board_id,
     )

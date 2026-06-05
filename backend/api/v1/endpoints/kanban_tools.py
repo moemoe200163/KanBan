@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from api.v1.auth_deps import require_auth
 from fastapi import Depends
+from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.tools import (
     KanbanToolContext,
     ToolResult,
@@ -74,6 +75,11 @@ async def call_kanban_tool(
             status_code=404,
             detail=f"Unknown tool: {tool_name}. Available: {sorted(KANBAN_TOOLS.keys())}",
         )
+
+    try:
+        assert_board_id_allowed(request.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     ctx = KanbanToolContext(
         board_id=request.board_id,

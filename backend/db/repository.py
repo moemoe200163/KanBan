@@ -150,6 +150,7 @@ def _job_model_to_dict(job: JobModel) -> dict:
         "status": job.status,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
+        "board_id": job.board_id,
         "message": job.message,
         "events": events,
     }
@@ -419,9 +420,10 @@ async def get_job(job_id: str) -> Optional[dict]:
 async def list_jobs(
     issue_id: Optional[str] = None,
     status: Optional[str] = None,
+    board_id: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> List[dict]:
-    """List jobs, optionally filtered by issue_id, status, and/or limit.
+    """List jobs, optionally filtered by issue_id, status, board_id, and/or limit.
 
     Sorted by created_at DESC (newest first) for stable ordering.
     When *limit* is set, only that many rows are returned.
@@ -430,6 +432,8 @@ async def list_jobs(
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
             stmt = select(JobModel)
+            if board_id:
+                stmt = stmt.where(JobModel.board_id == board_id)
             if issue_id:
                 stmt = stmt.where(JobModel.issue_id == issue_id)
             if status:
@@ -629,7 +633,7 @@ async def get_audit_log_stats() -> dict:
 # P2: Issue Collaboration Records - Events
 # ============================================================================
 
-async def list_issue_events(issue_id: str, limit: int = 100) -> List[dict]:
+async def list_issue_events(issue_id: str, limit: int = 100, board_id: Optional[str] = None) -> List[dict]:
     """Return events for an issue, newest first."""
     try:
         await _ensure_init()()
@@ -637,9 +641,10 @@ async def list_issue_events(issue_id: str, limit: int = 100) -> List[dict]:
             stmt = (
                 select(IssueEvent)
                 .where(IssueEvent.issue_id == issue_id)
-                .order_by(IssueEvent.created_at.desc())
-                .limit(limit)
             )
+            if board_id:
+                stmt = stmt.where(IssueEvent.board_id == board_id)
+            stmt = stmt.order_by(IssueEvent.created_at.desc()).limit(limit)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [r.to_dict() for r in rows]
@@ -655,6 +660,7 @@ async def create_issue_event(
     actor_id: Optional[str] = None,
     actor_name: Optional[str] = None,
     details: Optional[dict] = None,
+    board_id: str = DEFAULT_BOARD_ID,
 ) -> dict:
     """Create an event for an issue. Returns the created event."""
     await _ensure_init()()
@@ -667,6 +673,7 @@ async def create_issue_event(
         actor_name=actor_name,
         summary=summary,
         details=details or {},
+        board_id=board_id,
         created_at=now,
     )
     async with _get_sessionmaker()() as session:
@@ -679,7 +686,7 @@ async def create_issue_event(
 # P2: Issue Collaboration Records - Comments
 # ============================================================================
 
-async def list_issue_comments(issue_id: str, limit: int = 100) -> List[dict]:
+async def list_issue_comments(issue_id: str, limit: int = 100, board_id: Optional[str] = None) -> List[dict]:
     """Return comments for an issue, oldest first."""
     try:
         await _ensure_init()()
@@ -687,9 +694,10 @@ async def list_issue_comments(issue_id: str, limit: int = 100) -> List[dict]:
             stmt = (
                 select(IssueComment)
                 .where(IssueComment.issue_id == issue_id)
-                .order_by(IssueComment.created_at.asc())
-                .limit(limit)
             )
+            if board_id:
+                stmt = stmt.where(IssueComment.board_id == board_id)
+            stmt = stmt.order_by(IssueComment.created_at.asc()).limit(limit)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [r.to_dict() for r in rows]
@@ -705,6 +713,7 @@ async def create_issue_comment(
     author_name: Optional[str] = None,
     comment_type: str = "comment",
     metadata: Optional[dict] = None,
+    board_id: str = DEFAULT_BOARD_ID,
 ) -> dict:
     """Create a comment on an issue. Returns the created comment."""
     await _ensure_init()()
@@ -717,6 +726,7 @@ async def create_issue_comment(
         body=body,
         comment_type=comment_type,
         extra_data=metadata or {},
+        board_id=board_id,
         created_at=now,
     )
     async with _get_sessionmaker()() as session:
@@ -729,7 +739,7 @@ async def create_issue_comment(
 # P2: Issue Collaboration Records - Artifacts
 # ============================================================================
 
-async def list_issue_artifacts(issue_id: str, limit: int = 100) -> List[dict]:
+async def list_issue_artifacts(issue_id: str, limit: int = 100, board_id: Optional[str] = None) -> List[dict]:
     """Return artifacts for an issue, newest first."""
     try:
         await _ensure_init()()
@@ -737,9 +747,10 @@ async def list_issue_artifacts(issue_id: str, limit: int = 100) -> List[dict]:
             stmt = (
                 select(IssueArtifact)
                 .where(IssueArtifact.issue_id == issue_id)
-                .order_by(IssueArtifact.created_at.desc())
-                .limit(limit)
             )
+            if board_id:
+                stmt = stmt.where(IssueArtifact.board_id == board_id)
+            stmt = stmt.order_by(IssueArtifact.created_at.desc()).limit(limit)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [r.to_dict() for r in rows]
@@ -760,6 +771,7 @@ async def create_issue_artifact(
     metadata: Optional[dict] = None,
     created_by_id: Optional[str] = None,
     created_by_name: Optional[str] = None,
+    board_id: str = DEFAULT_BOARD_ID,
 ) -> dict:
     """Create an artifact metadata record. Returns the created artifact."""
     await _ensure_init()()
@@ -777,6 +789,7 @@ async def create_issue_artifact(
         extra_data=metadata or {},
         created_by_id=created_by_id,
         created_by_name=created_by_name,
+        board_id=board_id,
         created_at=now,
     )
     async with _get_sessionmaker()() as session:

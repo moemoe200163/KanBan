@@ -104,6 +104,7 @@ class HandoffService:
             to_lane=lane.key,
             profile=profile,
             actor=actor,
+            board_id=current.get("boardId", "board-default"),
         )
 
         updated = await repo.update_issue_handoff(

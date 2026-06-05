@@ -331,15 +331,18 @@ async def list_ecc_jobs(
 ):
     """List ECC jobs, optionally filtered to a single issue or a single status."""
     try:
+        assert_board_id_allowed(board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
         from db import repository as repo
-        rows = await repo.list_jobs(issue_id=issue_id, status=status, limit=limit)
+        rows = await repo.list_jobs(issue_id=issue_id, status=status, board_id=board_id, limit=limit)
         jobs = []
         for row in rows:
             row["events"] = [ECCJobEvent(**e) for e in row.get("events", [])]
             job = ECCDispatchJob(**row)
             _jobs[job.id] = job
-            if board_id and job.board_id != board_id:
-                continue
             jobs.append(job)
     except Exception:
         filtered = list(_jobs.values())
@@ -372,6 +375,10 @@ async def get_ecc_job(job_id: str):
             job = None
     if not job:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
+    try:
+        assert_board_id_allowed(job.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return job
 
 
@@ -431,6 +438,11 @@ async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks, current_
     if not source:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
 
+    try:
+        assert_board_id_allowed(source.board_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if source.status not in RETRYABLE_TERMINAL_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -448,6 +460,7 @@ async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks, current_
         command=source.command,
         profile=source.profile,
         harness=source.harness,
+        board_id=source.board_id,
         status="queued",
         created_at=now,
         updated_at=now,
