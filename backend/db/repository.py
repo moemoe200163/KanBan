@@ -59,6 +59,7 @@ __all__ = [
     "update_issue_status",
     "update_issue_pr_url",
     "update_issue_ci_status",
+    "list_handoffs_by_status",
     "next_issue_key",
     "upsert_job",
     "get_job",
@@ -856,6 +857,38 @@ async def list_issue_handoffs(
             return [r.to_dict() for r in rows]
     except Exception as e:
         logger.warning(f"Failed to list issue handoffs for {issue_id}/{board_id}: {e}")
+        return []
+
+
+async def list_handoffs_by_status(
+    *,
+    status: str,
+    board_id: str = DEFAULT_BOARD_ID,
+    limit: int = 100,
+) -> list[dict]:
+    """Find all handoffs with a given status on a board.
+
+    Used by the autopilot scheduler to find accepted/in_progress handoffs
+    that need processing.
+    """
+    from sqlalchemy import select
+    from db.models import IssueHandoff
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(IssueHandoff)
+                .where(IssueHandoff.status == status)
+                .where(IssueHandoff.board_id == board_id)
+                .order_by(IssueHandoff.created_at.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list handoffs with status {status}: {e}")
         return []
 
 

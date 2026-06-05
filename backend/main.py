@@ -128,11 +128,24 @@ async def lifespan(app: FastAPI):
 
     logger.info("DevFlow Backend started successfully")
 
+    # Start the autopilot scheduler (auto-dispatches non-human lanes).
+    try:
+        from core.kanban_protocol.autopilot import scheduler as autopilot_scheduler
+        await autopilot_scheduler.start()
+        logger.info("Autopilot scheduler started (tick=%ds)", autopilot_scheduler.tick_interval)
+    except Exception:
+        logger.exception("Autopilot scheduler failed to start (non-fatal)")
+
     # Yield control to the application
     yield
 
-    # Shutdown: stop the background worker, then clean up connections
+    # Shutdown: stop the autopilot scheduler, then the background worker, then clean up connections
     logger.info("Shutting down DevFlow Backend...")
+    try:
+        from core.kanban_protocol.autopilot import scheduler as autopilot_scheduler
+        await autopilot_scheduler.stop()
+    except Exception:
+        pass
     if getattr(app.state, "worker", None) is not None:
         try:
             from core.runtime.worker import stop_background_worker
@@ -381,7 +394,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
@@ -398,6 +411,7 @@ try:
     app.include_router(llm.router, prefix="/api/v1", tags=["LLM"])
     app.include_router(handoffs.router, prefix="/api/v1", tags=["Kanban Protocol"])
     app.include_router(runtime.router, prefix="/api/v1", tags=["Agent Runtime"])
+    app.include_router(autopilot.router, prefix="/api/v1", tags=["Autopilot"])
 
     # Dev management endpoints (stats + reset self-gate on dev mode; 404 in production)
     from api.v1.endpoints import dev
