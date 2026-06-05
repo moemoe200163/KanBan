@@ -95,8 +95,8 @@ This safe runner should be the default until the board/job/log loop is proven.
 Do not prioritize these until real execution is stable:
 
 - ~~Real Claude/ECC execution (enable behind env flag; safe runner remains default).~~ ✅
-- Paperclip-style session serialization.
-- Long-running session resume (requires real execution stable first).
+- Paperclip-style session serialization (schema designed: `docs/superpowers/specs/2026-06-06-session-resume-schema.md`).
+- Session resume implementation (requires real execution stable first).
 - Autopilot scheduling.
 - PR/CI automation.
 - Full auth and API-key rollout.
@@ -128,6 +128,7 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 9. ~~Review Gate — structured completion result with decision routing~~ ✅
 10. ~~Delivery Orchestrator~~ ✅
 11. ~~Real execution closed loop~~ ✅
+12. Session resume schema design ✅ (spec at `docs/superpowers/specs/2026-06-06-session-resume-schema.md`, implementation deferred)
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
 `archive/security-scope-spike-2026-06-03` — do not merge into mainline

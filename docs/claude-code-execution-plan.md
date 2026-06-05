@@ -35,7 +35,7 @@ Working:
 
 Not yet done:
 
-- Session resume (requires real execution stable first).
+- Session resume implementation (schema designed at `docs/superpowers/specs/2026-06-06-session-resume-schema.md`, requires real execution stable first).
 - PR/CI automation.
 
 ## Product Completion Principle
@@ -74,7 +74,7 @@ Issue exists
 | ~~P2~~ | ~~Real Claude/ECC execution~~ | ~~Done~~ | ~~Safe runner default; real runner opt-in via ALLOW_REAL_LLM_EXECUTION=true~~ | Do not run arbitrary commands from user input |
 | ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
 | P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |
-| P3 | Session resume | Add Paperclip-style session persistence | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
+| P3 | Session resume | Schema designed; implementation pending real execution stability | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
 
 ## Required Verification
 
