@@ -13,13 +13,22 @@ is stateless — it reads and writes through the repository layer.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 
 logger = logging.getLogger(__name__)
+
+
+async def _broadcast_run_event(run_id: str, event: dict) -> None:
+    """Push a run event to WebSocket subscribers (best-effort)."""
+    try:
+        from api.v1.endpoints.ws import broadcast_run_log
+        await broadcast_run_log(run_id, event)
+    except Exception:
+        pass  # WS broadcast is best-effort
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +162,13 @@ async def claim_next_run(
         claimed_at=now,
     )
     # Append event
-    await repo.append_run_event(
+    event = await repo.append_run_event(
         id=f"evt_{uuid4().hex[:12]}",
         run_id=run["id"],
         event_type="status_change",
         message=f"Run claimed by worker {worker_id}",
     )
+    await _broadcast_run_event(run["id"], event)
     logger.info("Run %s claimed by worker %s (atomic)", run["id"], worker_id)
     return run
 
@@ -176,12 +186,13 @@ async def start_run(run_id: str, worker_id: str) -> Optional[dict]:
     )
     if updated:
         await repo.update_worker_status(worker_id, "running", active_run_id=run_id)
-        await repo.append_run_event(
+        event = await repo.append_run_event(
             id=f"evt_{uuid4().hex[:12]}",
             run_id=run_id,
             event_type="status_change",
             message=f"Run started by worker {worker_id}",
         )
+        await _broadcast_run_event(run_id, event)
         logger.info("Run %s started by worker %s", run_id, worker_id)
     return updated
 
@@ -204,12 +215,13 @@ async def complete_run(
     )
     if updated:
         await repo.update_worker_status(worker_id, "idle", active_run_id=None)
-        await repo.append_run_event(
+        event = await repo.append_run_event(
             id=f"evt_{uuid4().hex[:12]}",
             run_id=run_id,
             event_type="status_change",
             message=f"Run completed: {result_summary or 'success'}",
         )
+        await _broadcast_run_event(run_id, event)
         # Sync linked ECC job → review_required
         await _sync_job_for_run(run_id, "review_required", repo, result_summary=result_summary)
         logger.info("Run %s completed by worker %s", run_id, worker_id)
@@ -236,12 +248,13 @@ async def fail_run(
         await repo.update_worker_status(
             worker_id, "idle", active_run_id=None, error_message=error_message,
         )
-        await repo.append_run_event(
+        event = await repo.append_run_event(
             id=f"evt_{uuid4().hex[:12]}",
             run_id=run_id,
             event_type="error",
             message=f"Run failed: {error_message}",
         )
+        await _broadcast_run_event(run_id, event)
         # Sync linked ECC job → failed
         await _sync_job_for_run(run_id, "failed", repo, error_message=error_message)
         logger.warning("Run %s failed: %s", run_id, error_message)
@@ -342,12 +355,13 @@ async def cancel_run(run_id: str, worker_id: Optional[str] = None) -> Optional[d
     if updated:
         if worker_id:
             await repo.update_worker_status(worker_id, "idle", active_run_id=None)
-        await repo.append_run_event(
+        event = await repo.append_run_event(
             id=f"evt_{uuid4().hex[:12]}",
             run_id=run_id,
             event_type="status_change",
             message="Run cancelled",
         )
+        await _broadcast_run_event(run_id, event)
         logger.info("Run %s cancelled", run_id)
     return updated
 
@@ -419,13 +433,14 @@ async def reclaim_stale_runs(
         else:
             logger.warning("Stale run %s → failed (max retries exhausted)", run_id)
         # Append event
-        await repo.append_run_event(
+        event = await repo.append_run_event(
             id=f"evt_{uuid4().hex[:12]}",
             run_id=run_id,
             event_type="status_change",
             message=f"Stale reclaim: {status}",
             extra_metadata={"reclaimed_status": status},
         )
+        await _broadcast_run_event(run_id, event)
         # Sync linked ECC job
         await _sync_job_for_run(run_id, status, repo)
 

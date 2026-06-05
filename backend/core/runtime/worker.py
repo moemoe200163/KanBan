@@ -335,13 +335,18 @@ class AgentWorkerProcess:
                 # Log callback — pushes to DB + WebSocket via repo
                 async def _on_log(message: str) -> None:
                     from db.repository import append_run_event
-                    await append_run_event(
+                    event = await append_run_event(
                         id=f"log_{uuid4().hex[:12]}",
                         run_id=run_id,
                         event_type="log",
                         message=message,
                         extra_metadata={"level": "info"},
                     )
+                    try:
+                        from api.v1.endpoints.ws import broadcast_run_log
+                        await broadcast_run_log(run_id, event)
+                    except Exception:
+                        pass  # WS broadcast is best-effort
 
                 # Run heartbeat task for long-running executions
                 async def _run_heartbeat():
