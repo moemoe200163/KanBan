@@ -8,11 +8,14 @@ Covers:
 - Log filtering (only log events, not status_change events)
 """
 
+import asyncio
 import pytest
+from datetime import datetime, timezone
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from db import database, repository as repo
-from db.models import Base
+from db.models import Base, User as UserModel
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +52,33 @@ def fresh_db(tmp_path, monkeypatch):
     loop.run_until_complete(_init_db())
     database._db_initialized = True
 
-    yield new_engine
+    # Create a test user and generate JWT for authenticated requests
+    from api.v1.endpoints.auth import hash_password, create_jwt_token
+    now = datetime.now(timezone.utc)
+
+    async def _seed_user():
+        async with new_sessionmaker() as session:
+            result = await session.execute(
+                sa_select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+
+    headers = loop.run_until_complete(_seed_user())
+
+    yield new_engine, headers
 
     loop.run_until_complete(new_engine.dispose())
     loop.close()
@@ -59,7 +88,8 @@ def fresh_db(tmp_path, monkeypatch):
 def api_client(fresh_db):
     from fastapi.testclient import TestClient
     import main
-    return TestClient(main.app)
+    engine, headers = fresh_db
+    return TestClient(main.app), headers
 
 
 # ---------------------------------------------------------------------------
@@ -68,18 +98,18 @@ def api_client(fresh_db):
 
 class TestLogPushAPI:
     def test_push_log(self, api_client):
+        client, headers = api_client
         # Create a run first
-        import asyncio
         loop = asyncio.new_event_loop()
         run = loop.run_until_complete(repo.create_run(
             id="log-run-1", board_id="board-default", issue_key="DEV-001",
         ))
         loop.close()
 
-        resp = api_client.post("/api/v1/runtime/runs/log-run-1/log", json={
+        resp = client.post("/api/v1/runtime/runs/log-run-1/log", json={
             "message": "Hello from worker",
             "level": "info",
-        })
+        }, headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["message"] == "Hello from worker"
@@ -88,25 +118,26 @@ class TestLogPushAPI:
         assert data["runId"] == "log-run-1"
 
     def test_push_log_not_found(self, api_client):
-        resp = api_client.post("/api/v1/runtime/runs/nonexistent/log", json={
+        client, headers = api_client
+        resp = client.post("/api/v1/runtime/runs/nonexistent/log", json={
             "message": "test",
             "level": "info",
-        })
+        }, headers=headers)
         assert resp.status_code == 404
 
     def test_push_log_with_metadata(self, api_client):
-        import asyncio
+        client, headers = api_client
         loop = asyncio.new_event_loop()
         loop.run_until_complete(repo.create_run(
             id="log-run-2", board_id="board-default",
         ))
         loop.close()
 
-        resp = api_client.post("/api/v1/runtime/runs/log-run-2/log", json={
+        resp = client.post("/api/v1/runtime/runs/log-run-2/log", json={
             "message": "Progress 50%",
             "level": "debug",
             "metadata": {"progress": 50},
-        })
+        }, headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["metadata"]["level"] == "debug"
@@ -119,38 +150,38 @@ class TestLogPushAPI:
 
 class TestLogListingAPI:
     def test_list_logs_empty(self, api_client):
-        import asyncio
+        client, headers = api_client
         loop = asyncio.new_event_loop()
         loop.run_until_complete(repo.create_run(
             id="log-empty", board_id="board-default",
         ))
         loop.close()
 
-        resp = api_client.get("/api/v1/runtime/runs/log-empty/logs")
+        resp = client.get("/api/v1/runtime/runs/log-empty/logs")
         assert resp.status_code == 200
         data = resp.json()
         assert data["logs"] == []
         assert data["total"] == 0
 
     def test_list_logs_ordered_asc(self, api_client):
-        import asyncio
+        client, headers = api_client
         loop = asyncio.new_event_loop()
         loop.run_until_complete(repo.create_run(
             id="log-ord", board_id="board-default",
         ))
         # Push multiple logs
         for i in range(3):
-            api_client.post("/api/v1/runtime/runs/log-ord/log", json={
+            client.post("/api/v1/runtime/runs/log-ord/log", json={
                 "message": f"line {i}",
                 "level": "info",
-            })
+            }, headers=headers)
         # Also add a status_change event
         loop.run_until_complete(repo.append_run_event(
             id="sc-1", run_id="log-ord", event_type="status_change", message="started",
         ))
         loop.close()
 
-        resp = api_client.get("/api/v1/runtime/runs/log-ord/logs")
+        resp = client.get("/api/v1/runtime/runs/log-ord/logs")
         assert resp.status_code == 200
         data = resp.json()
         # Only log events, not status_change
@@ -159,7 +190,8 @@ class TestLogListingAPI:
         assert data["logs"][2]["message"] == "line 2"
 
     def test_list_logs_not_found(self, api_client):
-        resp = api_client.get("/api/v1/runtime/runs/nonexistent/logs")
+        client, headers = api_client
+        resp = client.get("/api/v1/runtime/runs/nonexistent/logs")
         assert resp.status_code == 404
 
 

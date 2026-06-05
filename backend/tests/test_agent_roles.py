@@ -208,7 +208,6 @@ class TestRolesAPI:
     def _get_api_client(self):
         """Create a test client with isolated DB."""
         import os
-        os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///")
 
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
         from db import database, repository as repo

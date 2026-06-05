@@ -181,6 +181,7 @@ async def complete_handoff(
                     source="handoff_complete",
                     path_or_url=shot,
                     summary=f"Screenshot from handoff {handoff_id}",
+                    board_id=board_id,
                 )
 
             if payload.get("diff_summary"):
@@ -192,6 +193,7 @@ async def complete_handoff(
                     source="handoff_complete",
                     path_or_url=None,
                     summary=payload["diff_summary"],
+                    board_id=board_id,
                 )
 
             if payload.get("test_results"):
@@ -203,6 +205,7 @@ async def complete_handoff(
                     source="handoff_complete",
                     path_or_url=None,
                     summary=payload["test_results"],
+                    board_id=board_id,
                 )
         except Exception as exc:
             logger.warning(

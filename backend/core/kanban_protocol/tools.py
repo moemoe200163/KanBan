@@ -119,6 +119,7 @@ async def kanban_create(ctx: KanbanToolContext) -> ToolResult:
                     title=artifact.get("title", ""),
                     path_or_url=artifact.get("url", ""),
                     metadata=artifact.get("metadata"),
+                    board_id=ctx.board_id,
                 )
 
         logger.info("kanban_create: issue %s created by %s", issue.get("key"), ctx.actor)
@@ -259,6 +260,7 @@ async def kanban_complete(ctx: KanbanToolContext) -> ToolResult:
                     title=artifact.get("title", ""),
                     path_or_url=artifact.get("url", ""),
                     metadata=artifact.get("metadata"),
+                    board_id=ctx.board_id,
                 )
 
         logger.info("kanban_complete: issue %s → review (handoff %s)", issue.get("key"), handoff.get("id"))
@@ -310,6 +312,7 @@ async def kanban_link(ctx: KanbanToolContext) -> ToolResult:
             title=title,
             path_or_url=url,
             metadata=payload.get("metadata"),
+            board_id=ctx.board_id,
         )
 
         return ToolResult(ok=True, tool="kanban_link", data={"artifact": artifact})

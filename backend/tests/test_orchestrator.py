@@ -17,11 +17,14 @@ Covers:
 - API: state machine enforcement (can't start non-claimed run, etc.)
 """
 
+import asyncio
 import pytest
+from datetime import datetime, timezone
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from db import database, repository as repo
-from db.models import Base
+from db.models import Base, User as UserModel
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +51,6 @@ def fresh_db(tmp_path, monkeypatch):
         pass
     monkeypatch.setattr(database, "ensure_db_init", _init, raising=False)
 
-    import asyncio
-
     async def _init_db():
         async with new_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -58,7 +59,34 @@ def fresh_db(tmp_path, monkeypatch):
     loop.run_until_complete(_init_db())
     database._db_initialized = True
 
-    yield new_engine
+    # Seed a test user and generate auth headers for POST endpoints
+    from api.v1.endpoints.auth import hash_password, create_jwt_token
+
+    now = datetime.now(timezone.utc)
+
+    async def _seed_user():
+        async with new_sessionmaker() as session:
+            result = await session.execute(
+                sa_select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+
+    headers = loop.run_until_complete(_seed_user())
+
+    yield new_engine, headers
 
     loop.run_until_complete(new_engine.dispose())
     loop.close()
@@ -66,10 +94,11 @@ def fresh_db(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def api_client(fresh_db):
-    """FastAPI TestClient with isolated DB."""
+    """FastAPI TestClient with isolated DB and auth headers."""
     from fastapi.testclient import TestClient
     import main
-    return TestClient(main.app)
+    engine, headers = fresh_db
+    return TestClient(main.app), headers
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +293,8 @@ async def test_run_events_during_lifecycle(fresh_db):
 
 class TestWorkerAPI:
     def test_register_worker(self, api_client):
-        resp = api_client.post("/api/v1/runtime/workers", json={
+        client, headers = api_client
+        resp = client.post("/api/v1/runtime/workers", headers=headers, json={
             "worker_id": "wk-api-1",
             "worker_type": "claude-code",
             "board_id": "board-default",
@@ -275,30 +305,34 @@ class TestWorkerAPI:
         assert data["status"] == "idle"
 
     def test_heartbeat(self, api_client):
-        api_client.post("/api/v1/runtime/workers", json={
+        client, headers = api_client
+        client.post("/api/v1/runtime/workers", headers=headers, json={
             "worker_id": "wk-hb", "worker_type": "codex",
         })
-        resp = api_client.post("/api/v1/runtime/workers/wk-hb/heartbeat", json={})
+        resp = client.post("/api/v1/runtime/workers/wk-hb/heartbeat", headers=headers, json={})
         assert resp.status_code == 200
         data = resp.json()
         assert data["lastHeartbeatAt"] is not None
 
     def test_heartbeat_not_found(self, api_client):
-        resp = api_client.post("/api/v1/runtime/workers/nonexistent/heartbeat", json={})
+        client, headers = api_client
+        resp = client.post("/api/v1/runtime/workers/nonexistent/heartbeat", headers=headers, json={})
         assert resp.status_code == 404
 
     def test_list_workers(self, api_client):
-        api_client.post("/api/v1/runtime/workers", json={
+        client, headers = api_client
+        client.post("/api/v1/runtime/workers", headers=headers, json={
             "worker_id": "wk-list", "worker_type": "claude-code",
         })
-        resp = api_client.get("/api/v1/runtime/workers?board_id=board-default")
+        resp = client.get("/api/v1/runtime/workers?board_id=board-default")
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
 
 
 class TestRunLifecycleAPI:
     def test_claim_no_workers(self, api_client):
-        resp = api_client.post("/api/v1/runtime/runs/claim", json={
+        client, headers = api_client
+        resp = client.post("/api/v1/runtime/runs/claim", headers=headers, json={
             "board_id": "board-default",
         })
         assert resp.status_code == 200
@@ -307,10 +341,11 @@ class TestRunLifecycleAPI:
         assert "No idle workers" in data["message"]
 
     def test_claim_no_runs(self, api_client):
-        api_client.post("/api/v1/runtime/workers", json={
+        client, headers = api_client
+        client.post("/api/v1/runtime/workers", headers=headers, json={
             "worker_id": "wk-nor", "worker_type": "claude-code",
         })
-        resp = api_client.post("/api/v1/runtime/runs/claim", json={
+        resp = client.post("/api/v1/runtime/runs/claim", headers=headers, json={
             "board_id": "board-default",
         })
         assert resp.status_code == 200
@@ -319,13 +354,13 @@ class TestRunLifecycleAPI:
         assert "No pending runs" in data["message"]
 
     def test_full_lifecycle_via_api(self, api_client):
+        client, headers = api_client
         # Register worker
-        api_client.post("/api/v1/runtime/workers", json={
+        client.post("/api/v1/runtime/workers", headers=headers, json={
             "worker_id": "wk-lc", "worker_type": "claude-code",
         })
 
         # Create a run via orchestrator
-        import asyncio
         loop = asyncio.new_event_loop()
         from core.runtime.orchestrator import create_run_for_dispatch
         run = loop.run_until_complete(create_run_for_dispatch(
@@ -334,7 +369,7 @@ class TestRunLifecycleAPI:
         loop.close()
 
         # Claim
-        resp = api_client.post("/api/v1/runtime/runs/claim", json={
+        resp = client.post("/api/v1/runtime/runs/claim", headers=headers, json={
             "board_id": "board-default",
         })
         assert resp.status_code == 200
@@ -343,19 +378,19 @@ class TestRunLifecycleAPI:
         run_id = data["run"]["id"]
 
         # Start
-        resp = api_client.post(f"/api/v1/runtime/runs/{run_id}/start")
+        resp = client.post(f"/api/v1/runtime/runs/{run_id}/start", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["status"] == "running"
 
         # Complete
-        resp = api_client.post(f"/api/v1/runtime/runs/{run_id}/complete", json={
+        resp = client.post(f"/api/v1/runtime/runs/{run_id}/complete", headers=headers, json={
             "result_summary": "All good",
         })
         assert resp.status_code == 200
         assert resp.json()["status"] == "completed"
 
     def test_start_non_claimed_fails(self, api_client):
-        import asyncio
+        client, headers = api_client
         loop = asyncio.new_event_loop()
         from core.runtime.orchestrator import create_run_for_dispatch
         run = loop.run_until_complete(create_run_for_dispatch(
@@ -363,7 +398,7 @@ class TestRunLifecycleAPI:
         ))
         loop.close()
 
-        resp = api_client.post(f"/api/v1/runtime/runs/{run['id']}/start")
+        resp = client.post(f"/api/v1/runtime/runs/{run['id']}/start", headers=headers)
         assert resp.status_code == 409
         assert "claimed" in resp.json()["detail"]
 
@@ -566,8 +601,7 @@ async def test_pipeline_dispatch_to_review(fresh_db):
 def test_get_ecc_job_after_run_complete_has_valid_events(api_client, fresh_db):
     """GET /api/v1/ecc/jobs/{id} returns 200 with ECCJobEvent-shaped events
     after a run completes and syncs the job status."""
-    import asyncio
-    from datetime import datetime, timezone
+    client, headers = api_client
     from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run, start_run, complete_run
 
     now = datetime.now(timezone.utc).isoformat()
@@ -600,7 +634,7 @@ def test_get_ecc_job_after_run_complete_has_valid_events(api_client, fresh_db):
     loop.close()
 
     # GET the job via API — should not crash on event parsing
-    resp = api_client.get("/api/v1/ecc/jobs/job-api-test")
+    resp = client.get("/api/v1/ecc/jobs/job-api-test")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "review_required"

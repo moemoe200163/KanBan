@@ -31,3 +31,4 @@ devflow_e2e.db
 venv/
 *.egg-info/
 .claude/
+file::memory:

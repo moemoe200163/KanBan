@@ -7,9 +7,10 @@ All queries are filtered by board_id for board isolation.
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from api.v1.auth_deps import require_auth
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
 
 router = APIRouter()
@@ -94,7 +95,7 @@ async def get_worker(worker_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/runtime/workers")
-async def register_worker(request: WorkerRegisterRequest):
+async def register_worker(request: WorkerRegisterRequest, current_user: dict = Depends(require_auth)):
     """Register a new worker or update an existing one."""
     try:
         assert_board_id_allowed(request.board_id)
@@ -114,7 +115,7 @@ async def register_worker(request: WorkerRegisterRequest):
 
 
 @router.post("/runtime/workers/{worker_id}/heartbeat")
-async def worker_heartbeat(worker_id: str, request: WorkerHeartbeatRequest):
+async def worker_heartbeat(worker_id: str, request: WorkerHeartbeatRequest, current_user: dict = Depends(require_auth)):
     """Update worker heartbeat timestamp and optional status."""
     from db import repository as repo
     worker = await repo.get_worker(worker_id)
@@ -170,7 +171,7 @@ async def get_run(run_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/runtime/runs/claim")
-async def claim_run(request: RunClaimRequest):
+async def claim_run(request: RunClaimRequest, current_user: dict = Depends(require_auth)):
     """Claim the next pending run for a worker.
 
     The worker_id is passed via query parameter since this is called by
@@ -193,7 +194,7 @@ async def claim_run(request: RunClaimRequest):
 
 
 @router.post("/runtime/runs/{run_id}/start")
-async def start_run_endpoint(run_id: str):
+async def start_run_endpoint(run_id: str, current_user: dict = Depends(require_auth)):
     """Transition a claimed run to running."""
     from core.runtime.orchestrator import start_run
     from db import repository as repo
@@ -213,7 +214,7 @@ async def start_run_endpoint(run_id: str):
 
 
 @router.post("/runtime/runs/{run_id}/complete")
-async def complete_run_endpoint(run_id: str, request: RunCompleteRequest):
+async def complete_run_endpoint(run_id: str, request: RunCompleteRequest, current_user: dict = Depends(require_auth)):
     """Transition a running run to completed."""
     from core.runtime.orchestrator import complete_run
     from db import repository as repo
@@ -230,7 +231,7 @@ async def complete_run_endpoint(run_id: str, request: RunCompleteRequest):
 
 
 @router.post("/runtime/runs/{run_id}/fail")
-async def fail_run_endpoint(run_id: str, request: RunFailRequest):
+async def fail_run_endpoint(run_id: str, request: RunFailRequest, current_user: dict = Depends(require_auth)):
     """Transition a running run to failed."""
     from core.runtime.orchestrator import fail_run
     from db import repository as repo
@@ -275,7 +276,7 @@ class LogPushRequest(BaseModel):
 
 
 @router.post("/runtime/runs/{run_id}/log")
-async def push_run_log(run_id: str, request: LogPushRequest):
+async def push_run_log(run_id: str, request: LogPushRequest, current_user: dict = Depends(require_auth)):
     """Push a log line from a worker. Persists to DB and broadcasts via WebSocket."""
     import uuid
     from db import repository as repo
