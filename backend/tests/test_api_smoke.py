@@ -1,9 +1,54 @@
+import asyncio
+import time
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 import main
+from db.models import User as UserModel
 
 
-client = TestClient(main.app)
+def _setup():
+    """Create tables and seed a test user, returning (app, headers)."""
+    from db.database import engine
+    from db.models import Base
+    from api.v1.endpoints.auth import hash_password, create_jwt_token
+
+    async def _async_setup():
+        from db.database import AsyncSessionLocal
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+
+        now = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+
+    headers = asyncio.run(_async_setup())
+    return main.app, headers
+
+
+app, headers = _setup()
+client = TestClient(app)
 
 
 def test_health_and_ready_checks():
@@ -21,6 +66,7 @@ def test_ecc_dispatch_accepts_valid_control_plane_job():
             "profile": "frontend",
             "harness": "codex",
         },
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -40,18 +86,20 @@ def test_ecc_job_lifecycle_can_be_updated_and_cancelled():
             "profile": "backend",
             "harness": "claude-code",
         },
+        headers=headers,
     )
     job_id = response.json()["id"]
 
     update = client.patch(
         f"/api/v1/ecc/jobs/{job_id}",
         json={"status": "review_required", "message": "Quality gate waiting for human review"},
+        headers=headers,
     )
     assert update.status_code == 200
     assert update.json()["status"] == "review_required"
     assert update.json()["message"] == "Quality gate waiting for human review"
 
-    cancel = client.post(f"/api/v1/ecc/jobs/{job_id}/cancel")
+    cancel = client.post(f"/api/v1/ecc/jobs/{job_id}/cancel", headers=headers)
     assert cancel.status_code == 200
     assert cancel.json()["status"] == "cancelled"
 
@@ -76,13 +124,13 @@ def test_ecc_job_lifecycle_produces_events():
             "profile": "frontend",
             "harness": "claude-code",
         },
+        headers=headers,
     )
     assert response.status_code == 200
     job_id = response.json()["id"]
 
     # Safe runner emits queued + running transitions + 4 inner events + final.
     # The BackgroundTask finishes well within 1s on the test client.
-    import time
     time.sleep(1)
 
     job_response = client.get(f"/api/v1/ecc/jobs/{job_id}")

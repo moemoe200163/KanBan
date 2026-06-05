@@ -2,10 +2,11 @@ from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
+from api.v1.auth_deps import require_auth
 
 # NOTE: backend.db imports are done lazily (inside functions that need them)
 # to avoid import-time failures when running with PYTHONPATH=backend from
@@ -194,21 +195,15 @@ async def _register_job_from_db(job_id: str) -> None:
 @router.post("/ecc/dispatch")
 async def dispatch_ecc_command(
     request: ECCDispatchRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_auth),
 ):
     """
     Dispatch an ECC command to the control plane.
 
     Requires JWT authentication (via Authorization header or ?token= query param).
-    Set ALLOW_ANONYMOUS_DISPATCH=true to disable auth (development only).
     """
     import os
-    allow_anonymous = os.getenv("ALLOW_ANONYMOUS_DISPATCH", "false").lower() == "true"
-
-    if not allow_anonymous:
-        # TODO(P1): No auth middleware exists yet. This branch is a no-op.
-        # Implement JWT validation before any public/production deployment.
-        pass
 
     # Validate board_id
     try:
@@ -396,7 +391,7 @@ async def update_ecc_job(job_id: str, request: ECCJobStatusUpdate):
 
 
 @router.post("/ecc/jobs/{job_id}/cancel")
-async def cancel_ecc_job(job_id: str):
+async def cancel_ecc_job(job_id: str, current_user: dict = Depends(require_auth)):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
@@ -416,7 +411,7 @@ RETRYABLE_TERMINAL_STATUSES = {"failed", "cancelled", "review_required"}
 
 
 @router.post("/ecc/jobs/{job_id}/retry")
-async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks):
+async def retry_ecc_job(job_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(require_auth)):
     """Create a new job that re-runs the same payload as `job_id`.
 
     The source job must be in a retryable terminal state. The new job

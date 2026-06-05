@@ -7,14 +7,15 @@ T10: Verify ECC job creation and safe-runner execution
 
 import pytest
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, select as sa_select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 import main
 from db import database as db_module
-from db.models import Base
+from db.models import Base, User as UserModel
 
 
 client = TestClient(main.app)
@@ -48,15 +49,38 @@ def fresh_db(tmp_path, monkeypatch):
             await conn.run_sync(Base.metadata.create_all)
         db_module._db_initialized = True
 
-    asyncio.run(_setup())
-    yield
+        from api.v1.endpoints.auth import hash_password, create_jwt_token
+
+        now = datetime.now(timezone.utc)
+        async with new_sessionmaker() as session:
+            result = await session.execute(
+                sa_select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+
+    headers = asyncio.run(_setup())
+    yield headers
     new_engine.sync_engine.dispose()
 
 
 BOARD = "board-default"
 
 
-def _create_issue(title: str) -> dict:
+def _create_issue(title: str, headers: dict) -> dict:
     """Create an issue and return the response body."""
     resp = client.post("/api/v1/issues", json={
         "title": title,
@@ -64,42 +88,46 @@ def _create_issue(title: str) -> dict:
         "status": "backlog",
         "priority": "medium",
         "profile": "frontend",
-    })
+    }, headers=headers)
     assert resp.status_code in (200, 201), f"create issue failed: {resp.text}"
     return resp.json()
 
 
-def _create_handoff(issue_id: str, to_lane: str, payload: Optional[dict] = None) -> dict:
+def _create_handoff(issue_id: str, to_lane: str, payload: Optional[dict] = None, headers: Optional[dict] = None) -> dict:
     resp = client.post(
         f"/api/v1/boards/{BOARD}/issues/{issue_id}/handoffs",
         json={"toLane": to_lane, "payload": payload or {}},
+        headers=headers,
     )
     assert resp.status_code == 201, f"create handoff to {to_lane} failed: {resp.text}"
     return resp.json()
 
 
-def _accept_handoff(issue_id: str, handoff_id: str) -> dict:
+def _accept_handoff(issue_id: str, handoff_id: str, headers: Optional[dict] = None) -> dict:
     resp = client.post(
         f"/api/v1/boards/{BOARD}/issues/{issue_id}/handoffs/{handoff_id}/accept",
         json={"actor": "user"},
+        headers=headers,
     )
     assert resp.status_code == 200, f"accept handoff failed: {resp.text}"
     return resp.json()
 
 
-def _dispatch_handoff(issue_id: str, handoff_id: str, issue_key: str) -> dict:
+def _dispatch_handoff(issue_id: str, handoff_id: str, issue_key: str, headers: Optional[dict] = None) -> dict:
     resp = client.post(
         f"/api/v1/boards/{BOARD}/issues/{issue_id}/handoffs/{handoff_id}/dispatch",
         json={"issueKey": issue_key, "profile": "frontend", "actor": "user"},
+        headers=headers,
     )
     assert resp.status_code == 200, f"dispatch handoff failed: {resp.text}"
     return resp.json()
 
 
-def _complete_handoff(issue_id: str, handoff_id: str, payload: Optional[dict] = None) -> dict:
+def _complete_handoff(issue_id: str, handoff_id: str, payload: Optional[dict] = None, headers: Optional[dict] = None) -> dict:
     resp = client.post(
         f"/api/v1/boards/{BOARD}/issues/{issue_id}/handoffs/{handoff_id}/complete",
         json={"actor": "user", "payload": payload or {}},
+        headers=headers,
     )
     assert resp.status_code == 200, f"complete handoff failed: {resp.text}"
     return resp.json()
@@ -111,7 +139,8 @@ def _complete_handoff(issue_id: str, handoff_id: str, payload: Optional[dict] = 
 
 def test_snake_create_issue(fresh_db):
     """Seed a 'Build Snake Game' issue via the API."""
-    body = _create_issue("Build Snake Game")
+    headers = fresh_db
+    body = _create_issue("Build Snake Game", headers=headers)
     assert body["title"] == "Build Snake Game"
     assert body["status"] == "backlog"
     assert body["key"].startswith("DEV-")
@@ -127,7 +156,8 @@ def test_snake_full_handoff_chain(fresh_db):
     Lanes requiring human approval (product, architect, qa, review, delivery)
     must include an 'approver' field in the payload before dispatch.
     """
-    issue = _create_issue("Build Snake Game")
+    headers = fresh_db
+    issue = _create_issue("Build Snake Game", headers=headers)
     issue_id = issue["id"]
     issue_key = issue["key"]
 
@@ -135,29 +165,29 @@ def test_snake_full_handoff_chain(fresh_db):
     h1 = _create_handoff(issue_id, "product", {
         "acceptance_criteria": "Playable snake game with score display",
         "approver": "user",
-    })
+    }, headers=headers)
     assert h1["status"] == "pending"
-    h1_accepted = _accept_handoff(issue_id, h1["id"])
+    h1_accepted = _accept_handoff(issue_id, h1["id"], headers=headers)
     assert h1_accepted["status"] == "accepted"
-    h1_dispatched = _dispatch_handoff(issue_id, h1["id"], issue_key)
+    h1_dispatched = _dispatch_handoff(issue_id, h1["id"], issue_key, headers=headers)
     assert h1_dispatched["handoff"]["status"] == "in_progress"
     assert "job" in h1_dispatched
     assert h1_dispatched["job"]["id"].startswith("ecc_")
     h1_completed = _complete_handoff(issue_id, h1["id"], {
         "acceptance_criteria": ["Snake game is playable", "Score is displayed"],
-    })
+    }, headers=headers)
     assert h1_completed["status"] == "completed"
 
     # --- Step 2: frontend → qa (frontend requires diff_summary + screenshots) ---
     h2 = _create_handoff(issue_id, "frontend", {
         "diff_summary": "Snake game ready for QA",
-    })
-    h2_accepted = _accept_handoff(issue_id, h2["id"])
+    }, headers=headers)
+    h2_accepted = _accept_handoff(issue_id, h2["id"], headers=headers)
     assert h2_accepted["status"] == "accepted"
     h2_completed = _complete_handoff(issue_id, h2["id"], {
         "diff_summary": "Created snake game",
         "screenshots": ["snake-game.png"],
-    })
+    }, headers=headers)
     assert h2_completed["status"] == "completed"
 
     # --- Step 3: qa → review (qa requires test_results + coverage_pct + approver) ---
@@ -165,13 +195,13 @@ def test_snake_full_handoff_chain(fresh_db):
         "test_results": "All manual tests pass",
         "coverage_pct": 85,
         "approver": "user",
-    })
-    h3_accepted = _accept_handoff(issue_id, h3["id"])
+    }, headers=headers)
+    h3_accepted = _accept_handoff(issue_id, h3["id"], headers=headers)
     assert h3_accepted["status"] == "accepted"
     h3_completed = _complete_handoff(issue_id, h3["id"], {
         "test_results": "All manual tests pass",
         "coverage_pct": 85,
-    })
+    }, headers=headers)
     assert h3_completed["status"] == "completed"
 
     # --- Step 4: review → delivery (review requires reviewer + decision + approver) ---
@@ -179,13 +209,13 @@ def test_snake_full_handoff_chain(fresh_db):
         "reviewer": "user",
         "decision": "approve",
         "approver": "user",
-    })
-    h4_accepted = _accept_handoff(issue_id, h4["id"])
+    }, headers=headers)
+    h4_accepted = _accept_handoff(issue_id, h4["id"], headers=headers)
     assert h4_accepted["status"] == "accepted"
     h4_completed = _complete_handoff(issue_id, h4["id"], {
         "reviewer": "user",
         "decision": "approve",
-    })
+    }, headers=headers)
     assert h4_completed["status"] == "completed"
 
     # --- Verify all handoffs completed ---
@@ -198,13 +228,14 @@ def test_snake_full_handoff_chain(fresh_db):
 
 def test_snake_dispatch_creates_job(fresh_db):
     """Dispatch handoff creates an ECC job with safe-runner harness."""
-    issue = _create_issue("Snake Job Test")
+    headers = fresh_db
+    issue = _create_issue("Snake Job Test", headers=headers)
     issue_id = issue["id"]
     issue_key = issue["key"]
 
-    h = _create_handoff(issue_id, "frontend")
-    _accept_handoff(issue_id, h["id"])
-    result = _dispatch_handoff(issue_id, h["id"], issue_key)
+    h = _create_handoff(issue_id, "frontend", headers=headers)
+    _accept_handoff(issue_id, h["id"], headers=headers)
+    result = _dispatch_handoff(issue_id, h["id"], issue_key, headers=headers)
 
     job = result["job"]
     assert job["id"].startswith("ecc_")

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uuid
@@ -8,6 +8,7 @@ import uuid
 from db import repository as repo
 from sqlalchemy.exc import IntegrityError
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
+from api.v1.auth_deps import require_auth
 
 # Parallel createIssue calls race on DEV-NNN key generation
 # (next_issue_key reads max-then-increments). The unique constraint
@@ -95,7 +96,10 @@ async def list_issues(
 
 
 @router.post("/issues")
-async def create_issue(request: IssueCreateRequest):
+async def create_issue(
+    request: IssueCreateRequest,
+    current_user: dict = Depends(require_auth),
+):
     """
     Create a new issue.
 
@@ -153,6 +157,7 @@ async def update_issue_status(
     issue_id: str,
     request: Optional[IssueStatusUpdateRequest] = Body(default=None),
     status: Optional[str] = Query(default=None),
+    current_user: dict = Depends(require_auth),
 ):
     """
     Update issue status.

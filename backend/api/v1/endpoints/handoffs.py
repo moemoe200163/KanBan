@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ from core.kanban_protocol.schemas import (
 from core.kanban_protocol.payloads import PayloadValidationError
 from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 _svc = HandoffService()
@@ -57,6 +58,7 @@ async def create_handoff(
     board_id: str,
     issue_id: str,
     body: HandoffCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     _check_board(board_id)
     # Confirm the issue exists; otherwise we'd create orphan handoffs.
@@ -100,6 +102,7 @@ async def accept_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -117,6 +120,7 @@ async def dispatch_handoff(
     handoff_id: str,
     body: HandoffDispatchRequest,
     background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -154,6 +158,7 @@ async def complete_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffCompleteRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -234,6 +239,7 @@ async def review_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffReviewRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -259,6 +265,7 @@ async def block_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffBlockRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -283,6 +290,7 @@ async def unblock_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -306,6 +314,7 @@ async def cancel_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -330,6 +339,7 @@ async def comment_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffCommentRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     return await _svc.comment(
@@ -387,6 +397,7 @@ async def advance_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     """Advance an approved handoff by creating the next handoff in the chain.
 

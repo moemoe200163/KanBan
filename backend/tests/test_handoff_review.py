@@ -4,12 +4,12 @@ import pytest
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, select as sa_select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 import main
 from db import database as db_module
-from db.models import Base, Issue as IssueModel
+from db.models import Base, Issue as IssueModel, User as UserModel
 from core.kanban_protocol.handoff import HandoffService
 
 
@@ -37,6 +37,7 @@ def fresh_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, "DATABASE_URL", new_url, raising=False)
 
     async def _setup():
+        from api.v1.endpoints.auth import hash_password, create_jwt_token
         async with new_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
@@ -55,10 +56,27 @@ def fresh_db(tmp_path, monkeypatch):
                 updated_at=now,
             ))
             await session.commit()
+        # Create a test user for JWT auth on write endpoints.
+        async with new_sessionmaker() as session:
+            result = await session.execute(sa_select(UserModel).where(UserModel.username == "testuser"))
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
         db_module._db_initialized = True
+        return {"Authorization": f"Bearer {token}"}
 
-    asyncio.run(_setup())
-    yield
+    headers = asyncio.run(_setup())
+    yield {"headers": headers}
     new_engine.sync_engine.dispose()
 
 
@@ -113,11 +131,13 @@ def _create_and_complete_handoff(client, *, to_lane="review", from_lane="fronten
 
 def test_review_approve_sets_decision_and_status(fresh_db):
     """Approving a completed handoff sets decision='approve' and routes to next lane."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client)
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "approve", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -139,11 +159,13 @@ def test_review_approve_sets_decision_and_status(fresh_db):
 
 def test_review_reject_sets_decision_and_routes_to_triage(fresh_db):
     """Rejecting creates a new handoff to triage with rejection context."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client, from_lane="frontend")
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "reject", "actor": "carol", "comment": "Needs more work"},
+        headers=headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -167,11 +189,13 @@ def test_review_reject_sets_decision_and_routes_to_triage(fresh_db):
 
 def test_review_request_changes_creates_rework_handoff(fresh_db):
     """Requesting changes creates a rework handoff back to the originating lane."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client, from_lane="backend")
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "request_changes", "actor": "carol", "comment": "Fix tests"},
+        headers=headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -192,11 +216,13 @@ def test_review_request_changes_creates_rework_handoff(fresh_db):
 
 def test_review_reject_without_from_lane_routes_to_triage(fresh_db):
     """Reject/rework with from_lane=None routes to triage."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client, from_lane=None)
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "reject", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -218,12 +244,14 @@ def test_review_reject_without_from_lane_routes_to_triage(fresh_db):
 
 def test_review_reject_on_already_reviewed_handoff_fails(fresh_db):
     """Cannot review a handoff that already has a decision."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client)
 
     # First review succeeds
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "approve", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 200
 
@@ -231,6 +259,7 @@ def test_review_reject_on_already_reviewed_handoff_fails(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "reject", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 422
     assert "already reviewed" in response.json()["detail"].lower()
@@ -238,6 +267,7 @@ def test_review_reject_on_already_reviewed_handoff_fails(fresh_db):
 
 def test_review_on_non_completed_handoff_fails(fresh_db):
     """Cannot review a handoff that is not in 'completed' status."""
+    headers = fresh_db["headers"]
     svc = HandoffService()
     handoff = asyncio.run(svc.create(
         issue_id="issue-review-1",
@@ -251,6 +281,7 @@ def test_review_on_non_completed_handoff_fails(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "approve", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 422
     assert "cannot review" in response.json()["detail"].lower()
@@ -258,11 +289,13 @@ def test_review_on_non_completed_handoff_fails(fresh_db):
 
 def test_review_with_invalid_decision_fails(fresh_db):
     """Invalid decision value is rejected by Pydantic validation."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client)
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-review-1/handoffs/{handoff['id']}/review",
         json={"decision": "maybe", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 422
 
@@ -274,19 +307,23 @@ def test_review_with_invalid_decision_fails(fresh_db):
 
 def test_review_not_found(fresh_db):
     """Reviewing a non-existent handoff returns 404."""
+    headers = fresh_db["headers"]
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-review-1/handoffs/h_nonexistent/review",
         json={"decision": "approve", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 404
 
 
 def test_review_wrong_issue_returns_404(fresh_db):
     """Review with a valid handoff but wrong issue_id should 404."""
+    headers = fresh_db["headers"]
     handoff = _create_and_complete_handoff(client)
 
     response = client.post(
         f"/api/v1/boards/board-default/issues/wrong-issue/handoffs/{handoff['id']}/review",
         json={"decision": "approve", "actor": "carol"},
+        headers=headers,
     )
     assert response.status_code == 404

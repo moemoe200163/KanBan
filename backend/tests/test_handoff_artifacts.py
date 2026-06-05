@@ -1,4 +1,6 @@
 """Tests that completing a handoff with a typed payload auto-creates IssueArtifact records."""
+from __future__ import annotations
+
 import pytest
 from datetime import datetime, timezone
 
@@ -8,7 +10,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 import main
 from db import database as db_module
-from db.models import Base, Issue as IssueModel
+from db.models import Base, Issue as IssueModel, User as UserModel
 
 client = TestClient(main.app)
 
@@ -35,6 +37,8 @@ def fresh_db(tmp_path, monkeypatch):
 
     import asyncio
     async def _setup():
+        from api.v1.endpoints.auth import hash_password, create_jwt_token
+        from sqlalchemy import select as sa_select
         async with new_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
@@ -52,18 +56,38 @@ def fresh_db(tmp_path, monkeypatch):
                 updated_at=now,
             ))
             await session.commit()
-        db_module._db_initialized = True
+        # Create test user for JWT auth
+        async with new_sessionmaker() as session:
+            result = await session.execute(
+                sa_select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        headers = {"Authorization": f"Bearer {token}"}
+        return headers
 
-    asyncio.run(_setup())
-    yield
+    headers = asyncio.run(_setup())
+    yield headers
     new_engine.sync_engine.dispose()
 
 
-def _create_accept_complete(payload: dict, to_lane: str = "frontend") -> dict:
+def _create_accept_complete(payload: dict, to_lane: str = "frontend", headers: dict | None = None) -> dict:
     """Helper: create handoff -> accept -> complete with the given payload. Returns complete response."""
     create_resp = client.post(
         f"/api/v1/boards/board-default/issues/issue-art-1/handoffs",
         json={"toLane": to_lane, "payload": payload, "createdBy": "test"},
+        headers=headers,
     )
     assert create_resp.status_code == 201, f"create: {create_resp.text}"
     handoff = create_resp.json()
@@ -71,12 +95,14 @@ def _create_accept_complete(payload: dict, to_lane: str = "frontend") -> dict:
     accept_resp = client.post(
         f"/api/v1/boards/board-default/issues/issue-art-1/handoffs/{handoff['id']}/accept",
         json={"actor": "test"},
+        headers=headers,
     )
     assert accept_resp.status_code == 200, f"accept: {accept_resp.text}"
 
     complete_resp = client.post(
         f"/api/v1/boards/board-default/issues/issue-art-1/handoffs/{handoff['id']}/complete",
         json={"actor": "test", "payload": payload},
+        headers=headers,
     )
     assert complete_resp.status_code == 200, f"complete: {complete_resp.text}"
     return complete_resp.json()
@@ -84,11 +110,12 @@ def _create_accept_complete(payload: dict, to_lane: str = "frontend") -> dict:
 
 def test_complete_handoff_creates_screenshot_artifacts(fresh_db):
     """Completing with screenshots creates one artifact per screenshot."""
+    headers = fresh_db
     payload = {
         "diff_summary": "Changed login flow",
         "screenshots": ["login.png", "dashboard.png"],
     }
-    _create_accept_complete(payload)
+    _create_accept_complete(payload, headers=headers)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     assert resp.status_code == 200
@@ -114,8 +141,9 @@ def test_complete_handoff_creates_screenshot_artifacts(fresh_db):
 
 def test_complete_handoff_creates_diff_summary_artifact(fresh_db):
     """Completing with diff_summary creates one diff_summary artifact."""
+    headers = fresh_db
     payload = {"diff_summary": "Refactored auth module"}
-    _create_accept_complete(payload)
+    _create_accept_complete(payload, headers=headers)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]
@@ -129,11 +157,12 @@ def test_complete_handoff_creates_diff_summary_artifact(fresh_db):
 
 def test_complete_handoff_creates_test_log_artifact(fresh_db):
     """Completing with test_results creates one test_log artifact."""
+    headers = fresh_db
     payload = {
         "diff_summary": "Added test coverage",
         "test_results": "42 passed, 0 failed",
     }
-    _create_accept_complete(payload, to_lane="backend")
+    _create_accept_complete(payload, to_lane="backend", headers=headers)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]
@@ -147,11 +176,12 @@ def test_complete_handoff_creates_test_log_artifact(fresh_db):
 
 def test_complete_handoff_empty_payload_no_artifacts(fresh_db):
     """Completing with no artifact-relevant payload fields creates zero artifacts."""
+    headers = fresh_db
     # Backend lane requires diff_summary, which does create a diff_summary artifact.
     # To prove that *only* diff_summary artifacts appear (no screenshots, no test_log),
     # we complete with just the required fields and verify no extra artifact types.
     payload = {"diff_summary": "Minimal completion"}
-    _create_accept_complete(payload)
+    _create_accept_complete(payload, headers=headers)
 
     resp = client.get("/api/v1/issues/issue-art-1/artifacts")
     artifacts = resp.json()["artifacts"]

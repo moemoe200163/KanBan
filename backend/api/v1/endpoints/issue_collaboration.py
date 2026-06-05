@@ -6,11 +6,12 @@ All endpoints require an issue_id path parameter and operate within
 the scope of that issue.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
 from db import repository as repo
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 
@@ -96,6 +97,7 @@ async def list_issue_comments(
 async def create_issue_comment(
     issue_id: str,
     request: CommentCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     """
     Create a comment on an issue.
@@ -161,6 +163,7 @@ async def list_issue_artifacts(
 async def create_issue_artifact(
     issue_id: str,
     request: ArtifactCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     """
     Create artifact metadata for an issue.

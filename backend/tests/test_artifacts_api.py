@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 import main
 from db import database as db_module
-from db.models import Base, Issue as IssueModel
+from db.models import Base, Issue as IssueModel, User as UserModel
+from api.v1.endpoints.auth import hash_password, create_jwt_token
 
 
 client = TestClient(main.app)
@@ -53,10 +54,30 @@ def fresh_db(tmp_path, monkeypatch):
                 updated_at=now,
             ))
             await session.commit()
-        db_module._db_initialized = True
+        # Create test user for JWT auth on write endpoints
+        from sqlalchemy import select as sa_select
+        async with new_sessionmaker() as session:
+            result = await session.execute(
+                sa_select(UserModel).where(UserModel.username == "testuser")
+            )
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1",
+                    username="testuser",
+                    email="test@example.com",
+                    password_hash=pwd_hash,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        headers = {"Authorization": f"Bearer {token}"}
+        return headers
 
-    asyncio.run(_setup())
-    yield
+    headers = asyncio.run(_setup())
+    yield headers
     new_engine.sync_engine.dispose()
 
 
@@ -65,6 +86,7 @@ def fresh_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_create_artifact_happy_path(fresh_db):
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={
@@ -75,6 +97,7 @@ def test_create_artifact_happy_path(fresh_db):
             "sensitivity": "public",
             "summary": "Login page after refactor",
         },
+        headers=headers,
     )
     assert response.status_code == 201
     body = response.json()
@@ -90,12 +113,14 @@ def test_create_artifact_happy_path(fresh_db):
 
 def test_create_artifact_minimal_fields(fresh_db):
     """Only title and artifactType are required."""
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={
             "title": "Test log",
             "artifactType": "test_log",
         },
+        headers=headers,
     )
     assert response.status_code == 201
     body = response.json()
@@ -108,6 +133,7 @@ def test_create_artifact_minimal_fields(fresh_db):
 
 
 def test_create_artifact_with_metadata(fresh_db):
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={
@@ -116,6 +142,7 @@ def test_create_artifact_with_metadata(fresh_db):
             "pathOrUrl": "https://github.com/org/repo/pull/42",
             "metadata": {"additions": 120, "deletions": 30},
         },
+        headers=headers,
     )
     assert response.status_code == 201
     body = response.json()
@@ -124,6 +151,7 @@ def test_create_artifact_with_metadata(fresh_db):
 
 def test_create_artifact_records_timeline_event(fresh_db):
     """Creating an artifact should also create an artifact_added event."""
+    headers = fresh_db
     client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={
@@ -132,6 +160,7 @@ def test_create_artifact_records_timeline_event(fresh_db):
             "createdById": "user-1",
             "createdByName": "Alice",
         },
+        headers=headers,
     )
     # Fetch events for this issue
     resp = client.get("/api/v1/issues/issue-art-api-1/events")
@@ -144,25 +173,31 @@ def test_create_artifact_records_timeline_event(fresh_db):
 
 
 def test_create_artifact_404_for_nonexistent_issue(fresh_db):
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/nonexistent/artifacts",
         json={"title": "Ghost", "artifactType": "file"},
+        headers=headers,
     )
     assert response.status_code == 404
 
 
 def test_create_artifact_rejects_missing_title(fresh_db):
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={"artifactType": "file"},
+        headers=headers,
     )
     assert response.status_code == 422
 
 
 def test_create_artifact_rejects_missing_type(fresh_db):
+    headers = fresh_db
     response = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={"title": "No type"},
+        headers=headers,
     )
     assert response.status_code == 422
 
@@ -181,14 +216,17 @@ def test_list_artifacts_empty(fresh_db):
 
 def test_list_artifacts_returns_newest_first(fresh_db):
     """Artifacts should be ordered by created_at descending."""
+    headers = fresh_db
     # Create two artifacts
     client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={"title": "First", "artifactType": "file"},
+        headers=headers,
     )
     client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={"title": "Second", "artifactType": "screenshot"},
+        headers=headers,
     )
     response = client.get("/api/v1/issues/issue-art-api-1/artifacts")
     assert response.status_code == 200
@@ -200,10 +238,12 @@ def test_list_artifacts_returns_newest_first(fresh_db):
 
 
 def test_list_artifacts_with_limit(fresh_db):
+    headers = fresh_db
     for i in range(5):
         client.post(
             "/api/v1/issues/issue-art-api-1/artifacts",
             json={"title": f"Artifact {i}", "artifactType": "file"},
+            headers=headers,
         )
     response = client.get("/api/v1/issues/issue-art-api-1/artifacts?limit=3")
     assert response.status_code == 200
@@ -223,6 +263,7 @@ def test_list_artifacts_404_for_nonexistent_issue(fresh_db):
 
 def test_create_then_list_roundtrip(fresh_db):
     """Full round-trip: POST artifact → GET list → verify fields."""
+    headers = fresh_db
     create_resp = client.post(
         "/api/v1/issues/issue-art-api-1/artifacts",
         json={
@@ -234,6 +275,7 @@ def test_create_then_list_roundtrip(fresh_db):
             "createdById": "ci-bot",
             "createdByName": "CI Bot",
         },
+        headers=headers,
     )
     assert create_resp.status_code == 201
     created = create_resp.json()
