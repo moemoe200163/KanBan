@@ -73,6 +73,8 @@ async def create_run_for_dispatch(
     model: Optional[str] = None,
     job_id: Optional[str] = None,
     required_role: Optional[str] = None,
+    max_retries: int = 0,
+    max_runtime_seconds: Optional[int] = None,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new run in 'pending' status for the orchestrator to dispatch.
@@ -84,6 +86,8 @@ async def create_run_for_dispatch(
     Args:
         required_role: If set, only workers with this role in their
             capabilities can claim the run. None means any worker can claim.
+        max_retries: Maximum number of times a failed run can be retried.
+        max_runtime_seconds: Maximum seconds a run can execute before timeout.
     """
     from db import repository as repo
 
@@ -100,11 +104,13 @@ async def create_run_for_dispatch(
         provider=provider,
         model=model,
         required_role=required_role,
+        max_retries=max_retries,
+        max_runtime_seconds=max_runtime_seconds,
         extra_metadata=extra_metadata or {},
     )
     logger.info(
-        "Created run %s for issue %s (board=%s, role=%s)",
-        run_id, issue_key, board_id, required_role or "any",
+        "Created run %s for issue %s (board=%s, role=%s, retries=%d)",
+        run_id, issue_key, board_id, required_role or "any", max_retries,
     )
     return run
 
@@ -113,13 +119,14 @@ async def claim_next_run(
     worker_id: str,
     board_id: str = DEFAULT_BOARD_ID,
 ) -> Optional[dict]:
-    """Find the oldest matching pending run and claim it for this worker.
+    """Atomically find and claim the oldest matching pending run for this worker.
 
+    Uses atomic_claim_run() to avoid the read-then-write race condition.
     Role-based matching: a run matches if its ``required_role`` is None
     (any worker can claim) or if ``required_role`` is in the worker's
     ``capabilities`` list.
 
-    Returns the updated run dict, or None if no matching runs exist.
+    Returns the claimed run dict, or None if no matching runs exist.
     """
     from db import repository as repo
 
@@ -127,47 +134,33 @@ async def claim_next_run(
     worker = await repo.get_worker(worker_id)
     worker_capabilities: list = worker.get("capabilities", []) if worker else []
 
-    # Fetch pending runs (fetch a batch to filter by capability)
-    runs = await repo.list_runs_by_board(board_id=board_id, status="pending", limit=20, order="asc")
-    if not runs:
-        return None
-
-    # Filter by role match
-    matched_run = None
-    for run in runs:
-        required_role = run.get("requiredRole")
-        if required_role is None or required_role in worker_capabilities:
-            matched_run = run
-            break
-
-    if not matched_run:
-        return None
-
-    run = matched_run
-    now = datetime.now(timezone.utc)
-    updated = await repo.update_run_status(
-        run["id"],
-        "claimed",
+    # Atomic claim — single UPDATE avoids race between multiple workers
+    run = await repo.atomic_claim_run(
         worker_id=worker_id,
-        started_at=now,
+        board_id=board_id,
+        capabilities=worker_capabilities,
     )
-    if updated:
-        # Update worker state
-        await repo.update_worker_status(
-            worker_id,
-            "claimed",
-            active_run_id=run["id"],
-            claimed_at=now,
-        )
-        # Append event
-        await repo.append_run_event(
-            id=f"evt_{uuid4().hex[:12]}",
-            run_id=run["id"],
-            event_type="status_change",
-            message=f"Run claimed by worker {worker_id}",
-        )
-        logger.info("Run %s claimed by worker %s", run["id"], worker_id)
-    return updated
+
+    if not run:
+        return None
+
+    now = datetime.now(timezone.utc)
+    # Update worker state
+    await repo.update_worker_status(
+        worker_id,
+        "claimed",
+        active_run_id=run["id"],
+        claimed_at=now,
+    )
+    # Append event
+    await repo.append_run_event(
+        id=f"evt_{uuid4().hex[:12]}",
+        run_id=run["id"],
+        event_type="status_change",
+        message=f"Run claimed by worker {worker_id}",
+    )
+    logger.info("Run %s claimed by worker %s (atomic)", run["id"], worker_id)
+    return run
 
 
 async def start_run(run_id: str, worker_id: str) -> Optional[dict]:
@@ -394,3 +387,46 @@ async def get_run_stats(board_id: str = DEFAULT_BOARD_ID) -> dict:
         "total": sum(stats.values()),
         "byStatus": stats,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stale Run Reclaim — detect crashed workers and requeue/kill stale runs
+# ---------------------------------------------------------------------------
+
+async def reclaim_stale_runs(
+    board_id: str = DEFAULT_BOARD_ID,
+    stale_threshold_seconds: int = 300,
+) -> list:
+    """Detect stale runs and either requeue or fail them.
+
+    Called periodically by the worker or on startup. Runs that have been
+    in 'claimed' or 'running' state longer than stale_threshold_seconds
+    without a heartbeat are reclaimed:
+    - If retry_count < max_retries: requeue to 'pending' with backoff
+    - If retry_count >= max_retries: mark as 'failed'
+    """
+    from db import repository as repo
+
+    reclaimed = await repo.reclaim_stale_runs(
+        stale_threshold_seconds=stale_threshold_seconds,
+    )
+
+    for run in reclaimed:
+        status = run.get("status", "unknown")
+        run_id = run.get("id", "?")
+        if status == "pending":
+            logger.info("Reclaimed stale run %s → requeued (retry %s)", run_id, run.get("retryCount"))
+        else:
+            logger.warning("Stale run %s → failed (max retries exhausted)", run_id)
+        # Append event
+        await repo.append_run_event(
+            id=f"evt_{uuid4().hex[:12]}",
+            run_id=run_id,
+            event_type="status_change",
+            message=f"Stale reclaim: {status}",
+            extra_metadata={"reclaimed_status": status},
+        )
+        # Sync linked ECC job
+        await _sync_job_for_run(run_id, status, repo)
+
+    return reclaimed

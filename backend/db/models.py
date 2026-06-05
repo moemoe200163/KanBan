@@ -710,6 +710,12 @@ class AgentRun(Base):
     required_role = Column(String(32), nullable=True)  # role-based dispatch: backend-dev, frontend-dev, code-reviewer, etc.
     result_summary = Column(Text, nullable=True)
     error_message = Column(String(512), nullable=True)
+    # Queue hardening: retry + heartbeat + max runtime
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    max_runtime_seconds = Column(Integer, nullable=True)
     extra_metadata = Column(JSON, nullable=True, default=dict)
     created_at = Column(
         DateTime(timezone=True), nullable=False,
@@ -721,6 +727,7 @@ class AgentRun(Base):
     __table_args__ = (
         Index("ix_agent_runs_board_status", "board_id", "status"),
         Index("ix_agent_runs_worker_status", "worker_id", "status"),
+        Index("ix_agent_runs_retry", "status", "next_retry_at"),
     )
 
     def to_dict(self) -> dict:
@@ -740,6 +747,11 @@ class AgentRun(Base):
             "requiredRole": self.required_role,
             "resultSummary": self.result_summary,
             "errorMessage": self.error_message,
+            "retryCount": self.retry_count,
+            "maxRetries": self.max_retries,
+            "nextRetryAt": self.next_retry_at.isoformat() if self.next_retry_at else None,
+            "lastHeartbeatAt": self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
+            "maxRuntimeSeconds": self.max_runtime_seconds,
             "metadata": self.extra_metadata or {},
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "startedAt": self.started_at.isoformat() if self.started_at else None,

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 from db import database as _db
@@ -1307,6 +1307,8 @@ async def create_run(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     required_role: Optional[str] = None,
+    max_retries: int = 0,
+    max_runtime_seconds: Optional[int] = None,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new run. Returns the run as dict."""
@@ -1326,6 +1328,9 @@ async def create_run(
         provider=provider,
         model=model,
         required_role=required_role,
+        retry_count=0,
+        max_retries=max_retries,
+        max_runtime_seconds=max_runtime_seconds,
         extra_metadata=extra_metadata or {},
         created_at=now,
     )
@@ -1432,7 +1437,164 @@ async def update_run_status(
 
 
 # ---------------------------------------------------------------------------
-# Agent Run Events
+# Queue Hardening — atomic claim, stale reclaim, heartbeat, retry
+# ---------------------------------------------------------------------------
+
+async def atomic_claim_run(
+    worker_id: str,
+    board_id: str = "board-default",
+    capabilities: Optional[list] = None,
+) -> Optional[dict]:
+    """Atomically claim the oldest pending run for a worker.
+
+    Uses a SELECT-then-UPDATE pattern with optimistic concurrency:
+    after the UPDATE we verify the row was actually in 'pending' state
+    (via the WHERE clause). If another worker claimed it first, the UPDATE
+    touches 0 rows and we try the next candidate.
+
+    Role matching: a run is claimed if its required_role is NULL (any worker)
+    or if required_role is in the worker's capabilities list.
+    """
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+
+    # Build list of roles to match: specific capabilities first, then None (any role)
+    roles_to_try = list(capabilities or []) + [None]
+
+    for role in roles_to_try:
+        async with _get_sessionmaker()() as session:
+            # Find oldest pending run matching this role
+            stmt = select(AgentRun).where(
+                AgentRun.board_id == board_id,
+                AgentRun.status == "pending",
+                AgentRun.required_role == (role if role is not None else None),
+                (AgentRun.next_retry_at.is_(None)) | (AgentRun.next_retry_at <= now),
+            ).order_by(AgentRun.created_at.asc()).limit(1)
+
+            result = await session.execute(stmt)
+            candidate = result.scalar_one_or_none()
+            if not candidate:
+                continue
+
+            # Atomic claim: UPDATE only if still pending
+            from sqlalchemy import update as sa_update
+            update_stmt = (
+                sa_update(AgentRun)
+                .where(AgentRun.id == candidate.id, AgentRun.status == "pending")
+                .values(status="claimed", worker_id=worker_id, started_at=now)
+            )
+            update_result = await session.execute(update_stmt)
+            await session.commit()
+
+            if update_result.rowcount > 0:
+                # Claim succeeded — re-read to get the updated row
+                async with _get_sessionmaker()() as verify_session:
+                    claimed = await verify_session.get(AgentRun, candidate.id)
+                    if claimed:
+                        return claimed.to_dict()
+
+    return None
+
+
+async def reclaim_stale_runs(
+    stale_threshold_seconds: int = 300,
+    max_retries: int = 3,
+) -> List[dict]:
+    """Detect runs stuck in 'claimed' or 'running' and reclaim them.
+
+    A run is stale if its last_heartbeat_at (or started_at) is older than
+    stale_threshold_seconds. Stale runs are either:
+    - Requeued to 'pending' if retry_count < max_retries
+    - Marked as 'failed' if retry_count >= max_retries
+
+    Returns a list of reclaimed run dicts.
+    """
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    threshold = now - timedelta(seconds=stale_threshold_seconds)
+    reclaimed = []
+
+    async with _get_sessionmaker()() as session:
+        # Find stale runs in claimed or running state
+        stmt = (
+            select(AgentRun)
+            .where(
+                AgentRun.status.in_(["claimed", "running"]),
+                # Use last_heartbeat_at if set, otherwise started_at
+                ((AgentRun.last_heartbeat_at.is_(None)) & (AgentRun.started_at < threshold))
+                | (AgentRun.last_heartbeat_at < threshold),
+            )
+        )
+        result = await session.execute(stmt)
+        stale_runs = result.scalars().all()
+
+        for run in stale_runs:
+            if run.retry_count < (run.max_retries or max_retries):
+                # Requeue with retry
+                run.status = "pending"
+                run.retry_count += 1
+                run.worker_id = None
+                run.started_at = None
+                run.last_heartbeat_at = None
+                run.next_retry_at = now + timedelta(seconds=min(30 * (2 ** run.retry_count), 600))
+                reclaimed.append(run.to_dict())
+                logger.warning(
+                    "Reclaimed stale run %s (attempt %d/%d), requeued",
+                    run.id, run.retry_count, run.max_retries or max_retries,
+                )
+            else:
+                # Max retries exceeded — mark as failed
+                run.status = "failed"
+                run.error_message = f"Stale after {stale_threshold_seconds}s, max retries exhausted"
+                run.completed_at = now
+                reclaimed.append(run.to_dict())
+                logger.warning(
+                    "Stale run %s exceeded max retries (%d), marking failed",
+                    run.id, run.max_retries or max_retries,
+                )
+
+        await session.commit()
+
+    return reclaimed
+
+
+async def update_run_heartbeat(run_id: str) -> Optional[dict]:
+    """Update the run's last_heartbeat_at to now. Returns updated dict."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentRun, run_id)
+        if not row:
+            return None
+        row.last_heartbeat_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def schedule_retry(run_id: str, delay_seconds: int = 30) -> Optional[dict]:
+    """Schedule a failed run for retry by setting next_retry_at.
+
+    Returns the updated run dict, or None if the run is not retryable.
+    """
+    await _ensure_init()()
+    from datetime import timedelta
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentRun, run_id)
+        if not row:
+            return None
+        if row.retry_count >= (row.max_retries or 0):
+            return None  # exhausted
+        now = datetime.now(timezone.utc)
+        row.retry_count += 1
+        row.next_retry_at = now + timedelta(seconds=delay_seconds)
+        row.status = "pending"
+        row.worker_id = None
+        row.started_at = None
+        row.error_message = None
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
 # ---------------------------------------------------------------------------
 
 async def append_run_event(

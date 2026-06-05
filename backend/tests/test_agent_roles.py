@@ -50,11 +50,10 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": ["safe-runner"]}
-        fake_run = {"id": "run-1", "requiredRole": None, "status": "pending"}
+        fake_run = {"id": "run-1", "requiredRole": None, "status": "claimed"}
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=[fake_run])), \
-             patch.object(repo, "update_run_status", AsyncMock(return_value={**fake_run, "status": "claimed"})), \
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=fake_run)), \
              patch.object(repo, "update_worker_status", AsyncMock()), \
              patch.object(repo, "append_run_event", AsyncMock()):
 
@@ -70,11 +69,10 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": ["backend-dev", "code-reviewer"]}
-        fake_run = {"id": "run-2", "requiredRole": "backend-dev", "status": "pending"}
+        fake_run = {"id": "run-2", "requiredRole": "backend-dev", "status": "claimed"}
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=[fake_run])), \
-             patch.object(repo, "update_run_status", AsyncMock(return_value={**fake_run, "status": "claimed"})), \
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=fake_run)), \
              patch.object(repo, "update_worker_status", AsyncMock()), \
              patch.object(repo, "append_run_event", AsyncMock()):
 
@@ -90,16 +88,14 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": ["frontend-dev"]}
-        fake_run = {"id": "run-3", "requiredRole": "backend-dev", "status": "pending"}
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=[fake_run])), \
-             patch.object(repo, "update_run_status", AsyncMock()) as mock_update:
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=None)) as mock_claim:
 
             result = await claim_next_run("w1", "board-default")
 
         assert result is None
-        mock_update.assert_not_called()
+        mock_claim.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_claim_skips_mismatched_runs(self):
@@ -108,15 +104,10 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": ["frontend-dev"]}
-        runs = [
-            {"id": "run-a", "requiredRole": "backend-dev", "status": "pending"},
-            {"id": "run-b", "requiredRole": "frontend-dev", "status": "pending"},
-            {"id": "run-c", "requiredRole": "code-reviewer", "status": "pending"},
-        ]
+        fake_run_b = {"id": "run-b", "requiredRole": "frontend-dev", "status": "claimed"}
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=runs)), \
-             patch.object(repo, "update_run_status", AsyncMock(return_value={**runs[1], "status": "claimed"})), \
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=fake_run_b)), \
              patch.object(repo, "update_worker_status", AsyncMock()), \
              patch.object(repo, "append_run_event", AsyncMock()):
 
@@ -132,19 +123,14 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": ["safe-runner"]}
-        runs = [
-            {"id": "run-a", "requiredRole": "backend-dev", "status": "pending"},
-            {"id": "run-b", "requiredRole": "frontend-dev", "status": "pending"},
-        ]
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=runs)), \
-             patch.object(repo, "update_run_status", AsyncMock()) as mock_update:
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=None)) as mock_claim:
 
             result = await claim_next_run("w1", "board-default")
 
         assert result is None
-        mock_update.assert_not_called()
+        mock_claim.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_claim_empty_capabilities(self):
@@ -153,14 +139,10 @@ class TestRoleBasedClaim:
         from db import repository as repo
 
         fake_worker = {"id": "w1", "capabilities": []}
-        runs = [
-            {"id": "run-a", "requiredRole": "backend-dev", "status": "pending"},
-            {"id": "run-b", "requiredRole": None, "status": "pending"},
-        ]
+        fake_run_b = {"id": "run-b", "requiredRole": None, "status": "claimed"}
 
         with patch.object(repo, "get_worker", AsyncMock(return_value=fake_worker)), \
-             patch.object(repo, "list_runs_by_board", AsyncMock(return_value=runs)), \
-             patch.object(repo, "update_run_status", AsyncMock(return_value={**runs[1], "status": "claimed"})), \
+             patch.object(repo, "atomic_claim_run", AsyncMock(return_value=fake_run_b)), \
              patch.object(repo, "update_worker_status", AsyncMock()), \
              patch.object(repo, "append_run_event", AsyncMock()):
 

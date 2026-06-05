@@ -253,6 +253,7 @@ class AgentWorkerProcess:
             start_run,
             complete_run,
             fail_run,
+            reclaim_stale_runs,
         )
 
         # Register this worker
@@ -268,6 +269,9 @@ class AgentWorkerProcess:
 
         self._running = True
         last_heartbeat = asyncio.get_event_loop().time()
+        last_stale_check = asyncio.get_event_loop().time()
+        stale_check_interval = 60.0  # check for stale runs every 60s
+        active_run_task: Optional[asyncio.Task] = None
 
         while self._running:
             # Send heartbeat if due
@@ -279,7 +283,20 @@ class AgentWorkerProcess:
                 except Exception as exc:
                     logger.warning("Heartbeat failed: %s", exc)
 
-            # Try to claim a run
+            # Periodic stale run reclaim
+            if now - last_stale_check >= stale_check_interval:
+                try:
+                    reclaimed = await reclaim_stale_runs(
+                        board_id=self.board_id,
+                        stale_threshold_seconds=300,
+                    )
+                    if reclaimed:
+                        logger.info("Reclaimed %d stale runs", len(reclaimed))
+                except Exception as exc:
+                    logger.warning("Stale reclaim check failed: %s", exc)
+                last_stale_check = now
+
+            # Try to claim a run (atomic claim avoids race conditions)
             try:
                 run = await claim_next_run(self.worker_id, self.board_id)
             except Exception as exc:
@@ -301,6 +318,7 @@ class AgentWorkerProcess:
 
                 # Build execution context from run record
                 run_harness = run.get("harness", self.harness)
+                max_runtime = run.get("maxRuntimeSeconds") or int(run.get("metadata", {}).get("timeout", 300))
                 ctx = ExecutionContext(
                     run_id=run_id,
                     issue_key=run.get("issueKey", "UNKNOWN"),
@@ -309,7 +327,7 @@ class AgentWorkerProcess:
                     harness=run_harness,
                     board_id=self.board_id,
                     workspace_path=self._workspace_path,
-                    timeout=int(run.get("metadata", {}).get("timeout", 300)),
+                    timeout=max_runtime,
                     provider=run.get("provider"),
                     model=run.get("model"),
                 )
@@ -325,28 +343,61 @@ class AgentWorkerProcess:
                         extra_metadata={"level": "info"},
                     )
 
-                # Execute — resolve adapter via HarnessRegistry
-                from core.adapters.registry import HarnessRegistry
-                adapter = HarnessRegistry.resolve_for_run(run)
+                # Run heartbeat task for long-running executions
+                async def _run_heartbeat():
+                    """Send periodic heartbeats while the run is active."""
+                    try:
+                        while True:
+                            await asyncio.sleep(self.heartbeat_interval)
+                            try:
+                                await repo.update_run_heartbeat(run_id)
+                            except Exception:
+                                pass
+                    except asyncio.CancelledError:
+                        pass
 
-                if adapter:
-                    prompt = _build_api_prompt(ctx)
-                    exec_result = await adapter.execute(
-                        task_id=run_id,
-                        prompt=prompt,
-                        workspace=self._workspace_path,
-                        on_log=_on_log,
+                heartbeat_task = asyncio.create_task(_run_heartbeat())
+
+                # Execute with max runtime enforcement
+                try:
+                    from core.adapters.registry import HarnessRegistry
+                    adapter = HarnessRegistry.resolve_for_run(run)
+
+                    if adapter:
+                        prompt = _build_api_prompt(ctx)
+                        exec_result = await asyncio.wait_for(
+                            adapter.execute(
+                                task_id=run_id,
+                                prompt=prompt,
+                                workspace=self._workspace_path,
+                                on_log=_on_log,
+                            ),
+                            timeout=max_runtime,
+                        )
+                        result = (
+                            exec_result.output
+                            if exec_result.success
+                            else f"FAILED: {exec_result.error}"
+                        )
+                        if not exec_result.success:
+                            raise RuntimeError(exec_result.error or "Execution failed")
+                    else:
+                        # No adapter found — use safe runner as ultimate fallback
+                        result = await asyncio.wait_for(
+                            self._executor.execute(ctx, _on_log),
+                            timeout=max_runtime,
+                        )
+
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"Run exceeded max runtime of {max_runtime}s"
                     )
-                    result = (
-                        exec_result.output
-                        if exec_result.success
-                        else f"FAILED: {exec_result.error}"
-                    )
-                    if not exec_result.success:
-                        raise RuntimeError(exec_result.error or "Execution failed")
-                else:
-                    # No adapter found — use safe runner as ultimate fallback
-                    result = await self._executor.execute(ctx, _on_log)
+                finally:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
 
                 # Complete
                 await complete_run(run_id, self.worker_id, result_summary=result)
