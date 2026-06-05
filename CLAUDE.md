@@ -52,7 +52,7 @@ All P0 issues are resolved. No blocking known problems.
 
 - `GET /api/v1/board` returns seed issues ✅
 - Backend startup clean (no DB warnings) ✅
-- Backend tests pass (535/535) ✅
+- Backend tests pass (564/564) ✅
 - E2E suite passes (37/37 desktop, Playwright installed) ✅
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`) ✅
 - P1.5 Handoff typed payload + structured 422 ✅
@@ -98,7 +98,7 @@ Do not prioritize these until real execution is stable:
 - Paperclip-style session serialization (schema designed: `docs/superpowers/specs/2026-06-06-session-resume-schema.md`).
 - Session resume implementation (requires real execution stable first).
 - Autopilot scheduling.
-- PR/CI automation.
+- ~~PR/CI automation.~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred)
 - Full auth and API-key rollout.
 - Redis queue.
 
@@ -129,6 +129,7 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 10. ~~Delivery Orchestrator~~ ✅
 11. ~~Real execution closed loop~~ ✅
 12. Session resume schema design ✅ (spec at `docs/superpowers/specs/2026-06-06-session-resume-schema.md`, implementation deferred)
+13. ~~PR/CI automation v1 — GitHub webhook ingestion~~ ✅
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
 `archive/security-scope-spike-2026-06-03` — do not merge into mainline

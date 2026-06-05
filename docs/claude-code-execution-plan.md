@@ -15,7 +15,7 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- Backend tests: 535/535 passed.
+- Backend tests: 564/564 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
@@ -36,7 +36,7 @@ Working:
 Not yet done:
 
 - Session resume implementation (schema designed at `docs/superpowers/specs/2026-06-06-session-resume-schema.md`, requires real execution stable first).
-- PR/CI automation.
+- ~~PR/CI automation~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred).
 
 ## Product Completion Principle
 
@@ -73,7 +73,7 @@ Issue exists
 | ~~P2~~ | ~~Review Gate~~ | ~~Done~~ | ~~Completed handoffs route to accept/reject/rework based on structured fields~~ | — |
 | ~~P2~~ | ~~Real Claude/ECC execution~~ | ~~Done~~ | ~~Safe runner default; real runner opt-in via ALLOW_REAL_LLM_EXECUTION=true~~ | Do not run arbitrary commands from user input |
 | ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
-| P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |
+| ~~P3~~ | ~~PR/CI automation v1~~ | ~~Done~~ | ~~GitHub webhook ingestion: PR/CI state updates issue pr_url/ci_status~~ | — |
 | P3 | Session resume | Schema designed; implementation pending real execution stability | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
 
 ## Required Verification
@@ -123,7 +123,7 @@ Deferred:
 - Agent session serialization.
 - Full auth/API-key rollout.
 - Autopilot scheduling.
-- PR/CI automation.
+- ~~PR/CI automation.~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred)
 
 ## Stop Conditions
 
