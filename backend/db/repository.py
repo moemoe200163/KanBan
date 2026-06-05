@@ -1004,7 +1004,10 @@ async def create_ecc_job_safe_runner(
 # ---------------------------------------------------------------------------
 
 async def get_llm_provider_config(provider_id: str) -> Optional[dict]:
-    """Get a provider config by provider_id (e.g. 'minimax')."""
+    """Get a provider config by provider_id (e.g. 'minimax').
+
+    Returns the masked dict (no api_key_encrypted) safe for API responses.
+    """
     from db.models import LLMProviderConfig
 
     try:
@@ -1017,6 +1020,31 @@ async def get_llm_provider_config(provider_id: str) -> Optional[dict]:
             return result.to_dict() if result else None
     except Exception as e:
         logger.warning(f"Failed to get LLM provider config {provider_id}: {e}")
+        return None
+
+
+async def get_llm_provider_config_with_key(provider_id: str) -> Optional[dict]:
+    """Get a provider config including api_key_encrypted (internal use only).
+
+    Used by APIModelExecutor to retrieve the encrypted key for LLM API calls.
+    Never expose this in API responses.
+    """
+    from db.models import LLMProviderConfig
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.execute(
+                select(LLMProviderConfig).where(LLMProviderConfig.provider_id == provider_id)
+            )
+            result = row.scalar_one_or_none()
+            if not result:
+                return None
+            d = result.to_dict()
+            d["api_key_encrypted"] = result.api_key_encrypted or ""
+            return d
+    except Exception as e:
+        logger.warning(f"Failed to get LLM provider config (with key) {provider_id}: {e}")
         return None
 
 

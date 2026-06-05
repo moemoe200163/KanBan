@@ -92,7 +92,7 @@ class TestAPIModelExecutor:
         async def on_log(msg):
             logs.append(msg)
 
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=None):
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=None):
             result = await executor.execute(
                 provider_id="nonexistent",
                 model="test",
@@ -113,7 +113,7 @@ class TestAPIModelExecutor:
             logs.append(msg)
 
         config = self._mock_config(enabled=False)
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config):
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config):
             result = await executor.execute(
                 provider_id="minimax",
                 model="MiniMax-M3",
@@ -134,7 +134,7 @@ class TestAPIModelExecutor:
             logs.append(msg)
 
         config = self._mock_config(api_key_encrypted="")
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config), \
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config), \
              patch("os.getenv", return_value=""):
             result = await executor.execute(
                 provider_id="minimax",
@@ -163,7 +163,7 @@ class TestAPIModelExecutor:
             "usage": {"prompt_tokens": 10, "completion_tokens": 20},
         }
 
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config), \
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config), \
              patch("core.llm.crypto.decrypt_api_key", return_value="sk-test-key"), \
              patch("httpx.AsyncClient") as MockClient:
             mock_client = MockClient.return_value.__aenter__.return_value
@@ -198,7 +198,7 @@ class TestAPIModelExecutor:
         mock_response.status_code = 401
         mock_response.text = '{"error": "Unauthorized"}'
 
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config), \
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config), \
              patch("core.llm.crypto.decrypt_api_key", return_value="sk-bad-key"), \
              patch("httpx.AsyncClient") as MockClient:
             mock_client = MockClient.return_value.__aenter__.return_value
@@ -237,7 +237,7 @@ class TestAPIModelExecutor:
             "usage": {"input_tokens": 5, "output_tokens": 15},
         }
 
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config), \
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config), \
              patch("core.llm.crypto.decrypt_api_key", return_value="sk-ant-test"), \
              patch("httpx.AsyncClient") as MockClient:
             mock_client = MockClient.return_value.__aenter__.return_value
@@ -273,7 +273,7 @@ class TestAPIModelExecutor:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
-        with patch("db.repository.get_llm_provider_config", new_callable=AsyncMock, return_value=config), \
+        with patch("db.repository.get_llm_provider_config_with_key", new_callable=AsyncMock, return_value=config), \
              patch("core.llm.crypto.decrypt_api_key", return_value=""), \
              patch("os.getenv", return_value="sk-env-key"), \
              patch("httpx.AsyncClient") as MockClient:

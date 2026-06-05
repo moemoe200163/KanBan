@@ -75,11 +75,11 @@ class APIModelExecutor:
         Returns:
             APIModelResult with the model's response.
         """
-        from db.repository import get_llm_provider_config
+        from db.repository import get_llm_provider_config_with_key
         from core.llm.crypto import decrypt_api_key
 
         await on_log(f"Loading provider config for {provider_id}...")
-        config = await get_llm_provider_config(provider_id)
+        config = await get_llm_provider_config_with_key(provider_id)
 
         if not config:
             await on_log(f"ERROR: Provider config not found for {provider_id}")
