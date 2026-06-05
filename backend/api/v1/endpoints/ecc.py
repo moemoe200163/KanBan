@@ -407,10 +407,27 @@ async def cancel_ecc_job(job_id: str, current_user: dict = Depends(require_auth)
         raise HTTPException(status_code=409, detail=f"Cannot cancel job in '{job.status}' state")
 
     updated_job = _transition_job(job, "cancelled", "Job cancelled by control plane")
-    
+
     # Persist to database
     await _save_job_to_db(updated_job)
-    
+
+    # If this job has linked AgentRuns (real execution path), cancel them too.
+    try:
+        from db.repository import find_active_runs_for_job_id
+        from core.runtime.orchestrator import cancel_run as orch_cancel_run
+        active_runs = await find_active_runs_for_job_id(job_id)
+        for run in active_runs:
+            await orch_cancel_run(run["id"])
+            import logging
+            logging.getLogger(__name__).info(
+                "Cancelled AgentRun %s linked to ECC job %s", run["id"], job_id,
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to cancel linked runs for job %s: %s", job_id, exc,
+        )
+
     return updated_job
 
 

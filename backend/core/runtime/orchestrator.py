@@ -362,6 +362,8 @@ async def cancel_run(run_id: str, worker_id: Optional[str] = None) -> Optional[d
             message="Run cancelled",
         )
         await _broadcast_run_event(run_id, event)
+        # Sync linked ECC job → cancelled
+        await _sync_job_for_run(run_id, "cancelled", repo)
         logger.info("Run %s cancelled", run_id)
     return updated
 

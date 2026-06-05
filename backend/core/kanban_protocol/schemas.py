@@ -27,6 +27,9 @@ class HandoffDispatchRequest(BaseModel):
     issueKey: str = Field(..., min_length=1, max_length=32)
     profile: str = Field(..., min_length=1, max_length=32)
     actor: Optional[str] = Field(default=None, max_length=128)
+    execution_mode: Optional[str] = Field(default=None, description="safe-runner, api-agent, or cli-agent")
+    provider: Optional[str] = Field(default=None, description="LLM provider id")
+    model: Optional[str] = Field(default=None, description="Model id")
 
 
 class HandoffBlockRequest(BaseModel):

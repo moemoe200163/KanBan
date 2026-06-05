@@ -648,3 +648,261 @@ def test_get_ecc_job_after_run_complete_has_valid_events(api_client, fresh_db):
     assert "timestamp" in last_event
     assert "message" in last_event
     assert last_event["status"] == "review_required"
+
+
+# ---------------------------------------------------------------------------
+# Real Execution Closed Loop — create_job_for_handoff with execution_mode
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_job_for_handoff_safe_runner_default(fresh_db):
+    """Without ALLOW_REAL_LLM_EXECUTION, create_job_for_handoff creates a safe-runner job."""
+    from core.kanban_protocol.orchestrator import create_job_for_handoff
+
+    result = await create_job_for_handoff(
+        handoff_id="h_test1",
+        issue_id="iss-1",
+        issue_key="DEV-001",
+        to_lane="backend",
+        profile="backend",
+        actor="test",
+        board_id="board-default",
+    )
+    # Should return a job dict (no _run_id)
+    assert "job" in result or "id" in result
+    assert result.get("_run_id") is None
+
+
+@pytest.mark.asyncio
+async def test_create_job_for_handoff_real_execution_creates_run(fresh_db, monkeypatch):
+    """When ALLOW_REAL_LLM_EXECUTION=true and execution_mode=api-agent,
+    create_job_for_handoff creates an AgentRun and returns _run_id."""
+    monkeypatch.setenv("ALLOW_REAL_LLM_EXECUTION", "true")
+    from core.kanban_protocol.orchestrator import create_job_for_handoff
+
+    result = await create_job_for_handoff(
+        handoff_id="h_test2",
+        issue_id="iss-2",
+        issue_key="DEV-002",
+        to_lane="backend",
+        profile="backend",
+        actor="test",
+        board_id="board-default",
+        execution_mode="api-agent",
+        provider="openai",
+        model="gpt-4o",
+    )
+    # Should have both a job and a run
+    assert result.get("_run_id") is not None
+    assert result["_run_id"].startswith("run_")
+    assert "job" in result
+
+    # Verify the AgentRun was created with correct fields
+    run = await repo.get_run(result["_run_id"])
+    assert run is not None
+    assert run["status"] == "pending"
+    assert run["provider"] == "openai"
+    assert run["model"] == "gpt-4o"
+    assert run["harness"] == "api-agent"
+
+
+@pytest.mark.asyncio
+async def test_create_job_for_handoff_flag_false_forces_safe_runner(fresh_db, monkeypatch):
+    """When ALLOW_REAL_LLM_EXECUTION=false (default), even api-agent mode
+    falls back to safe-runner."""
+    monkeypatch.setenv("ALLOW_REAL_LLM_EXECUTION", "false")
+    from core.kanban_protocol.orchestrator import create_job_for_handoff
+
+    result = await create_job_for_handoff(
+        handoff_id="h_test3",
+        issue_id="iss-3",
+        issue_key="DEV-003",
+        to_lane="backend",
+        profile="backend",
+        actor="test",
+        board_id="board-default",
+        execution_mode="api-agent",
+    )
+    # Should NOT create a run
+    assert result.get("_run_id") is None
+
+
+# ---------------------------------------------------------------------------
+# Real Execution Closed Loop — cancel_run syncs ECC job
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_run_syncs_ecc_job_to_cancelled(fresh_db):
+    """When a run is cancelled, the linked ECC job status moves to cancelled."""
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import (
+        create_run_for_dispatch, claim_next_run, cancel_run,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed a job
+    await repo.upsert_job({
+        "id": "job-cancel-1",
+        "issue_id": "iss-cancel",
+        "issue_key": "DEV-CANCEL-1",
+        "command": "implement",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "running",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+
+    # Create a run linked to the job
+    await repo.upsert_worker(id="wk-cancel", board_id="board-default", worker_type="safe-runner")
+    run = await create_run_for_dispatch(
+        board_id="board-default",
+        issue_id="iss-cancel",
+        issue_key="DEV-CANCEL-1",
+        command="implement",
+        harness="safe-runner",
+        job_id="job-cancel-1",
+    )
+
+    # Claim → cancel
+    await claim_next_run("wk-cancel", "board-default")
+    cancelled = await cancel_run(run["id"], "wk-cancel")
+
+    assert cancelled["status"] == "cancelled"
+
+    # Verify the ECC job was synced to cancelled
+    job = await repo.get_job("job-cancel-1")
+    assert job is not None
+    assert job["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Real Execution Closed Loop — HTTP cancel endpoint
+# ---------------------------------------------------------------------------
+
+class TestRunCancelAPI:
+    def test_cancel_pending_run(self, api_client):
+        """POST /runtime/runs/{id}/cancel cancels a pending run."""
+        client, headers = api_client
+        loop = asyncio.new_event_loop()
+        from core.runtime.orchestrator import create_run_for_dispatch
+        run = loop.run_until_complete(create_run_for_dispatch(
+            board_id="board-default", issue_id="i1", issue_key="DEV-001", command="/cmd",
+        ))
+        loop.close()
+
+        resp = client.post(f"/api/v1/runtime/runs/{run['id']}/cancel", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+
+    def test_cancel_claimed_run(self, api_client):
+        """POST /runtime/runs/{id}/cancel cancels a claimed run."""
+        client, headers = api_client
+        client.post("/api/v1/runtime/workers", headers=headers, json={
+            "worker_id": "wk-cancel-api", "worker_type": "claude-code",
+        })
+        loop = asyncio.new_event_loop()
+        from core.runtime.orchestrator import create_run_for_dispatch, claim_next_run
+        run = loop.run_until_complete(create_run_for_dispatch(
+            board_id="board-default", issue_id="i2", issue_key="DEV-002", command="/cmd",
+        ))
+        loop.run_until_complete(claim_next_run("wk-cancel-api", "board-default"))
+        loop.close()
+
+        resp = client.post(f"/api/v1/runtime/runs/{run['id']}/cancel", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+
+    def test_cancel_completed_run_fails(self, api_client):
+        """Cannot cancel a run in terminal state."""
+        client, headers = api_client
+        client.post("/api/v1/runtime/workers", headers=headers, json={
+            "worker_id": "wk-term", "worker_type": "claude-code",
+        })
+        loop = asyncio.new_event_loop()
+        from core.runtime.orchestrator import (
+            create_run_for_dispatch, claim_next_run, start_run, complete_run,
+        )
+        run = loop.run_until_complete(create_run_for_dispatch(
+            board_id="board-default", issue_id="i3", issue_key="DEV-003", command="/cmd",
+        ))
+        loop.run_until_complete(claim_next_run("wk-term", "board-default"))
+        loop.run_until_complete(start_run(run["id"], "wk-term"))
+        loop.run_until_complete(complete_run(run["id"], "wk-term", result_summary="done"))
+        loop.close()
+
+        resp = client.post(f"/api/v1/runtime/runs/{run['id']}/cancel", headers=headers)
+        assert resp.status_code == 409
+        assert "completed" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# find_active_runs_for_job_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_find_active_runs_for_job_id(fresh_db):
+    """find_active_runs_for_job_id returns only active runs for the given job."""
+    from datetime import datetime, timezone
+    from core.runtime.orchestrator import (
+        create_run_for_dispatch, claim_next_run, start_run, complete_run,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed two jobs
+    await repo.upsert_job({
+        "id": "job-active-1",
+        "issue_id": "iss-a1",
+        "issue_key": "DEV-A1",
+        "command": "impl",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "running",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+    await repo.upsert_job({
+        "id": "job-active-2",
+        "issue_id": "iss-a2",
+        "issue_key": "DEV-A2",
+        "command": "impl",
+        "profile": "backend",
+        "harness": "safe-runner",
+        "board_id": "board-default",
+        "status": "completed",
+        "created_at": now,
+        "updated_at": now,
+        "events": [],
+    })
+
+    await repo.upsert_worker(id="wk-find", board_id="board-default", worker_type="safe-runner")
+
+    # Create run 1 (will stay pending) and run 2 (will complete)
+    run1 = await create_run_for_dispatch(
+        board_id="board-default", issue_id="iss-a1", issue_key="DEV-A1",
+        command="impl", harness="safe-runner", job_id="job-active-1",
+    )
+    run2 = await create_run_for_dispatch(
+        board_id="board-default", issue_id="iss-a2", issue_key="DEV-A2",
+        command="impl", harness="safe-runner", job_id="job-active-2",
+    )
+
+    # Complete run2 (terminal state)
+    await claim_next_run("wk-find", "board-default")
+    await start_run(run2["id"], "wk-find")
+    await complete_run(run2["id"], "wk-find", result_summary="done")
+
+    # find_active_runs_for_job_id should only return run1 (still pending)
+    active_runs = await repo.find_active_runs_for_job_id("job-active-1")
+    assert len(active_runs) == 1
+    assert active_runs[0]["id"] == run1["id"]
+
+    # Completed job has no active runs
+    active_for_completed = await repo.find_active_runs_for_job_id("job-active-2")
+    assert len(active_for_completed) == 0

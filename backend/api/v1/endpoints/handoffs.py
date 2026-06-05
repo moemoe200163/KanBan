@@ -130,20 +130,24 @@ async def dispatch_handoff(
             issue_key=issue["key"],  # authoritative, not body.issueKey
             profile=body.profile,
             actor=body.actor,
+            execution_mode=body.execution_mode,
+            provider=body.provider,
+            model=body.model,
         )
 
-        # Auto-start safe runner for the created job.
-        # _svc.dispatch creates a DB row via create_job_for_handoff;
-        # we now also register it in the in-memory ecc._jobs registry
-        # and kick off the safe-runner background task.
-        job_data = result.get("job")
-        if job_data and job_data.get("id"):
-            from api.v1.endpoints.ecc import (
-                _execute_safe_runner,
-                _register_job_from_db,
-            )
-            await _register_job_from_db(job_data["id"])
-            background_tasks.add_task(_execute_safe_runner, job_data["id"])
+        # If a run was created (real execution path), the worker handles
+        # execution — no safe-runner background task needed.
+        run_id = result.get("_run_id")
+        if not run_id:
+            # Safe-runner path: register the job and kick off the runner.
+            job_data = result.get("job")
+            if job_data and job_data.get("id"):
+                from api.v1.endpoints.ecc import (
+                    _execute_safe_runner,
+                    _register_job_from_db,
+                )
+                await _register_job_from_db(job_data["id"])
+                background_tasks.add_task(_execute_safe_runner, job_data["id"])
 
         return result
     except (ValueError, ScopeDeniedError, PermissionError) as exc:

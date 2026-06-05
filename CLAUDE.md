@@ -52,7 +52,7 @@ All P0 issues are resolved. No blocking known problems.
 
 - `GET /api/v1/board` returns seed issues ✅
 - Backend startup clean (no DB warnings) ✅
-- Backend tests pass (211/211) ✅
+- Backend tests pass (535/535) ✅
 - E2E suite passes (37/37 desktop, Playwright installed) ✅
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`) ✅
 - P1.5 Handoff typed payload + structured 422 ✅
@@ -92,19 +92,17 @@ This safe runner should be the default until the board/job/log loop is proven.
 
 ## Deferred Architecture
 
-Do not prioritize these until Artifacts v1 and Review Gate are stable:
+Do not prioritize these until real execution is stable:
 
-- Real Claude/ECC execution (enable behind env flag; safe runner remains default).
-- Codex/Cursor/Gemini/OpenCode execution.
+- ~~Real Claude/ECC execution (enable behind env flag; safe runner remains default).~~ ✅
 - Paperclip-style session serialization.
-- Long-running session resume.
+- Long-running session resume (requires real execution stable first).
 - Autopilot scheduling.
-- AgentShield/security scan automation.
 - PR/CI automation.
 - Full auth and API-key rollout.
 - Redis queue.
 
-Adapter classes exist (`backend/core/adapters/claude_local.py`) and the safe runner path is proven. Real LLM execution is opt-in only.
+Real LLM execution is opt-in via `ALLOW_REAL_LLM_EXECUTION=true`. Safe runner remains the default. Handoff dispatch respects the env flag.
 
 ## Scope Guardrails
 
@@ -129,6 +127,7 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 8. ~~Artifacts v1 — typed evidence/artifact references on issues~~ ✅
 9. ~~Review Gate — structured completion result with decision routing~~ ✅
 10. ~~Delivery Orchestrator~~ ✅
+11. ~~Real execution closed loop~~ ✅
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
 `archive/security-scope-spike-2026-06-03` — do not merge into mainline

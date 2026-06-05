@@ -91,6 +91,7 @@ __all__ = [
     "get_run",
     "list_runs_by_board",
     "list_runs_by_worker",
+    "find_active_runs_for_job_id",
     "update_run_status",
     "append_run_event",
     "list_run_events",
@@ -1445,6 +1446,25 @@ async def list_runs_by_worker(
             return [r.to_dict() for r in result.scalars().all()]
     except Exception as e:
         logger.warning(f"Failed to list runs for worker {worker_id}: {e}")
+        return []
+
+
+async def find_active_runs_for_job_id(job_id: str) -> List[dict]:
+    """Find runs linked to a job that are in an active (non-terminal) state."""
+    ACTIVE_STATES = ("pending", "claimed", "running")
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(AgentRun)
+                .where(AgentRun.job_id == job_id)
+                .where(AgentRun.status.in_(ACTIVE_STATES))
+                .order_by(AgentRun.created_at.desc())
+            )
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to find active runs for job {job_id}: {e}")
         return []
 
 

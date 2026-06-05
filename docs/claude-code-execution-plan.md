@@ -4,7 +4,7 @@ This plan is for the next agent taking over DevFlow. The goal is to continue bui
 
 ## Current Diagnosis
 
-DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete. P2 (Artifacts v1, Review Gate) are complete. P4 (Log Sync + Evidence Panel) and P5 (Real LLM Pipeline) are complete.
+DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete. P2 (Artifacts v1, Review Gate, Real execution closed loop) are complete. P3 (Delivery Orchestrator) is complete. P4 (Log Sync + Evidence Panel) and P5 (Real LLM Pipeline) are complete.
 
 Working:
 
@@ -15,7 +15,7 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- Backend tests: 526/526 passed.
+- Backend tests: 535/535 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
@@ -27,11 +27,15 @@ Working:
 - HarnessRegistry resolves provider to APIModelAdapter (P5).
 - APIModelExecutor handles provider config, API key resolution, HTTP calls (P5).
 - `get_llm_provider_config_with_key()` internal function for executor key access (P5).
+- Kanban Protocol handoff dispatch respects `ALLOW_REAL_LLM_EXECUTION` flag.
+- ECC cancel triggers `orchestrator.cancel_run()` for linked AgentRuns.
+- `POST /runtime/runs/{run_id}/cancel` endpoint for direct run cancellation.
+- `cancel_run()` syncs linked ECC job to cancelled status.
+- `find_active_runs_for_job_id()` repo function for reverse lookup.
 
 Not yet done:
 
-- Real Claude/ECC execution (safe runner is default; real execution opt-in only).
-- Session resume.
+- Session resume (requires real execution stable first).
 - PR/CI automation.
 
 ## Product Completion Principle
@@ -56,7 +60,7 @@ Issue exists
 |---|---|---|---|---|
 | ~~P0~~ | ~~Restore visible board data~~ | ~~Done~~ | ~~Board shows non-empty cards~~ | — |
 | ~~P0~~ | ~~Fix backend DB startup warning~~ | ~~Done~~ | ~~No greenlet_spawn warning~~ | — |
-| ~~P0~~ | ~~Make tests green~~ | ~~Done~~ | ~~211/211 backend tests pass~~ | — |
+| ~~P0~~ | ~~Make tests green~~ | ~~Done~~ | ~~535/535 backend tests pass~~ | — |
 | ~~P0~~ | ~~Stabilize ECC dispatch~~ | ~~Done~~ | ~~Job created, returns immediately~~ | — |
 | ~~P0~~ | ~~Add safe runner loop~~ | ~~Done~~ | ~~queued -> running -> review_required~~ | — |
 | ~~P0~~ | ~~Show job state in UI~~ | ~~Done~~ | ~~Card detail shows job/logs~~ | — |
@@ -67,7 +71,7 @@ Issue exists
 | ~~P1~~ | ~~Evidence display (P1.6)~~ | ~~Done~~ | ~~HandoffCard toggle + type-aware body~~ | — |
 | ~~P2~~ | ~~Artifacts v1~~ | ~~Done~~ | ~~Issues can link to external artifacts with typed metadata~~ | — |
 | ~~P2~~ | ~~Review Gate~~ | ~~Done~~ | ~~Completed handoffs route to accept/reject/rework based on structured fields~~ | — |
-| P2 | Real Claude/ECC execution | Enable real command execution behind env flag | Safe runner remains default; real runner opt-in works locally | Do not run arbitrary commands from user input |
+| ~~P2~~ | ~~Real Claude/ECC execution~~ | ~~Done~~ | ~~Safe runner default; real runner opt-in via ALLOW_REAL_LLM_EXECUTION=true~~ | Do not run arbitrary commands from user input |
 | ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
 | P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |
 | P3 | Session resume | Add Paperclip-style session persistence | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |

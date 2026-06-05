@@ -76,6 +76,9 @@ class HandoffService:
         issue_key: str,
         profile: str,
         actor: Optional[str],
+        execution_mode: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> dict:
         from core.kanban_protocol.orchestrator import create_job_for_handoff
 
@@ -97,7 +100,7 @@ class HandoffService:
                 "payload must include an 'approver' field before dispatch"
             )
 
-        job = await create_job_for_handoff(
+        result = await create_job_for_handoff(
             handoff_id=handoff_id,
             issue_id=current["issueId"],
             issue_key=issue_key,
@@ -105,6 +108,9 @@ class HandoffService:
             profile=profile,
             actor=actor,
             board_id=current.get("boardId", "board-default"),
+            execution_mode=execution_mode,
+            provider=provider,
+            model=model,
         )
 
         updated = await repo.update_issue_handoff(
@@ -113,7 +119,7 @@ class HandoffService:
             actor_field="dispatched_by",
             actor_value=actor,
         )
-        return {"handoff": updated, "job": job}
+        return {"handoff": updated, "job": result.get("job") or result, "_run_id": result.get("_run_id")}
 
     async def complete(
         self,

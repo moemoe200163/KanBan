@@ -45,6 +45,10 @@ class RunFailRequest(BaseModel):
     error_message: str = Field(..., min_length=1, description="Error description")
 
 
+class RunCancelRequest(BaseModel):
+    reason: Optional[str] = Field(None, description="Cancellation reason")
+
+
 # ---------------------------------------------------------------------------
 # Agent Roles
 # ---------------------------------------------------------------------------
@@ -244,6 +248,30 @@ async def fail_run_endpoint(run_id: str, request: RunFailRequest, current_user: 
 
     worker_id = run.get("workerId")
     result = await fail_run(run_id, worker_id, error_message=request.error_message)
+    return result
+
+
+@router.post("/runtime/runs/{run_id}/cancel")
+async def cancel_run_endpoint(
+    run_id: str,
+    request: RunCancelRequest = RunCancelRequest(),
+    current_user: dict = Depends(require_auth),
+):
+    """Cancel a run in a non-terminal state (pending, claimed, running)."""
+    from core.runtime.orchestrator import cancel_run
+    from db import repository as repo
+
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if run["status"] in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run is in '{run['status']}' state, cannot cancel",
+        )
+
+    worker_id = run.get("workerId")
+    result = await cancel_run(run_id, worker_id)
     return result
 
 
