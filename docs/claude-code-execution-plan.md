@@ -4,7 +4,7 @@ This plan is for the next agent taking over DevFlow. The goal is to continue bui
 
 ## Current Diagnosis
 
-DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete.
+DevFlow's P0 product loop is stable. P1 features (handoff metadata, evidence display) are complete. P4 (Log Sync + Evidence Panel) and P5 (Real LLM Pipeline) are complete.
 
 Working:
 
@@ -15,13 +15,18 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- E2E suite: 37 passed, 13 skipped (mobile), 0 failed.
-- Backend tests: 211/211 passed.
+- Backend tests: 526/526 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
 - Evidence display in HandoffCard for completed handoffs (P1.6).
 - `ClaudeLocalAdapter` and safe runner path exist in `backend/core/adapters/`.
+- AgentRun events bridged into IssueDetail timeline via job_id filter (P4).
+- WebSocket broadcast for real-time AgentRun log streaming (P4).
+- Dispatch gate: `ALLOW_REAL_LLM_EXECUTION` env controls api-agent vs safe-runner routing (P5).
+- HarnessRegistry resolves provider to APIModelAdapter (P5).
+- APIModelExecutor handles provider config, API key resolution, HTTP calls (P5).
+- `get_llm_provider_config_with_key()` internal function for executor key access (P5).
 
 Not yet done:
 
