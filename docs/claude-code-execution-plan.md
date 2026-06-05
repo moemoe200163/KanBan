@@ -31,7 +31,6 @@ Working:
 Not yet done:
 
 - Real Claude/ECC execution (safe runner is default; real execution opt-in only).
-- Delivery Orchestrator.
 - Session resume.
 - PR/CI automation.
 
@@ -69,7 +68,7 @@ Issue exists
 | ~~P2~~ | ~~Artifacts v1~~ | ~~Done~~ | ~~Issues can link to external artifacts with typed metadata~~ | — |
 | ~~P2~~ | ~~Review Gate~~ | ~~Done~~ | ~~Completed handoffs route to accept/reject/rework based on structured fields~~ | — |
 | P2 | Real Claude/ECC execution | Enable real command execution behind env flag | Safe runner remains default; real runner opt-in works locally | Do not run arbitrary commands from user input |
-| P3 | Delivery Orchestrator | Automated delivery pipeline | Handoff → review → merge/release flow | Do not start before P2 is green |
+| ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
 | P3 | PR/CI automation | Connect GitHub PR and CI webhooks | CI/PR state updates issue detail and status | Do not start before P2 is green |
 | P3 | Session resume | Add Paperclip-style session persistence | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
 
