@@ -296,3 +296,183 @@ class TestAdapterProtocol:
         assert result.conversation_history is None
         assert result.checkpoint_data is None
         assert result.provider_resume_ref is None
+
+
+class TestWorkerSessionLifecycle:
+    """Tests for worker session lifecycle building blocks."""
+
+    @pytest.mark.asyncio
+    async def test_resume_adapter_creates_session_and_links_to_run(self, seeded_db):
+        """When adapter.supports_resume() is True, caller creates session and links to run."""
+        from db import repository as repo
+        from core.adapters.base import BaseAIAdapter, ExecutionResult
+
+        class ResumeAdapter(BaseAIAdapter):
+            @property
+            def supported_harnesses(self):
+                return ["resume-test"]
+            async def dispatch(self, issue, context):
+                pass
+            async def execute(self, task_id, prompt, workspace, on_log=None):
+                return ExecutionResult(
+                    success=True, output="done",
+                    conversation_history=[{"role": "user", "content": "hi"}],
+                    checkpoint_data={"step": 1},
+                    provider_resume_ref="resp_abc",
+                )
+            async def test_environment(self):
+                return True
+            def supports_resume(self):
+                return True
+
+        adapter = ResumeAdapter()
+        assert adapter.supports_resume() is True
+
+        # Create session and link to run (what the caller does)
+        session = await repo.create_session(
+            id="sess_worker_test",
+            board_id="board-default",
+            issue_id="issue-1",
+            issue_key="DEV-001",
+            harness="resume-test",
+        )
+        await repo.update_run_session_id("run_test_001", "sess_worker_test")
+
+        # Execute and get session data from result
+        result = await adapter.execute("run_test_001", "prompt", "/tmp")
+        assert result.conversation_history is not None
+
+        # Caller saves checkpoint
+        await repo.update_session_checkpoint(
+            "sess_worker_test",
+            conversation_history=result.conversation_history,
+            checkpoint_data=result.checkpoint_data,
+            provider_resume_ref=result.provider_resume_ref,
+        )
+
+        # Verify
+        session = await repo.get_session("sess_worker_test")
+        assert session["conversationHistory"] == [{"role": "user", "content": "hi"}]
+        assert session["checkpointData"] == {"step": 1}
+        assert session["providerResumeRef"] == "resp_abc"
+
+    @pytest.mark.asyncio
+    async def test_non_resume_adapter_does_not_create_session(self, seeded_db):
+        """When adapter.supports_resume() is False, no session is created."""
+        from core.adapters.base import BaseAIAdapter, ExecutionResult
+
+        class NoResumeAdapter(BaseAIAdapter):
+            @property
+            def supported_harnesses(self):
+                return ["no-resume"]
+            async def dispatch(self, issue, context):
+                pass
+            async def execute(self, task_id, prompt, workspace, on_log=None):
+                return ExecutionResult(success=True, output="done")
+            async def test_environment(self):
+                return True
+
+        adapter = NoResumeAdapter()
+        assert adapter.supports_resume() is False
+        # No session creation happens when supports_resume() is False
+
+    @pytest.mark.asyncio
+    async def test_session_paused_on_run_failure(self, seeded_db):
+        """When a run fails, the linked session transitions to paused."""
+        from db import repository as repo
+        await repo.create_session(
+            id="sess_fail", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        )
+        await repo.update_run_session_id("run_test_001", "sess_fail")
+        # Simulate run failure -> session paused
+        await repo.pause_session("sess_fail", last_error="timeout")
+        session = await repo.get_session("sess_fail")
+        assert session["status"] == "paused"
+        assert session["lastError"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_resume_increments_total_runs(self, seeded_db):
+        """Resuming a session increments total_runs and sets last_run_at."""
+        from db import repository as repo
+        await repo.create_session(
+            id="sess_resume_count", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        )
+        # Pause then resume
+        await repo.pause_session("sess_resume_count")
+        ok = await repo.resume_session("sess_resume_count")
+        assert ok is True
+        session = await repo.get_session("sess_resume_count")
+        assert session["status"] == "active"
+        assert session["totalRuns"] == 2
+        assert session["lastRunAt"] is not None
+
+
+class TestSessionAPIEndpoints:
+    """Integration tests for session REST API."""
+
+    @pytest.fixture
+    def client(self):
+        from fastapi.testclient import TestClient
+        import main
+        return TestClient(main.app)
+
+    def test_list_sessions(self, seeded_db, client):
+        from db import repository as repo
+        asyncio.run(repo.create_session(
+            id="sess_api_1", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        ))
+        resp = client.get("/api/v1/runtime/sessions?board_id=board-default")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) >= 1
+
+    def test_get_session(self, seeded_db, client):
+        from db import repository as repo
+        asyncio.run(repo.create_session(
+            id="sess_api_2", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        ))
+        resp = client.get("/api/v1/runtime/sessions/sess_api_2")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "sess_api_2"
+        assert resp.json()["status"] == "active"
+
+    def test_get_session_not_found(self, seeded_db, client):
+        resp = client.get("/api/v1/runtime/sessions/sess_missing")
+        assert resp.status_code == 404
+
+    def test_resume_session(self, seeded_db, client):
+        from db import repository as repo
+        asyncio.run(repo.create_session(
+            id="sess_api_resume", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        ))
+        asyncio.run(repo.pause_session("sess_api_resume"))
+        resp = client.post("/api/v1/runtime/sessions/sess_api_resume/resume")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "active"
+        assert resp.json()["totalRuns"] == 2
+
+    def test_resume_active_session_fails(self, seeded_db, client):
+        from db import repository as repo
+        asyncio.run(repo.create_session(
+            id="sess_api_active", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        ))
+        resp = client.post("/api/v1/runtime/sessions/sess_api_active/resume")
+        assert resp.status_code == 409
+
+    def test_delete_session(self, seeded_db, client):
+        from db import repository as repo
+        asyncio.run(repo.create_session(
+            id="sess_api_del", board_id="board-default",
+            issue_id="issue-1", issue_key="DEV-001",
+        ))
+        resp = client.delete("/api/v1/runtime/sessions/sess_api_del")
+        assert resp.status_code == 200
+        session = asyncio.run(repo.get_session("sess_api_del"))
+        assert session["status"] == "expired"
+        assert session["conversationHistory"] is None

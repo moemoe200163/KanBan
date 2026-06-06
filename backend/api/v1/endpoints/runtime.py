@@ -349,3 +349,69 @@ async def list_run_logs(
     # Filter to log events only (status_change events are separate)
     logs = [e for e in all_events if e.get("eventType") == "log"]
     return {"logs": logs, "total": len(logs)}
+
+
+# =============================================================================
+# Session Resume endpoints
+# =============================================================================
+
+@router.get("/runtime/sessions", tags=["Runtime"])
+async def list_sessions(
+    board_id: Optional[str] = None,
+    issue_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """List sessions with optional filters."""
+    from db.repository import list_sessions as repo_list_sessions
+    sessions = await repo_list_sessions(
+        board_id=board_id, issue_id=issue_id, status=status, limit=limit,
+    )
+    return sessions
+
+
+@router.get("/runtime/sessions/{session_id}", tags=["Runtime"])
+async def get_session(session_id: str):
+    """Get a single session by ID."""
+    from db.repository import get_session as repo_get_session
+    session = await repo_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@router.post("/runtime/sessions/{session_id}/resume", tags=["Runtime"])
+async def resume_session(session_id: str):
+    """Resume a paused session — transitions to active and increments total_runs."""
+    from db.repository import (
+        get_session as repo_get_session,
+        resume_session as repo_resume_session,
+    )
+    session = await repo_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["status"] != "paused":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot resume session in '{session['status']}' status (must be paused)",
+        )
+    ok = await repo_resume_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to resume session")
+    return await repo_get_session(session_id)
+
+
+@router.delete("/runtime/sessions/{session_id}", tags=["Runtime"])
+async def expire_session(session_id: str):
+    """Expire a session and purge its conversation history."""
+    from db.repository import (
+        get_session as repo_get_session,
+        expire_session as repo_expire_session,
+    )
+    session = await repo_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ok = await repo_expire_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to expire session")
+    return {"status": "expired", "sessionId": session_id}
