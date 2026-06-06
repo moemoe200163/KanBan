@@ -73,8 +73,8 @@ class GitHubClient:
                         "html_url": pr["html_url"],
                         "title": pr.get("title", ""),
                     }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to find existing PR: %s", e)
         return None
 
     async def sync_labels(self, issue_number: int, labels: list[str]) -> bool:
@@ -148,7 +148,8 @@ class GitHubClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 return await self._find_existing_pr(client, head, base)
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to find existing PR: %s", e)
             return None
 
     async def get_pull_request(self, pr_number: int) -> Optional[dict]:
