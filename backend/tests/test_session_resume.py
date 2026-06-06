@@ -220,3 +220,79 @@ class TestSessionRepository:
         )
         sessions = await repo.list_sessions(board_id="board-default")
         assert len(sessions) == 2
+
+
+class TestAdapterProtocol:
+    """Tests for adapter session support protocol."""
+
+    def test_base_adapter_does_not_support_resume(self):
+        from core.adapters.base import BaseAIAdapter
+        class DummyAdapter(BaseAIAdapter):
+            @property
+            def supported_harnesses(self):
+                return ["dummy"]
+            async def dispatch(self, issue, context):
+                pass
+            async def execute(self, task_id, prompt, workspace, on_log=None):
+                pass
+            async def test_environment(self):
+                return True
+        adapter = DummyAdapter()
+        assert adapter.supports_resume() is False
+
+    def test_supports_resume_override(self):
+        from core.adapters.base import BaseAIAdapter
+        class ResumeAdapter(BaseAIAdapter):
+            @property
+            def supported_harnesses(self):
+                return ["resume"]
+            async def dispatch(self, issue, context):
+                pass
+            async def execute(self, task_id, prompt, workspace, on_log=None):
+                pass
+            async def test_environment(self):
+                return True
+            def supports_resume(self):
+                return True
+        adapter = ResumeAdapter()
+        assert adapter.supports_resume() is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_session_ignores_session_by_default(self):
+        from core.adapters.base import BaseAIAdapter, ExecutionResult
+        class SimpleAdapter(BaseAIAdapter):
+            @property
+            def supported_harnesses(self):
+                return ["simple"]
+            async def dispatch(self, issue, context):
+                pass
+            async def execute(self, task_id, prompt, workspace, on_log=None):
+                return ExecutionResult(success=True, output="done")
+            async def test_environment(self):
+                return True
+        adapter = SimpleAdapter()
+        session_data = {"id": "sess_1", "conversationHistory": [], "checkpointData": {}}
+        result = await adapter.execute_with_session(
+            task_id="run_1", prompt="test", workspace="/tmp", session=session_data,
+        )
+        assert result.success is True
+        assert result.output == "done"
+
+    def test_execution_result_has_session_fields(self):
+        from core.adapters.base import ExecutionResult
+        result = ExecutionResult(
+            success=True, output="ok",
+            conversation_history=[{"role": "user", "content": "hi"}],
+            checkpoint_data={"step": 1},
+            provider_resume_ref="resp_123",
+        )
+        assert result.conversation_history == [{"role": "user", "content": "hi"}]
+        assert result.checkpoint_data == {"step": 1}
+        assert result.provider_resume_ref == "resp_123"
+
+    def test_execution_result_session_fields_default_none(self):
+        from core.adapters.base import ExecutionResult
+        result = ExecutionResult(success=True, output="ok")
+        assert result.conversation_history is None
+        assert result.checkpoint_data is None
+        assert result.provider_resume_ref is None
