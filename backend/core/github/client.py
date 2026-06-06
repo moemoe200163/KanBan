@@ -126,6 +126,31 @@ class GitHubClient:
             logger.warning("Failed to create check run: %s", e)
             return None
 
+    async def list_pull_requests(self, state: str = "open") -> list:
+        """List PRs with state filter."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{self.base_url}/pulls",
+                    headers=self._headers,
+                    params={"state": state},
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.warning("List PRs failed: %s", resp.status_code)
+                return []
+        except Exception as e:
+            logger.warning("Failed to list PRs: %s", e)
+            return []
+
+    async def find_existing_pr(self, head: str, base: str = "main") -> Optional[dict]:
+        """Find existing PR for a branch (public standalone)."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await self._find_existing_pr(client, head, base)
+        except Exception:
+            return None
+
     async def get_pull_request(self, pr_number: int) -> Optional[dict]:
         """Get PR by number."""
         try:

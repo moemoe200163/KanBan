@@ -128,6 +128,27 @@ class TestGitHubClient:
             result = get_github_client()
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_create_pull_request_returns_none_on_4xx(self):
+        """HTTP 4xx response returns None."""
+        client = GitHubClient(token="ghp_test", repo="owner/repo")
+        mock_branch = MagicMock()
+        mock_branch.status_code = 200
+        mock_403 = MagicMock()
+        mock_403.status_code = 403
+        mock_403.json.return_value = {"message": "Forbidden"}
+        with patch("core.github.client.httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.get.return_value = mock_branch
+            mock_http.post.return_value = mock_403
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_cls.return_value = mock_http
+            result = await client.create_pull_request(
+                title="test", body="body", head="feature/test",
+            )
+        assert result is None
+
     def test_get_github_client_returns_client_when_configured(self):
         """Returns client when both env vars are set."""
         with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_test", "GITHUB_REPO": "owner/repo"}, clear=False):
