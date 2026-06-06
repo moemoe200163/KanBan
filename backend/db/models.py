@@ -701,6 +701,7 @@ class AgentRun(Base):
     issue_id = Column(String(64), nullable=True, index=True)
     issue_key = Column(String(32), nullable=True)
     job_id = Column(String(64), nullable=True, index=True)  # links to ecc_jobs.id
+    session_id = Column(String(64), nullable=True, index=True)  # soft ref to agent_sessions.id
     status = Column(String(32), nullable=False, default="pending", index=True)  # pending, claimed, running, completed, failed, cancelled
     command = Column(String(128), nullable=True)
     profile = Column(String(32), nullable=True)
@@ -738,6 +739,7 @@ class AgentRun(Base):
             "issueId": self.issue_id,
             "issueKey": self.issue_key,
             "jobId": self.job_id,
+            "sessionId": self.session_id,
             "status": self.status,
             "command": self.command,
             "profile": self.profile,
@@ -789,4 +791,66 @@ class AgentRunEvent(Base):
             "message": self.message,
             "metadata": self.extra_metadata or {},
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AgentSession(Base):
+    """Groups multiple runs into a resumable conversation."""
+    __tablename__ = "agent_sessions"
+
+    id = Column(String(64), primary_key=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    issue_id = Column(String(64), nullable=True, index=True)
+    issue_key = Column(String(32), nullable=True)
+
+    harness = Column(String(32), nullable=True)
+    provider = Column(String(32), nullable=True)
+    model = Column(String(128), nullable=True)
+
+    status = Column(String(32), nullable=False, default="active", index=True)
+
+    conversation_history = Column(JSON, nullable=True, default=list)
+    checkpoint_data = Column(JSON, nullable=True, default=dict)
+    provider_resume_ref = Column(String(512), nullable=True)
+
+    total_runs = Column(Integer, nullable=False, default=1)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_sessions_board_status", "board_id", "status"),
+        Index("ix_agent_sessions_issue", "issue_id", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "boardId": self.board_id,
+            "issueId": self.issue_id,
+            "issueKey": self.issue_key,
+            "harness": self.harness,
+            "provider": self.provider,
+            "model": self.model,
+            "status": self.status,
+            "conversationHistory": self.conversation_history,
+            "checkpointData": self.checkpoint_data,
+            "providerResumeRef": self.provider_resume_ref,
+            "totalRuns": self.total_runs,
+            "totalTokens": self.total_tokens,
+            "lastError": self.last_error,
+            "expiresAt": self.expires_at.isoformat() if self.expires_at else None,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "lastRunAt": self.last_run_at.isoformat() if self.last_run_at else None,
         }
