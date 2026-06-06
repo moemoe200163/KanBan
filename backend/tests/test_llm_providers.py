@@ -83,17 +83,50 @@ def fresh_db(tmp_path, monkeypatch):
         loop.close()
 
 
-def _register_and_login(client) -> str:
-    """Register a test user and return a JWT token."""
-    # Register
-    client.post("/api/v1/auth/register", json={
-        "username": "llmtest",
-        "password": "testpass123",
-        "email": "llmtest@example.com",
-    })
+def _register_and_login(client, *, admin: bool = True) -> str:
+    """Register a test user and return a JWT token.
+
+    By default creates an admin user (required for write LLM endpoints).
+    Pass admin=False to create a regular user for RBAC tests.
+    """
+    from datetime import datetime, timezone
+    from api.v1.endpoints.auth import hash_password, create_jwt_token
+
+    username = "llmtest" if admin else "llmtest_nonadmin"
+    user_id = "user_llm_test" if admin else "user_llm_nonadmin"
+
+    # Create user directly in DB with the desired role
+    async def _create_user():
+        from db.database import AsyncSessionLocal, ensure_db_init
+        from db.models import User
+        from sqlalchemy import select
+
+        await ensure_db_init()
+        async with AsyncSessionLocal() as session:
+            existing = await session.execute(
+                select(User).where(User.username == username)
+            )
+            if existing.scalar_one_or_none():
+                return  # already exists
+            pwd_hash, _ = hash_password("testpass123")
+            now = datetime.now(timezone.utc)
+            session.add(User(
+                id=user_id,
+                username=username,
+                email=f"{username}@example.com",
+                password_hash=pwd_hash,
+                role="admin" if admin else "user",
+                created_at=now,
+                updated_at=now,
+            ))
+            await session.commit()
+
+    import asyncio
+    asyncio.run(_create_user())
+
     # Login
     resp = client.post("/api/v1/auth/token", json={
-        "username": "llmtest",
+        "username": username,
         "password": "testpass123",
     })
     assert resp.status_code == 200, f"Login failed: {resp.text}"
@@ -456,3 +489,79 @@ def test_list_provider_models(fresh_db):
     assert body["providerId"] == "openai"
     assert isinstance(body["models"], list)
     assert "gpt-4o" in body["models"]
+
+
+# ---------------------------------------------------------------------------
+# RBAC: non-admin users get 403 on all write endpoints
+# ---------------------------------------------------------------------------
+
+def test_update_config_requires_admin(fresh_db):
+    """Non-admin user gets 403 on PUT /config."""
+    token = _register_and_login(fresh_db, admin=False)
+    resp = fresh_db.put(
+        "/api/v1/llm/providers/minimax/config",
+        json={"model": "MiniMax-M3"},
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 403
+    assert "admin" in resp.json()["detail"].lower()
+
+
+def test_test_provider_requires_admin(fresh_db):
+    """Non-admin user gets 403 on POST /test."""
+    token = _register_and_login(fresh_db, admin=False)
+    resp = fresh_db.post(
+        "/api/v1/llm/providers/minimax/test",
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 403
+    assert "admin" in resp.json()["detail"].lower()
+
+
+def test_select_provider_requires_admin(fresh_db):
+    """Non-admin user gets 403 on POST /select."""
+    token = _register_and_login(fresh_db, admin=False)
+    resp = fresh_db.post(
+        "/api/v1/llm/providers/minimax/select",
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 403
+    assert "admin" in resp.json()["detail"].lower()
+
+
+def test_defaults_update_requires_admin(fresh_db):
+    """Non-admin user gets 403 on PUT /defaults."""
+    token = _register_and_login(fresh_db, admin=False)
+    resp = fresh_db.put(
+        "/api/v1/llm/defaults",
+        json={"providerId": "minimax"},
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 403
+    assert "admin" in resp.json()["detail"].lower()
+
+
+def test_read_endpoints_accessible_to_non_admin(fresh_db):
+    """Read-only LLM endpoints remain accessible to non-admin users."""
+    token = _register_and_login(fresh_db, admin=False)
+    headers = _auth_header(token)
+
+    # GET /providers
+    resp = fresh_db.get("/api/v1/llm/providers")
+    assert resp.status_code == 200
+
+    # GET /providers/{id}
+    resp = fresh_db.get("/api/v1/llm/providers/safe-runner")
+    assert resp.status_code == 200
+
+    # GET /active
+    resp = fresh_db.get("/api/v1/llm/active")
+    assert resp.status_code in (200, 404)  # 404 if no active provider
+
+    # GET /defaults
+    resp = fresh_db.get("/api/v1/llm/defaults")
+    assert resp.status_code == 200
+
+    # GET /providers/{id}/models
+    resp = fresh_db.get("/api/v1/llm/providers/openai/models")
+    assert resp.status_code == 200

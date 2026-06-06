@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.v1.endpoints.auth import get_current_user, get_optional_user
+from api.v1.auth_deps import require_admin
 from core.llm import registry
 from core.llm.crypto import encrypt_api_key, decrypt_api_key, mask_api_key
 from core.llm.health_check import run_health_check
@@ -130,7 +131,7 @@ async def get_provider(provider_id: str):
 async def update_provider_config(
     provider_id: str,
     body: ProviderConfigUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Update provider configuration with DB persistence.
 
@@ -188,7 +189,7 @@ async def update_provider_config(
 @router.post("/providers/{provider_id}/test")
 async def test_provider(
     provider_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Run a real health check against the provider's API endpoint.
 
@@ -313,7 +314,7 @@ async def test_provider(
 @router.post("/providers/{provider_id}/select")
 async def select_provider(
     provider_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Set the given provider as the active/default provider."""
     provider_def = registry.get_provider_def(provider_id)
@@ -389,7 +390,7 @@ async def get_defaults():
 @router.put("/defaults")
 async def update_defaults(
     body: DefaultsUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Update execution defaults."""
     data = body.model_dump(exclude_none=True)

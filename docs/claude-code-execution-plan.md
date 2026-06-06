@@ -15,7 +15,7 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- Backend tests: 604/604 passed.
+- Backend tests: 627/627 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
@@ -37,6 +37,7 @@ Not yet done:
 
 - ~~Session resume~~ ✅ (AgentSession model, session CRUD, adapter protocol, API endpoints, 27 tests).
 - ~~PR/CI automation~~ ✅ (v1 webhook ingestion + v2 outbound API complete).
+- ~~Full auth rollout~~ ✅ (require_admin dependency, RBAC on LLM write endpoints, admin-only enforcement).
 
 ## Product Completion Principle
 
@@ -76,6 +77,7 @@ Issue exists
 | ~~P3~~ | ~~PR/CI automation v1~~ | ~~Done~~ | ~~GitHub webhook ingestion: PR/CI state updates issue pr_url/ci_status~~ | — |
 | ~~P3~~ | ~~Session resume~~ | ~~Done~~ | ~~AgentSession model + CRUD + adapter protocol + API endpoints~~ | — |
 | ~~P3~~ | ~~PR/CI outbound API v2~~ | ~~Done~~ | ~~Shared GitHubClient, PR create, label sync, check run~~ | — |
+| ~~P3~~ | ~~Full auth rollout~~ | ~~Done~~ | ~~RBAC on LLM write endpoints, require_admin dependency, 627/627 tests~~ | — |
 
 ## Required Verification
 
@@ -122,7 +124,7 @@ Deferred:
 - Multi-harness execution.
 - ~~Session resume~~ ✅ (schema + implementation complete).
 - Agent session serialization.
-- Full auth/API-key rollout.
+- ~~Full auth/API-key rollout.~~ ✅
 - Autopilot scheduling.
 - ~~PR/CI automation.~~ ✅ (v1 webhook ingestion + v2 outbound API complete)
 
