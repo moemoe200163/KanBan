@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 import main
 from db import database as db_module
-from db.models import Base, Issue as IssueModel, IssueHandoff
+from db.models import Base, Issue as IssueModel, IssueHandoff, User as UserModel
 
 
 client = TestClient(main.app)
@@ -92,12 +92,32 @@ def fresh_db(tmp_path, monkeypatch):
                 created_at=now - timedelta(hours=2),
                 updated_at=now - timedelta(hours=2),
             ))
+            # Create an admin user for auth-gated endpoints
+            from api.v1.endpoints.auth import hash_password
+            pwd_hash, _ = hash_password("admin_pass_123")
+            session.add(UserModel(
+                id="user_ap_admin",
+                username="ap_admin_test",
+                password_hash=pwd_hash,
+                role="admin",
+                created_at=now,
+                updated_at=now,
+            ))
             await session.commit()
         db_module._db_initialized = True
 
     asyncio.run(_setup())
     yield
     new_engine.sync_engine.dispose()
+
+
+def _get_admin_token() -> str:
+    resp = client.post("/api/v1/auth/token", json={
+        "username": "ap_admin_test",
+        "password": "admin_pass_123",
+    })
+    assert resp.status_code == 200
+    return resp.json()["access_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +188,15 @@ def test_status_endpoint(fresh_db):
 
 
 def test_enable_disable_via_status(fresh_db):
+    token = _get_admin_token()
+    headers = {"Authorization": f"Bearer {token}"}
     # Disable
-    resp = client.post("/api/v1/autopilot/status", json={"enabled": False})
+    resp = client.post("/api/v1/autopilot/status", json={"enabled": False}, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["enabled"] is False
 
     # Enable
-    resp = client.post("/api/v1/autopilot/status", json={"enabled": True})
+    resp = client.post("/api/v1/autopilot/status", json={"enabled": True}, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["enabled"] is True
 
@@ -184,7 +206,9 @@ def test_enable_disable_via_status(fresh_db):
 # ---------------------------------------------------------------------------
 
 def test_tick_endpoint(fresh_db):
-    resp = client.post("/api/v1/autopilot/tick")
+    token = _get_admin_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = client.post("/api/v1/autopilot/tick", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"

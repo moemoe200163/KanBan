@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, List
+
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 
@@ -48,7 +50,7 @@ async def get_agent_status():
 
 
 @router.post("/agents/dispatch")
-async def dispatch_agent(request: AgentDispatchRequest):
+async def dispatch_agent(request: AgentDispatchRequest, current_user: dict = Depends(require_auth)):
     """
     Dispatch an agent to handle an issue.
 
@@ -101,7 +103,7 @@ async def dispatch_agent(request: AgentDispatchRequest):
 
 
 @router.post("/agents/terminate")
-async def terminate_agent(agent_id: str):
+async def terminate_agent(agent_id: str, current_user: dict = Depends(require_auth)):
     """
     Terminate a running agent.
 

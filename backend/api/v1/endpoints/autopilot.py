@@ -2,8 +2,10 @@
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from api.v1.auth_deps import require_admin
 
 from core.kanban_protocol.autopilot import scheduler
 
@@ -32,7 +34,7 @@ async def get_autopilot_status():
 
 
 @router.post("/autopilot/status", response_model=AutopilotStatusResponse)
-async def set_autopilot_status(body: AutopilotToggleRequest):
+async def set_autopilot_status(body: AutopilotToggleRequest, current_user: dict = Depends(require_admin)):
     """Enable or disable the autopilot scheduler."""
     if body.enabled:
         result = scheduler.enable()
@@ -42,7 +44,7 @@ async def set_autopilot_status(body: AutopilotToggleRequest):
 
 
 @router.post("/autopilot/tick")
-async def trigger_autopilot_tick():
+async def trigger_autopilot_tick(current_user: dict = Depends(require_admin)):
     """Manually trigger one autopilot cycle (for testing/debugging)."""
     result = await scheduler.tick()
     return {"status": "ok", "result": result}

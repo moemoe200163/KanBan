@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from api.v1.auth_deps import require_admin
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -199,7 +201,7 @@ async def get_quality_gate_status():
 
 
 @router.post("/quality/gate/verify", response_model=QualityGateVerifyResponse)
-async def verify_quality_gate(request: QualityGateVerifyRequest):
+async def verify_quality_gate(request: QualityGateVerifyRequest, current_user: dict = Depends(require_admin)):
     """
     Trigger a quality gate verification check against a job's results.
 

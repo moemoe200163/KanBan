@@ -383,7 +383,7 @@ async def get_ecc_job(job_id: str):
 
 
 @router.patch("/ecc/jobs/{job_id}")
-async def update_ecc_job(job_id: str, request: ECCJobStatusUpdate):
+async def update_ecc_job(job_id: str, request: ECCJobStatusUpdate, current_user: dict = Depends(require_auth)):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")

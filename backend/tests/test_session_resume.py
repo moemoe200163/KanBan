@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from db.models import Base, AgentSession, AgentRun, AgentRunEvent
+from db.models import Base, AgentSession, AgentRun, AgentRunEvent, User as UserModel
 
 
 @pytest.fixture
@@ -48,6 +48,17 @@ def seeded_db(tmp_path, monkeypatch):
                 created_at=now,
             )
             session.add(run)
+            # Create a test user for auth-gated endpoints
+            from api.v1.endpoints.auth import hash_password
+            pwd_hash, _ = hash_password("sess_test_pass_123")
+            session.add(UserModel(
+                id="user_sess_test",
+                username="sess_test_user",
+                password_hash=pwd_hash,
+                role="member",
+                created_at=now,
+                updated_at=now,
+            ))
             await session.commit()
         db_module._db_initialized = True
 
@@ -444,6 +455,14 @@ class TestSessionAPIEndpoints:
         resp = client.get("/api/v1/runtime/sessions/sess_missing")
         assert resp.status_code == 404
 
+    def _get_token(self, client):
+        resp = client.post("/api/v1/auth/token", json={
+            "username": "sess_test_user",
+            "password": "sess_test_pass_123",
+        })
+        assert resp.status_code == 200
+        return resp.json()["access_token"]
+
     def test_resume_session(self, seeded_db, client):
         from db import repository as repo
         asyncio.run(repo.create_session(
@@ -451,7 +470,8 @@ class TestSessionAPIEndpoints:
             issue_id="issue-1", issue_key="DEV-001",
         ))
         asyncio.run(repo.pause_session("sess_api_resume"))
-        resp = client.post("/api/v1/runtime/sessions/sess_api_resume/resume")
+        headers = {"Authorization": f"Bearer {self._get_token(client)}"}
+        resp = client.post("/api/v1/runtime/sessions/sess_api_resume/resume", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
         assert resp.json()["totalRuns"] == 2
@@ -462,7 +482,8 @@ class TestSessionAPIEndpoints:
             id="sess_api_active", board_id="board-default",
             issue_id="issue-1", issue_key="DEV-001",
         ))
-        resp = client.post("/api/v1/runtime/sessions/sess_api_active/resume")
+        headers = {"Authorization": f"Bearer {self._get_token(client)}"}
+        resp = client.post("/api/v1/runtime/sessions/sess_api_active/resume", headers=headers)
         assert resp.status_code == 409
 
     def test_delete_session(self, seeded_db, client):
@@ -471,7 +492,8 @@ class TestSessionAPIEndpoints:
             id="sess_api_del", board_id="board-default",
             issue_id="issue-1", issue_key="DEV-001",
         ))
-        resp = client.delete("/api/v1/runtime/sessions/sess_api_del")
+        headers = {"Authorization": f"Bearer {self._get_token(client)}"}
+        resp = client.delete("/api/v1/runtime/sessions/sess_api_del", headers=headers)
         assert resp.status_code == 200
         session = asyncio.run(repo.get_session("sess_api_del"))
         assert session["status"] == "expired"

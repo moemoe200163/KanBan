@@ -2,8 +2,10 @@
 import logging
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from api.v1.auth_deps import require_auth
 
 from core.github.client import get_github_client
 from db.repository import find_issue_by_key, update_issue_pr_url
@@ -35,7 +37,7 @@ class CheckRunRequest(BaseModel):
 
 
 @router.post("/github/pr/create", tags=["GitHub"])
-async def create_pr(req: PRCreateRequest):
+async def create_pr(req: PRCreateRequest, current_user: dict = Depends(require_auth)):
     """Create a pull request on GitHub."""
     gh = get_github_client()
     if not gh:
@@ -62,7 +64,7 @@ async def create_pr(req: PRCreateRequest):
 
 
 @router.post("/github/issues/{issue_key}/labels", tags=["GitHub"])
-async def sync_labels(issue_key: str, req: LabelSyncRequest):
+async def sync_labels(issue_key: str, req: LabelSyncRequest, current_user: dict = Depends(require_auth)):
     """Sync labels on the GitHub PR linked to a DevFlow issue."""
     gh = get_github_client()
     if not gh:
@@ -96,7 +98,7 @@ async def sync_labels(issue_key: str, req: LabelSyncRequest):
 
 
 @router.post("/github/check-run", tags=["GitHub"])
-async def create_check_run(req: CheckRunRequest):
+async def create_check_run(req: CheckRunRequest, current_user: dict = Depends(require_auth)):
     """Create a check run on GitHub."""
     gh = get_github_client()
     if not gh:
@@ -120,7 +122,7 @@ async def create_check_run(req: CheckRunRequest):
 
 
 @router.get("/github/pr/{pr_number}", tags=["GitHub"])
-async def get_pr(pr_number: int):
+async def get_pr(pr_number: int, current_user: dict = Depends(require_auth)):
     """Get PR details from GitHub (proxy)."""
     gh = get_github_client()
     if not gh:

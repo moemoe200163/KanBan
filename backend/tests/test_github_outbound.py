@@ -1,5 +1,6 @@
 """Tests for GitHub outbound API client and endpoints."""
 import pytest
+import asyncio
 import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -171,7 +172,52 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     import main
-    return TestClient(main.app)
+    from db import database as db_module
+    from db.models import Base, User as UserModel
+    from datetime import datetime, timezone
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    db_path = "/tmp/test_github_outbound.db"
+    new_url = f"sqlite+aiosqlite:///{db_path}"
+    new_engine = create_async_engine(new_url, echo=False)
+    new_sessionmaker = async_sessionmaker(new_engine, class_=AsyncSession, expire_on_commit=False)
+
+    db_module.engine = new_engine
+    db_module.AsyncSessionLocal = new_sessionmaker
+    db_module._db_initialized = False
+    db_module.DATABASE_URL = new_url
+
+    async def _setup():
+        async with new_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        now = datetime.now(timezone.utc)
+        async with new_sessionmaker() as session:
+            from api.v1.endpoints.auth import hash_password
+            pwd_hash, _ = hash_password("gh_test_pass_123")
+            session.add(UserModel(
+                id="user_gh_test",
+                username="gh_test_user",
+                password_hash=pwd_hash,
+                role="member",
+                created_at=now,
+                updated_at=now,
+            ))
+            await session.commit()
+        db_module._db_initialized = True
+
+    asyncio.run(_setup())
+    yield TestClient(main.app)
+    new_engine.sync_engine.dispose()
+
+
+def _get_token(client) -> str:
+    resp = client.post("/api/v1/auth/token", json={
+        "username": "gh_test_user",
+        "password": "gh_test_pass_123",
+    })
+    assert resp.status_code == 200
+    return resp.json()["access_token"]
 
 
 class TestGitHubAPIEndpoints:
@@ -191,12 +237,13 @@ class TestGitHubAPIEndpoints:
         )
         mock_get_client.return_value = mock_gh
 
+        headers = {"Authorization": f"Bearer {_get_token(client)}"}
         resp = client.post("/api/v1/github/pr/create", json={
             "title": "test PR",
             "body": "body",
             "head": "feature/test",
             "base": "main",
-        })
+        }, headers=headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert resp.json()["pr_number"] == 42
@@ -204,19 +251,21 @@ class TestGitHubAPIEndpoints:
 
     def test_create_pr_missing_head(self, client):
         """POST /github/pr/create with missing head returns 422."""
+        headers = {"Authorization": f"Bearer {_get_token(client)}"}
         resp = client.post("/api/v1/github/pr/create", json={
             "title": "test",
             "body": "body",
-        })
+        }, headers=headers)
         assert resp.status_code == 422
 
     @patch("api.v1.endpoints.github_api.get_github_client")
     def test_create_pr_unconfigured(self, mock_get_client, client):
         """POST /github/pr/create returns 503 when GITHUB_TOKEN is empty."""
         mock_get_client.return_value = None
+        headers = {"Authorization": f"Bearer {_get_token(client)}"}
         resp = client.post("/api/v1/github/pr/create", json={
             "title": "test", "body": "body", "head": "feature/test",
-        })
+        }, headers=headers)
         assert resp.status_code == 503
 
     @patch("api.v1.endpoints.github_api.get_github_client")
@@ -231,9 +280,10 @@ class TestGitHubAPIEndpoints:
                 "id": "DEV-001",
                 "pr_url": "https://github.com/owner/repo/pull/42",
             }
+            headers = {"Authorization": f"Bearer {_get_token(client)}"}
             resp = client.post("/api/v1/github/issues/DEV-001/labels", json={
                 "labels": ["bug", "p1"],
-            })
+            }, headers=headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
@@ -249,12 +299,13 @@ class TestGitHubAPIEndpoints:
         }
         mock_get_client.return_value = mock_gh
 
+        headers = {"Authorization": f"Bearer {_get_token(client)}"}
         resp = client.post("/api/v1/github/check-run", json={
             "name": "DevFlow CI",
             "head_sha": "abc123",
             "status": "completed",
             "conclusion": "success",
-        })
+        }, headers=headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert resp.json()["check_run_id"] == 12345

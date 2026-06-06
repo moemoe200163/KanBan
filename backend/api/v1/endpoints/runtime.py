@@ -381,7 +381,7 @@ async def get_session(session_id: str):
 
 
 @router.post("/runtime/sessions/{session_id}/resume", tags=["Runtime"])
-async def resume_session(session_id: str):
+async def resume_session(session_id: str, current_user: dict = Depends(require_auth)):
     """Resume a paused session — transitions to active and increments total_runs."""
     from db.repository import (
         get_session as repo_get_session,
@@ -402,7 +402,7 @@ async def resume_session(session_id: str):
 
 
 @router.delete("/runtime/sessions/{session_id}", tags=["Runtime"])
-async def expire_session(session_id: str):
+async def expire_session(session_id: str, current_user: dict = Depends(require_auth)):
     """Expire a session and purge its conversation history."""
     from db.repository import (
         get_session as repo_get_session,
