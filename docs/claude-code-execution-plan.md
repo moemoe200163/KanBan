@@ -15,7 +15,7 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- Backend tests: 591/591 passed.
+- Backend tests: 604/604 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
@@ -36,7 +36,7 @@ Working:
 Not yet done:
 
 - ~~Session resume~~ ✅ (AgentSession model, session CRUD, adapter protocol, API endpoints, 27 tests).
-- ~~PR/CI automation~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred).
+- ~~PR/CI automation~~ ✅ (v1 webhook ingestion + v2 outbound API complete).
 
 ## Product Completion Principle
 
@@ -75,6 +75,7 @@ Issue exists
 | ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
 | ~~P3~~ | ~~PR/CI automation v1~~ | ~~Done~~ | ~~GitHub webhook ingestion: PR/CI state updates issue pr_url/ci_status~~ | — |
 | ~~P3~~ | ~~Session resume~~ | ~~Done~~ | ~~AgentSession model + CRUD + adapter protocol + API endpoints~~ | — |
+| ~~P3~~ | ~~PR/CI outbound API v2~~ | ~~Done~~ | ~~Shared GitHubClient, PR create, label sync, check run~~ | — |
 
 ## Required Verification
 
@@ -123,7 +124,7 @@ Deferred:
 - Agent session serialization.
 - Full auth/API-key rollout.
 - Autopilot scheduling.
-- ~~PR/CI automation.~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred)
+- ~~PR/CI automation.~~ ✅ (v1 webhook ingestion + v2 outbound API complete)
 
 ## Stop Conditions
 
