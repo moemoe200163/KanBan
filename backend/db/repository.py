@@ -13,7 +13,7 @@ empty/None on failure; writes raise so the caller can decide how to react.
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import uuid4
 
@@ -31,6 +31,7 @@ from db.models import (
     AgentWorker,
     AgentRun,
     AgentRunEvent,
+    AgentSession,
 )
 
 
@@ -1720,4 +1721,199 @@ async def list_run_events(run_id: str, limit: int = 500) -> List[dict]:
             return [r.to_dict() for r in result.scalars().all()]
     except Exception as e:
         logger.warning(f"Failed to list events for run {run_id}: {e}")
+        return []
+
+
+# Stubs for session resume (full implementation in Task 2)
+
+async def create_session(
+    *,
+    id: str,
+    board_id: str = "board-default",
+    issue_id: Optional[str] = None,
+    issue_key: Optional[str] = None,
+    harness: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Create a new agent session. Returns session as dict."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=7)
+    row = AgentSession(
+        id=id,
+        board_id=board_id,
+        issue_id=issue_id,
+        issue_key=issue_key,
+        harness=harness,
+        provider=provider,
+        model=model,
+        status="active",
+        conversation_history=[],
+        checkpoint_data={},
+        total_runs=1,
+        total_tokens=0,
+        expires_at=expires,
+        created_at=now,
+        updated_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def update_run_session_id(run_id: str, session_id: str) -> bool:
+    """Set session_id on an AgentRun. Returns True if updated, False if not found."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        row = await session.get(AgentRun, run_id)
+        if not row:
+            return False
+        row.session_id = session_id
+        await session.commit()
+        return True
+
+
+async def get_session(session_id: str) -> Optional[dict]:
+    """Return a single session as dict, or None."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get session {session_id}: {e}")
+        return None
+
+
+async def pause_session(session_id: str, last_error: Optional[str] = None) -> bool:
+    """Transition session to paused (run ended, can be resumed)."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            if not row:
+                return False
+            row.status = "paused"
+            row.last_error = last_error
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to pause session {session_id}: {e}")
+        return False
+
+
+async def complete_session(session_id: str) -> bool:
+    """Transition session to completed (terminal, no more resumption)."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            if not row:
+                return False
+            row.status = "completed"
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to complete session {session_id}: {e}")
+        return False
+
+
+async def expire_session(session_id: str) -> bool:
+    """Expire a session and purge conversation_history."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            if not row:
+                return False
+            row.status = "expired"
+            row.conversation_history = None  # purge
+            row.checkpoint_data = {}
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to expire session {session_id}: {e}")
+        return False
+
+
+async def update_session_checkpoint(
+    session_id: str,
+    *,
+    conversation_history: Optional[list] = None,
+    checkpoint_data: Optional[dict] = None,
+    provider_resume_ref: Optional[str] = None,
+    total_tokens: Optional[int] = None,
+) -> bool:
+    """Update session checkpoint data. Uses full reassignment, not mutation."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            if not row:
+                return False
+            if conversation_history is not None:
+                row.conversation_history = conversation_history
+            if checkpoint_data is not None:
+                row.checkpoint_data = checkpoint_data
+            if provider_resume_ref is not None:
+                row.provider_resume_ref = provider_resume_ref
+            if total_tokens is not None:
+                row.total_tokens = total_tokens
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to update checkpoint for session {session_id}: {e}")
+        return False
+
+
+async def resume_session(session_id: str) -> bool:
+    """Transition session from paused to active (resume started)."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            row = await session.get(AgentSession, session_id)
+            if not row or row.status != "paused":
+                return False
+            row.status = "active"
+            row.total_runs += 1
+            row.last_run_at = datetime.now(timezone.utc)
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to resume session {session_id}: {e}")
+        return False
+
+
+async def list_sessions(
+    *,
+    board_id: Optional[str] = None,
+    issue_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> list:
+    """List sessions with optional filters."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            query = select(AgentSession)
+            if board_id:
+                query = query.where(AgentSession.board_id == board_id)
+            if issue_id:
+                query = query.where(AgentSession.issue_id == issue_id)
+            if status:
+                query = query.where(AgentSession.status == status)
+            query = query.order_by(AgentSession.created_at.desc()).limit(limit)
+            result = await session.execute(query)
+            rows = result.scalars().all()
+            return [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to list sessions: {e}")
         return []
