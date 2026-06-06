@@ -155,3 +155,98 @@ class TestGitHubClient:
             result = get_github_client()
         assert result is not None
         assert isinstance(result, GitHubClient)
+
+
+# ============================================================================
+# Integration tests for GitHub outbound API endpoints
+# ============================================================================
+
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def client():
+    import main
+    return TestClient(main.app)
+
+
+class TestGitHubAPIEndpoints:
+    """Integration tests for GitHub outbound API endpoints."""
+
+    @patch("api.v1.endpoints.github_api.get_github_client")
+    def test_create_pr_success(self, mock_get_client, client):
+        """POST /github/pr/create returns PR info."""
+        mock_gh = AsyncMock()
+        mock_gh.create_pull_request.return_value = {
+            "number": 42,
+            "html_url": "https://github.com/owner/repo/pull/42",
+            "title": "test PR",
+        }
+        mock_get_client.return_value = mock_gh
+
+        resp = client.post("/api/v1/github/pr/create", json={
+            "title": "test PR",
+            "body": "body",
+            "head": "feature/test",
+            "base": "main",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["pr_number"] == 42
+
+    def test_create_pr_missing_head(self, client):
+        """POST /github/pr/create with missing head returns 422."""
+        resp = client.post("/api/v1/github/pr/create", json={
+            "title": "test",
+            "body": "body",
+        })
+        assert resp.status_code == 422
+
+    @patch("api.v1.endpoints.github_api.get_github_client")
+    def test_create_pr_unconfigured(self, mock_get_client, client):
+        """POST /github/pr/create returns 503 when GITHUB_TOKEN is empty."""
+        mock_get_client.return_value = None
+        resp = client.post("/api/v1/github/pr/create", json={
+            "title": "test", "body": "body", "head": "feature/test",
+        })
+        assert resp.status_code == 503
+
+    @patch("api.v1.endpoints.github_api.get_github_client")
+    def test_sync_labels_success(self, mock_get_client, client):
+        """POST /github/issues/{key}/labels syncs labels."""
+        mock_gh = AsyncMock()
+        mock_gh.sync_labels.return_value = True
+        mock_get_client.return_value = mock_gh
+
+        with patch("api.v1.endpoints.github_api.find_issue_by_key") as mock_find:
+            mock_find.return_value = {
+                "id": "DEV-001",
+                "pr_url": "https://github.com/owner/repo/pull/42",
+            }
+            resp = client.post("/api/v1/github/issues/DEV-001/labels", json={
+                "labels": ["bug", "p1"],
+            })
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    @patch("api.v1.endpoints.github_api.get_github_client")
+    def test_check_run_success(self, mock_get_client, client):
+        """POST /github/check-run creates check run."""
+        mock_gh = AsyncMock()
+        mock_gh.create_check_run.return_value = {
+            "id": 12345,
+            "html_url": "https://github.com/owner/repo/runs/12345",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        mock_get_client.return_value = mock_gh
+
+        resp = client.post("/api/v1/github/check-run", json={
+            "name": "DevFlow CI",
+            "head_sha": "abc123",
+            "status": "completed",
+            "conclusion": "success",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["check_run_id"] == 12345
