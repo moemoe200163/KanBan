@@ -11,7 +11,7 @@ class TestGitHubClient:
 
     @pytest.mark.asyncio
     async def test_create_pull_request_success(self):
-        """Successful PR creation returns PR dict."""
+        """Successful PR creation returns (PR dict, already_existed=False)."""
         client = GitHubClient(token="ghp_test", repo="owner/repo")
         mock_response = MagicMock()
         mock_response.status_code = 201
@@ -26,16 +26,17 @@ class TestGitHubClient:
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
             mock_http.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_http
-            result = await client.create_pull_request(
+            result, already_existed = await client.create_pull_request(
                 title="test PR", body="body", head="feature/test",
             )
         assert result is not None
         assert result["number"] == 42
         assert result["html_url"] == "https://github.com/owner/repo/pull/42"
+        assert already_existed is False
 
     @pytest.mark.asyncio
     async def test_create_pull_request_already_exists(self):
-        """422 response returns existing PR info if available."""
+        """422 response returns (existing PR dict, already_existed=True)."""
         client = GitHubClient(token="ghp_test", repo="owner/repo")
         # First call: 422 with message about existing PR
         mock_422 = MagicMock()
@@ -59,15 +60,16 @@ class TestGitHubClient:
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
             mock_http.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_http
-            result = await client.create_pull_request(
+            result, already_existed = await client.create_pull_request(
                 title="test PR", body="body", head="feature/test",
             )
         assert result is not None
         assert result["number"] == 42
+        assert already_existed is True
 
     @pytest.mark.asyncio
     async def test_create_pull_request_network_error(self):
-        """Network error returns None."""
+        """Network error returns (None, False)."""
         client = GitHubClient(token="ghp_test", repo="owner/repo")
         with patch("core.github.client.httpx.AsyncClient") as mock_cls:
             mock_http = AsyncMock()
@@ -75,10 +77,11 @@ class TestGitHubClient:
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
             mock_http.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_http
-            result = await client.create_pull_request(
+            result, already_existed = await client.create_pull_request(
                 title="test", body="body", head="feature/test",
             )
         assert result is None
+        assert already_existed is False
 
     @pytest.mark.asyncio
     async def test_sync_labels_success(self):
@@ -130,7 +133,7 @@ class TestGitHubClient:
 
     @pytest.mark.asyncio
     async def test_create_pull_request_returns_none_on_4xx(self):
-        """HTTP 4xx response returns None."""
+        """HTTP 4xx response returns (None, False)."""
         client = GitHubClient(token="ghp_test", repo="owner/repo")
         mock_branch = MagicMock()
         mock_branch.status_code = 200
@@ -144,10 +147,11 @@ class TestGitHubClient:
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
             mock_http.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_http
-            result = await client.create_pull_request(
+            result, already_existed = await client.create_pull_request(
                 title="test", body="body", head="feature/test",
             )
         assert result is None
+        assert already_existed is False
 
     def test_get_github_client_returns_client_when_configured(self):
         """Returns client when both env vars are set."""
@@ -177,11 +181,14 @@ class TestGitHubAPIEndpoints:
     def test_create_pr_success(self, mock_get_client, client):
         """POST /github/pr/create returns PR info."""
         mock_gh = AsyncMock()
-        mock_gh.create_pull_request.return_value = {
-            "number": 42,
-            "html_url": "https://github.com/owner/repo/pull/42",
-            "title": "test PR",
-        }
+        mock_gh.create_pull_request.return_value = (
+            {
+                "number": 42,
+                "html_url": "https://github.com/owner/repo/pull/42",
+                "title": "test PR",
+            },
+            False,
+        )
         mock_get_client.return_value = mock_gh
 
         resp = client.post("/api/v1/github/pr/create", json={
@@ -193,6 +200,7 @@ class TestGitHubAPIEndpoints:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert resp.json()["pr_number"] == 42
+        assert resp.json()["already_existed"] is False
 
     def test_create_pr_missing_head(self, client):
         """POST /github/pr/create with missing head returns 422."""

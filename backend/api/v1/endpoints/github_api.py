@@ -1,11 +1,14 @@
 """GitHub outbound API endpoints."""
+import logging
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.github.client import get_github_client
-from db.repository import find_issue_by_key
+from db.repository import find_issue_by_key, update_issue_pr_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -38,7 +41,7 @@ async def create_pr(req: PRCreateRequest):
     if not gh:
         raise HTTPException(status_code=503, detail="GitHub not configured (set GITHUB_TOKEN and GITHUB_REPO)")
 
-    result = await gh.create_pull_request(
+    result, already_existed = await gh.create_pull_request(
         title=req.title, body=req.body, head=req.head, base=req.base,
     )
     if result is None:
@@ -46,16 +49,15 @@ async def create_pr(req: PRCreateRequest):
 
     # Link PR to issue if issue_key provided
     if req.issue_key:
-        from db.repository import find_issue_by_key as _find_issue, update_issue_pr_url as _update_pr
-        issue = await _find_issue(req.issue_key)
+        issue = await find_issue_by_key(req.issue_key)
         if issue:
-            await _update_pr(issue["id"], result["html_url"])
+            await update_issue_pr_url(issue["id"], result["html_url"])
 
     return {
         "ok": True,
         "pr_url": result["html_url"],
         "pr_number": result["number"],
-        "already_existed": False,
+        "already_existed": already_existed,
     }
 
 
@@ -81,8 +83,9 @@ async def sync_labels(issue_key: str, req: LabelSyncRequest):
             try:
                 pr_number = int(parts[idx + 1])
             except ValueError:
-                pass
+                logger.warning("Failed to parse PR number from URL segment: %s", parts[idx + 1])
     if not pr_number:
+        logger.warning("Could not extract PR number from pr_url: %s", pr_url)
         raise HTTPException(status_code=422, detail="Cannot extract PR number from pr_url")
 
     ok = await gh.sync_labels(issue_number=pr_number, labels=req.labels)
@@ -127,4 +130,4 @@ async def get_pr(pr_number: int):
     if not result:
         raise HTTPException(status_code=404, detail=f"PR #{pr_number} not found")
 
-    return result
+    return {"ok": True, "pr": result}

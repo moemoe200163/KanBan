@@ -1,7 +1,7 @@
 """Shared GitHub REST API client for outbound API calls."""
 import os
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 import httpx
 
@@ -27,8 +27,8 @@ class GitHubClient:
         body: str,
         head: str,
         base: str = "main",
-    ) -> Optional[dict]:
-        """Create a PR. Returns PR dict or None on failure."""
+    ) -> Tuple[Optional[dict], bool]:
+        """Create a PR. Returns (PR dict or None, already_existed)."""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 pr_resp = await client.post(
@@ -42,17 +42,20 @@ class GitHubClient:
                         "number": data["number"],
                         "html_url": data["html_url"],
                         "title": data.get("title", ""),
-                    }
+                    }, False
 
                 # Handle "PR already exists"
                 if pr_resp.status_code == 422:
-                    return await self._find_existing_pr(client, head, base)
+                    existing = await self._find_existing_pr(client, head, base)
+                    if existing is not None:
+                        return existing, True
+                    return None, False
 
                 logger.warning("PR creation failed: %s", pr_resp.status_code)
-                return None
+                return None, False
         except Exception as e:
             logger.warning("Failed to create PR: %s", e)
-            return None
+            return None, False
 
     async def _find_existing_pr(
         self, client: httpx.AsyncClient, head: str, base: str = "main"
