@@ -15,7 +15,7 @@ Working:
 - ECC dispatch creates jobs and returns immediately.
 - Safe runner transitions jobs through `queued -> running -> review_required`.
 - Job state visible in UI (card detail panel, sidebar logs).
-- Backend tests: 564/564 passed.
+- Backend tests: 591/591 passed.
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`).
 - Handoff typed payload with lane-specific Pydantic validation (P1.5).
 - Structured 422 error responses for invalid payloads (P1.5).
@@ -35,7 +35,7 @@ Working:
 
 Not yet done:
 
-- Session resume implementation (schema designed at `docs/superpowers/specs/2026-06-06-session-resume-schema.md`, requires real execution stable first).
+- ~~Session resume~~ ✅ (AgentSession model, session CRUD, adapter protocol, API endpoints, 27 tests).
 - ~~PR/CI automation~~ ✅ (v1 webhook ingestion done; outbound GitHub API calls deferred).
 
 ## Product Completion Principle
@@ -74,7 +74,7 @@ Issue exists
 | ~~P2~~ | ~~Real Claude/ECC execution~~ | ~~Done~~ | ~~Safe runner default; real runner opt-in via ALLOW_REAL_LLM_EXECUTION=true~~ | Do not run arbitrary commands from user input |
 | ~~P3~~ | ~~Delivery Orchestrator~~ | ~~Done~~ | ~~Handoff → review → delivery → done flow works end-to-end~~ | — |
 | ~~P3~~ | ~~PR/CI automation v1~~ | ~~Done~~ | ~~GitHub webhook ingestion: PR/CI state updates issue pr_url/ci_status~~ | — |
-| P3 | Session resume | Schema designed; implementation pending real execution stability | Interrupted jobs can resume with stored session metadata | Do not implement before real runner is stable |
+| ~~P3~~ | ~~Session resume~~ | ~~Done~~ | ~~AgentSession model + CRUD + adapter protocol + API endpoints~~ | — |
 
 ## Required Verification
 
@@ -119,7 +119,7 @@ Allowed now:
 Deferred:
 
 - Multi-harness execution.
-- Session resume.
+- ~~Session resume~~ ✅ (schema + implementation complete).
 - Agent session serialization.
 - Full auth/API-key rollout.
 - Autopilot scheduling.
