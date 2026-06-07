@@ -502,10 +502,14 @@ async def receive_github_webhook(
     """
     body = await request.body()
 
-    # Verify signature
-    if x_hub_signature_256 and not verify_webhook_signature(body, x_hub_signature_256):
-        logger.warning("GitHub webhook signature verification failed (delivery=%s)", x_github_delivery)
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    # Verify signature — when WEBHOOK_SECRET is set, signature is required
+    if WEBHOOK_SECRET:
+        if not x_hub_signature_256:
+            logger.warning("GitHub webhook missing signature (delivery=%s)", x_github_delivery)
+            raise HTTPException(status_code=401, detail="Missing webhook signature")
+        if not verify_webhook_signature(body, x_hub_signature_256):
+            logger.warning("GitHub webhook signature verification failed (delivery=%s)", x_github_delivery)
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     # Parse payload
     try:

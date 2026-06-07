@@ -338,14 +338,20 @@ async def update_issue_ci_status(issue_id: str, ci_status: str) -> Optional[dict
         return None
 
 
-async def find_issue_by_key(key: str) -> "Optional[dict]":
-    """Find issue by exact key (e.g. DEV-123). Returns dict or None."""
+async def find_issue_by_key(key: str, board_id: "str | None" = None) -> "Optional[dict]":
+    """Find issue by exact key (e.g. DEV-123). Returns dict or None.
+
+    Args:
+        key: Issue key to search for
+        board_id: Optional board ID to scope the search (prevents cross-board collisions)
+    """
     try:
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
-            result = await session.execute(
-                select(IssueModel).where(IssueModel.key == key)
-            )
+            stmt = select(IssueModel).where(IssueModel.key == key)
+            if board_id:
+                stmt = stmt.where(IssueModel.board_id == board_id)
+            result = await session.execute(stmt)
             issue = result.scalar_one_or_none()
             if not issue:
                 return None

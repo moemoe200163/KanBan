@@ -5,7 +5,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from api.v1.auth_deps import require_auth
+from api.v1.auth_deps import require_auth, require_admin
 
 from core.github.client import get_github_client
 from db.repository import find_issue_by_key, update_issue_pr_url
@@ -37,7 +37,7 @@ class CheckRunRequest(BaseModel):
 
 
 @router.post("/github/pr/create", tags=["GitHub"])
-async def create_pr(req: PRCreateRequest, current_user: dict = Depends(require_auth)):
+async def create_pr(req: PRCreateRequest, current_user: dict = Depends(require_admin)):
     """Create a pull request on GitHub."""
     gh = get_github_client()
     if not gh:
@@ -98,7 +98,7 @@ async def sync_labels(issue_key: str, req: LabelSyncRequest, current_user: dict 
 
 
 @router.post("/github/check-run", tags=["GitHub"])
-async def create_check_run(req: CheckRunRequest, current_user: dict = Depends(require_auth)):
+async def create_check_run(req: CheckRunRequest, current_user: dict = Depends(require_admin)):
     """Create a check run on GitHub."""
     gh = get_github_client()
     if not gh:

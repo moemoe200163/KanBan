@@ -409,3 +409,28 @@ class TestGitHubWebhookSignature:
             headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "test-bad-1"},
         )
         assert resp.status_code == 400
+
+    def test_missing_signature_when_secret_required(self, client, seeded_db, monkeypatch):
+        """When WEBHOOK_SECRET is set, missing X-Hub-Signature-256 → 401."""
+        monkeypatch.setattr("api.v1.endpoints.webhooks.WEBHOOK_SECRET", "test-secret-123")
+        resp = client.post(
+            "/api/v1/webhooks/github",
+            json={"action": "opened", "pull_request": {"number": 1, "title": "t",
+                   "body": "", "html_url": "", "head": {"ref": "main"},
+                   "merged": False, "labels": []}},
+            headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "test-miss-1"},
+        )
+        assert resp.status_code == 401
+        assert "Missing" in resp.json()["detail"]
+
+    def test_missing_signature_when_secret_not_set(self, client, seeded_db, monkeypatch):
+        """When WEBHOOK_SECRET is empty, missing signature → 200 (dev mode)."""
+        monkeypatch.setattr("api.v1.endpoints.webhooks.WEBHOOK_SECRET", "")
+        resp = client.post(
+            "/api/v1/webhooks/github",
+            json={"action": "opened", "pull_request": {"number": 1, "title": "t",
+                   "body": "", "html_url": "", "head": {"ref": "main"},
+                   "merged": False, "labels": []}},
+            headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "test-dev-1"},
+        )
+        assert resp.status_code == 200

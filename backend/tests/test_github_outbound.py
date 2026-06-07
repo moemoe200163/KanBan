@@ -199,7 +199,7 @@ def client():
                 id="user_gh_test",
                 username="gh_test_user",
                 password_hash=pwd_hash,
-                role="member",
+                role="admin",
                 created_at=now,
                 updated_at=now,
             ))
