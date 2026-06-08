@@ -39,7 +39,7 @@ const defaultProvider = ref('')
 const defaultModel = ref('')
 const allowedCommands = ref('')
 const requiredCompletionFields = ref('')
-const timeoutSeconds = ref(300)
+const timeoutSeconds = ref(1800)
 const retryPolicy = ref<RetryPolicy>('none')
 const retryMax = ref(0)
 const nextRoles = ref('')
@@ -75,7 +75,7 @@ function resetForm() {
     defaultModel.value = ''
     allowedCommands.value = ''
     requiredCompletionFields.value = ''
-    timeoutSeconds.value = 300
+    timeoutSeconds.value = 1800
     retryPolicy.value = 'none'
     retryMax.value = 0
     nextRoles.value = ''
@@ -103,8 +103,8 @@ async function submit() {
     localError.value = 'Key is required'
     return
   }
-  if (key.value && !/^[a-z0-9_\-]+$/.test(key.value)) {
-    localError.value = 'Key must be lowercase alphanumeric with hyphens or underscores'
+  if (key.value && !/^[a-z][a-z0-9_\-]*$/.test(key.value)) {
+    localError.value = 'Key must start with a lowercase letter and contain only lowercase letters, digits, hyphens, or underscores'
     return
   }
 
@@ -227,7 +227,7 @@ async function submit() {
             <div class="agent-role-modal__row">
               <label class="agent-role-modal__field">
                 <span>Timeout (seconds)</span>
-                <input v-model.number="timeoutSeconds" type="number" min="0" />
+                <input v-model.number="timeoutSeconds" type="number" min="1" max="86400" />
               </label>
               <label class="agent-role-modal__field">
                 <span>Retry Policy</span>
@@ -239,7 +239,7 @@ async function submit() {
               </label>
               <label class="agent-role-modal__field">
                 <span>Max Retries</span>
-                <input v-model.number="retryMax" type="number" min="0" />
+                <input v-model.number="retryMax" type="number" min="0" max="10" />
               </label>
             </div>
 
