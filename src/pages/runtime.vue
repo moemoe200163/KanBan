@@ -253,7 +253,9 @@ const runStats = computed(() => {
 .runtime-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   padding: var(--space-6);
   gap: var(--space-4);
   overflow-y: auto;
@@ -432,7 +434,8 @@ const runStats = computed(() => {
   display: grid;
   grid-template-columns: 360px 1fr;
   gap: var(--space-4);
-  height: calc(100vh - 280px);
+  flex: 1;
+  min-height: 0;
 }
 
 .runtime-page__run-list {

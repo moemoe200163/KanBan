@@ -293,7 +293,8 @@ const toggleCollapse = () => {
   top: 0;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   width: var(--sidebar-w, 260px);
   padding: 18px 14px;
   background: var(--sidebar-bg);

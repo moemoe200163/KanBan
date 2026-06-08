@@ -519,7 +519,14 @@ function toggleEvent(webhook: WebhookEndpoint, eventId: string) {
 
 <style scoped>
 .settings-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   padding: var(--space-6);
+  gap: var(--space-6);
+  overflow-y: auto;
   max-width: 1200px;
   margin: 0 auto;
 }
@@ -894,7 +901,7 @@ function toggleEvent(webhook: WebhookEndpoint, eventId: string) {
   border-radius: var(--radius-xl);
   width: 100%;
   max-width: 480px;
-  max-height: 90vh;
+  max-height: calc(100dvh - 40px);
   overflow: hidden;
   display: flex;
   flex-direction: column;

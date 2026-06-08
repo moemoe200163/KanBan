@@ -45,11 +45,12 @@ onMounted(async () => {
 .command-center {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
   padding: 22px;
   gap: 18px;
-  overflow: auto;
+  overflow: hidden;
 }
 .command-center__topbar {
   display: flex;

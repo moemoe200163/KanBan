@@ -190,7 +190,7 @@ onMounted(async () => {
 
 <style scoped>
 .agents-page {
-  display: flex; flex-direction: column; height: 100vh; min-width: 0;
+  display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0;
   padding: 22px; gap: 18px; overflow-y: auto;
 }
 .agents-page__topbar { display: flex; align-items: flex-start; justify-content: space-between; }

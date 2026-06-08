@@ -30,7 +30,7 @@ onUnmounted(() => {
   --sidebar-w: 260px;
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100dvh;
   background:
     radial-gradient(circle at top left, rgba(204, 120, 92, 0.08), transparent 30rem),
     var(--canvas);
@@ -43,7 +43,8 @@ onUnmounted(() => {
 
 .app-shell__main {
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
+  height: 100dvh;
   overflow: hidden;
 }
 
