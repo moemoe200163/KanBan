@@ -8,7 +8,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from db import repository as repo
-from core.kanban_protocol.lanes import get_lane
+from core.kanban_protocol.lanes import get_lane_db
 from core.kanban_protocol.payloads import (
     LANE_PAYLOADS,
     PayloadValidationError,
@@ -36,7 +36,7 @@ class HandoffService:
     ) -> dict:
         # Validate target lane up front so callers fail fast.
         try:
-            get_lane(to_lane)
+            await get_lane_db(to_lane)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -91,7 +91,7 @@ class HandoffService:
                 "only 'accepted' handoffs can be dispatched"
             )
 
-        lane = get_lane(current["toLane"])
+        lane = await get_lane_db(current["toLane"])
         payload = current.get("payload") or {}
 
         if lane.human_approval_required and not payload.get("approver"):
@@ -137,7 +137,7 @@ class HandoffService:
                 "only 'in_progress' or 'accepted' handoffs can be completed"
             )
 
-        lane = get_lane(current["toLane"])
+        lane = await get_lane_db(current["toLane"])
         existing = current.get("payload") or {}
         caller = payload or {}
         final_payload = {**existing, **caller}
@@ -314,7 +314,7 @@ class HandoffService:
             # Use lane.next_lanes to suggest/create the next handoff.
             to_lane = current.get("toLane", "")
             try:
-                lane = get_lane(to_lane)
+                lane = await get_lane_db(to_lane)
                 next_lane_candidates = lane.next_lanes
             except KeyError:
                 next_lane_candidates = []

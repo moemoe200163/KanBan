@@ -4,19 +4,21 @@
  *
  * Tabs:
  *   Runtime Matrix (default) — profile × harness execution state
- *   Agent Roles              — 8 Kanban Protocol agent roles
+ *   Agent Roles              — Kanban Protocol agent roles (CRUD)
  *
  * Tab state persisted in ?tab= query param.
  */
 
+import { ref, computed, onMounted, watch } from 'vue'
 import { useBoardStore } from '~/stores/board'
-import { Bot, Circle, Loader2, XCircle } from 'lucide-vue-next'
-import type { WorkerLane, Handoff } from '~/types'
-// Explicit import: AgentRoleMatrix lives in `components/lane/`, so
-// Nuxt's auto-import registers it as `LaneAgentRoleMatrix`. Without
-// this explicit import, `<AgentRoleMatrix>` is rendered as a literal
-// custom element (`<agentrolematrix>`) and the roles matrix never shows.
+import { Circle, Loader2, XCircle, Plus, Search } from 'lucide-vue-next'
+import type { Handoff, AgentRole } from '~/types'
+// Explicit imports: components in `components/lane/` are auto-imported with
+// a `Lane` prefix. Without explicit imports, `<AgentRoleMatrix>` renders as
+// a literal custom element and never displays.
 import AgentRoleMatrix from '~/components/lane/AgentRoleMatrix.vue'
+import AgentRoleFormModal from '~/components/lane/AgentRoleFormModal.vue'
+import AgentRoleDetailDrawer from '~/components/lane/AgentRoleDetailDrawer.vue'
 
 const boardStore = useBoardStore()
 const route = useRoute()
@@ -84,19 +86,25 @@ const getStatusColor = (status: string) => {
 
 // --- Agent Roles data ---
 
-const lanes = ref<WorkerLane[]>([])
 const handoffs = ref<Handoff[]>([])
 
-// Pre-fetch roles data on mount (lightweight)
+// Role search / filter state
+const roleSearchQuery = ref('')
+const roleStatusFilter = ref<'all' | 'active' | 'disabled'>('all')
+
+// Modal / drawer state
+const isFormModalVisible = ref(false)
+const editingRole = ref<AgentRole | null>(null)
+const isDetailDrawerVisible = ref(false)
+const viewingRole = ref<AgentRole | null>(null)
+
+// Fetch roles from store + handoffs from issues
 onMounted(async () => {
   const config = useRuntimeConfig()
-  const [lanesRes, boardRes] = await Promise.allSettled([
-    $fetch<{ lanes: WorkerLane[] }>(`${config.public.apiBase}/lanes`),
+  await Promise.allSettled([
+    boardStore.fetchAgentRoles(),
     boardStore.columns.length ? Promise.resolve() : boardStore.fetchBoard(),
   ])
-  if (lanesRes.status === 'fulfilled') {
-    lanes.value = lanesRes.value.lanes
-  }
   // Collect non-terminal handoffs
   const allIssues = boardStore.columns.flatMap(c => c.issues)
   const handoffResults = await Promise.allSettled(
@@ -111,6 +119,69 @@ onMounted(async () => {
     .filter((r): r is PromiseFulfilledResult<Handoff[]> => r.status === 'fulfilled')
     .flatMap(r => r.value)
 })
+
+// Filtered roles for the matrix
+const filteredRoles = computed(() => {
+  let roles = boardStore.agentRoles
+
+  // Status filter
+  if (roleStatusFilter.value === 'active') {
+    roles = roles.filter(r => r.enabled)
+  } else if (roleStatusFilter.value === 'disabled') {
+    roles = roles.filter(r => !r.enabled)
+  }
+
+  // Search filter
+  const q = roleSearchQuery.value.toLowerCase().trim()
+  if (q) {
+    roles = roles.filter(r =>
+      r.displayName.toLowerCase().includes(q)
+      || r.key.toLowerCase().includes(q)
+      || r.description.toLowerCase().includes(q)
+    )
+  }
+
+  return roles
+})
+
+// --- Form modal handlers ---
+
+function openCreateRoleModal() {
+  editingRole.value = null
+  isFormModalVisible.value = true
+}
+
+function openEditRoleModal(role: AgentRole) {
+  editingRole.value = role
+  isFormModalVisible.value = true
+}
+
+function closeFormModal() {
+  isFormModalVisible.value = false
+  editingRole.value = null
+}
+
+function onRoleSaved(_role: AgentRole) {
+  // Store action already refreshes the list
+  closeFormModal()
+}
+
+// --- Detail drawer handlers ---
+
+function openDetailDrawer(role: AgentRole) {
+  viewingRole.value = role
+  isDetailDrawerVisible.value = true
+}
+
+function closeDetailDrawer() {
+  isDetailDrawerVisible.value = false
+  viewingRole.value = null
+}
+
+function onEditFromDrawer(role: AgentRole) {
+  closeDetailDrawer()
+  openEditRoleModal(role)
+}
 </script>
 
 <template>
@@ -174,17 +245,73 @@ onMounted(async () => {
 
     <!-- Agent Roles -->
     <div v-show="activeTab === 'roles'" class="agents-page__roles">
-      <div v-if="lanes.length > 0" class="roles-content">
-        <div class="roles-header">
-          <p class="roles-desc">
-            Subagent role definitions. Each role specifies allowed profiles,
-            completion requirements, and approval policies.
-          </p>
+      <!-- Sticky header with search, filter, and New Role button -->
+      <div class="roles-toolbar">
+        <div class="roles-toolbar__left">
+          <h2 class="roles-toolbar__title">Agent Roles</h2>
+          <span class="roles-toolbar__count">{{ filteredRoles.length }} roles</span>
         </div>
-        <AgentRoleMatrix :lanes="lanes" :handoffs="handoffs" />
+        <div class="roles-toolbar__right">
+          <div class="roles-toolbar__search">
+            <Search :size="14" class="roles-toolbar__search-icon" />
+            <input
+              v-model="roleSearchQuery"
+              type="text"
+              placeholder="Search roles..."
+              class="roles-toolbar__search-input"
+              data-testid="role-search-input"
+            />
+          </div>
+          <select
+            v-model="roleStatusFilter"
+            class="roles-toolbar__filter"
+            data-testid="role-status-filter"
+          >
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="disabled">Disabled</option>
+          </select>
+          <button
+            class="roles-toolbar__new-btn"
+            data-testid="new-role-btn"
+            @click="openCreateRoleModal"
+          >
+            <Plus :size="14" />
+            New Role
+          </button>
+        </div>
+      </div>
+
+      <div v-if="boardStore.agentRoles.length > 0" class="roles-content">
+        <p class="roles-desc">
+          Subagent role definitions. Each role specifies allowed profiles,
+          completion requirements, and approval policies.
+        </p>
+        <AgentRoleMatrix
+          :roles="filteredRoles"
+          :handoffs="handoffs"
+          @edit="openEditRoleModal"
+          @view-detail="openDetailDrawer"
+        />
       </div>
       <p v-else class="roles-loading">Loading roles from backend...</p>
     </div>
+
+    <!-- Form Modal -->
+    <AgentRoleFormModal
+      :role="editingRole"
+      :visible="isFormModalVisible"
+      @close="closeFormModal"
+      @saved="onRoleSaved"
+    />
+
+    <!-- Detail Drawer -->
+    <AgentRoleDetailDrawer
+      :role="viewingRole"
+      :visible="isDetailDrawerVisible"
+      @close="closeDetailDrawer"
+      @edit="onEditFromDrawer"
+    />
   </section>
 </template>
 
@@ -250,7 +377,56 @@ onMounted(async () => {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Roles */
-.agents-page__roles { flex: 1; overflow-x: auto; }
+.agents-page__roles { flex: 1; overflow-x: auto; display: flex; flex-direction: column; gap: 16px; }
+
+/* Roles toolbar */
+.roles-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; position: sticky; top: 0; z-index: 10;
+  padding: 12px 0; background: var(--canvas);
+  border-bottom: 1px solid var(--hairline);
+}
+.roles-toolbar__left { display: flex; align-items: baseline; gap: 8px; }
+.roles-toolbar__title {
+  margin: 0; font-family: var(--font-display); font-size: 1.1rem;
+  font-weight: 700; color: var(--ink);
+}
+.roles-toolbar__count {
+  font-size: 0.8125rem; color: var(--muted);
+}
+.roles-toolbar__right {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.roles-toolbar__search {
+  position: relative; display: flex; align-items: center;
+}
+.roles-toolbar__search-icon {
+  position: absolute; left: 8px; color: var(--muted); pointer-events: none;
+}
+.roles-toolbar__search-input {
+  padding: 7px 10px 7px 28px; font-size: 0.8125rem;
+  color: var(--ink); background: var(--surface-card);
+  border: 1px solid var(--hairline); border-radius: 8px;
+  width: 200px; outline: none;
+}
+.roles-toolbar__search-input:focus {
+  border-color: var(--primary);
+}
+.roles-toolbar__filter {
+  padding: 7px 10px; font-size: 0.8125rem;
+  color: var(--ink); background: var(--surface-card);
+  border: 1px solid var(--hairline); border-radius: 8px;
+  cursor: pointer;
+}
+.roles-toolbar__new-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 7px 12px; font-size: 0.8125rem; font-weight: 700;
+  color: var(--on-primary); background: var(--primary);
+  border: 1px solid var(--primary); border-radius: 8px;
+  cursor: pointer; white-space: nowrap;
+}
+.roles-toolbar__new-btn:hover { opacity: 0.9; }
+
 .roles-content { display: flex; flex-direction: column; gap: 16px; }
 .roles-desc { color: var(--muted); font-size: 0.875rem; }
 .roles-loading { color: var(--muted); font-size: 0.875rem; font-style: italic; }

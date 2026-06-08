@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile, Handoff, HandoffCreateRequest, HandoffDispatchRequest } from '~/types'
+import type { BoardState, Issue, IssueStatus, Priority, AIAgentStatus, HarnessType, Column, ECCLogEntry, PRDetails, ECCDispatchJob, ECCProfile, Handoff, HandoffCreateRequest, HandoffDispatchRequest, AgentRole } from '~/types'
 import { COLUMN_CONFIG, ECC_COMMAND_MAP } from '~/types'
 import { useECCStreamSingleton } from '~/composables/useECCStream'
 import { useDependencyGraph } from '~/composables/useDependencyGraph'
@@ -444,7 +444,8 @@ export const useBoardStore = defineStore('board', {
     jobsForIssue: {},
     searchQuery: '',
     profileFilter: 'all',
-    harnessFilter: 'all'
+    harnessFilter: 'all',
+    agentRoles: []
   }),
 
   getters: {
@@ -1799,6 +1800,50 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         console.warn('[BoardStore] cancelHandoff failed:', e)
         return null
       }
+    },
+
+    // ------------------------------------------------------------------
+    // Agent Role CRUD actions
+    // ------------------------------------------------------------------
+
+    async fetchAgentRoles() {
+      const config = useRuntimeConfig()
+      try {
+        const res = await $fetch<{ roles: AgentRole[] }>(`${config.public.apiBase}/agent-roles`)
+        this.agentRoles = res.roles
+      } catch (e) {
+        console.error('Failed to fetch agent roles:', e)
+      }
+    },
+
+    async createAgentRole(data: Record<string, unknown>) {
+      const config = useRuntimeConfig()
+      const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles`, {
+        method: 'POST',
+        body: data,
+      })
+      await this.fetchAgentRoles()
+      return res
+    },
+
+    async updateAgentRole(key: string, data: Record<string, unknown>) {
+      const config = useRuntimeConfig()
+      const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}`, {
+        method: 'PUT',
+        body: data,
+      })
+      await this.fetchAgentRoles()
+      return res
+    },
+
+    async toggleAgentRoleEnabled(key: string, enabled: boolean) {
+      const config = useRuntimeConfig()
+      const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}/enabled`, {
+        method: 'PATCH',
+        body: { enabled },
+      })
+      await this.fetchAgentRoles()
+      return res
     }
   }
 })

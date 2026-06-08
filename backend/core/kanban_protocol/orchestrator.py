@@ -32,10 +32,10 @@ async def create_job_for_handoff(
     Otherwise a safe-runner ECC job is created as before.
     """
     from db import repository as repo
-    from core.kanban_protocol.lanes import get_lane
+    from core.kanban_protocol.lanes import get_lane_db
 
     # Build a command from the lane contract.
-    lane = get_lane(to_lane)
+    lane = await get_lane_db(to_lane)
     command = lane.allowed_commands[0] if lane.allowed_commands else "/loop-start"
 
     # Check the real execution gate.

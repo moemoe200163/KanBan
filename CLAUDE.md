@@ -52,11 +52,12 @@ All P0 issues are resolved. No blocking known problems.
 
 - `GET /api/v1/board` returns seed issues ✅
 - Backend startup clean (no DB warnings) ✅
-- Backend tests pass (627/627) ✅
+- Backend tests pass (657/657) ✅
 - E2E suite passes (37/37 desktop, Playwright installed) ✅
 - Single sidebar path (`src/components/sidebar/Sidebar.vue`) ✅
 - P1.5 Handoff typed payload + structured 422 ✅
 - P1.6 Issue Detail evidence display (HandoffCard) ✅
+- Agent Roles DB-backed (8 system roles seeded from WORKER_LANES, CRUD API at /api/v1/agent-roles) ✅
 
 ## Allowed P0 Architecture
 
@@ -132,6 +133,7 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 13. ~~PR/CI automation v1 — GitHub webhook ingestion~~ ✅
 14. ~~PR/CI outbound API v2 — shared client, PR create, label sync, check run~~ ✅
 15. ~~Full auth rollout — RBAC on admin-only endpoints, require_admin dependency, LLM write endpoints admin-gated~~ ✅
+16. ~~Agent Roles CRUD — DB-backed role registry, CRUD API, frontend management (FormModal, DetailDrawer, Matrix upgrade)~~ ✅
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
 `archive/security-scope-spike-2026-06-03` — do not merge into mainline

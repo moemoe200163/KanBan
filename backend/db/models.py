@@ -24,6 +24,10 @@ from sqlalchemy.orm import DeclarativeBase
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 
 
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models."""
     pass
@@ -853,4 +857,61 @@ class AgentSession(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "lastRunAt": self.last_run_at.isoformat() if self.last_run_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Agent Roles — configurable role definitions for dispatch and completion
+# ---------------------------------------------------------------------------
+
+
+class AgentRole(Base):
+    """
+    Configurable agent role definition.
+
+    Seeded from WORKER_LANES on startup; admin-editable at runtime.
+    Controls dispatch routing, allowed providers, completion payload
+    requirements, and human-approval gates.
+    """
+    __tablename__ = "agent_roles"
+
+    id = Column(String(64), primary_key=True)
+    key = Column(String(32), unique=True, nullable=False, index=True)
+    display_name = Column(String(128), nullable=False)
+    description = Column(String(512), default="")
+    allowed_profiles = Column(JSON, default=list)
+    default_provider = Column(String(32), default="")
+    default_model = Column(String(128), default="")
+    allowed_commands = Column(JSON, default=list)
+    timeout_seconds = Column(Integer, default=1800)
+    retry_policy = Column(String(16), default="none")
+    retry_max = Column(Integer, default=0)
+    next_roles = Column(JSON, default=list)
+    human_approval_required = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    is_system = Column(Boolean, default=False)
+    required_completion_fields = Column(JSON, default=list)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "key": self.key,
+            "displayName": self.display_name,
+            "description": self.description,
+            "allowedProfiles": self.allowed_profiles or [],
+            "defaultProvider": self.default_provider,
+            "defaultModel": self.default_model,
+            "allowedCommands": self.allowed_commands or [],
+            "timeoutSeconds": self.timeout_seconds,
+            "retryPolicy": self.retry_policy,
+            "retryMax": self.retry_max,
+            "nextRoles": self.next_roles or [],
+            "humanApprovalRequired": self.human_approval_required,
+            "enabled": self.enabled,
+            "isSystem": self.is_system,
+            "requiredCompletionFields": self.required_completion_fields or [],
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

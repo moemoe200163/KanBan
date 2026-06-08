@@ -242,6 +242,7 @@ export interface BoardState {
   searchQuery: string
   profileFilter: string
   harnessFilter: string
+  agentRoles: AgentRole[]
 }
 
 // ECC Command Mapping
@@ -342,6 +343,27 @@ export interface WorkerLane {
   retryMax: number
   nextLanes: string[]
   humanApprovalRequired: boolean
+}
+
+export interface AgentRole {
+  id: string
+  key: string
+  displayName: string
+  description: string
+  allowedProfiles: string[]
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+  nextRoles: string[]
+  humanApprovalRequired: boolean
+  enabled: boolean
+  isSystem: boolean
+  createdAt: string | null
+  updatedAt: string | null
 }
 
 export interface HandoffPreview {

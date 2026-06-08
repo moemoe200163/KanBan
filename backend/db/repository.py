@@ -23,6 +23,7 @@ from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 from db import database as _db
 from db.models import (
     Issue as IssueModel,
+    IssueHandoff,
     JobModel,
     AuditLog,
     IssueEvent,
@@ -32,6 +33,7 @@ from db.models import (
     AgentRun,
     AgentRunEvent,
     AgentSession,
+    AgentRole,
 )
 
 
@@ -97,6 +99,14 @@ __all__ = [
     "update_run_status",
     "append_run_event",
     "list_run_events",
+    # Agent Roles
+    "seed_default_roles",
+    "list_agent_roles",
+    "get_agent_role",
+    "create_agent_role",
+    "update_agent_role",
+    "set_agent_role_enabled",
+    "count_active_handoffs_for_role",
 ]
 
 
@@ -1923,3 +1933,190 @@ async def list_sessions(
     except Exception as e:
         logger.warning(f"Failed to list sessions: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Agent Roles
+# ---------------------------------------------------------------------------
+
+
+async def seed_default_roles() -> int:
+    """Seed default agent roles from WORKER_LANES.
+
+    Upserts each lane into the agent_roles table. System roles that
+    already exist (same key + is_system=True) are skipped. Returns the
+    number of rows inserted (0 if all already exist or on error).
+    """
+    from core.kanban_protocol.lanes import WORKER_LANES
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            count = 0
+            for lane in WORKER_LANES.values():
+                # Skip if a system role with this key already exists
+                existing = await session.execute(
+                    select(AgentRole).where(
+                        AgentRole.key == lane.key,
+                        AgentRole.is_system == True,
+                    )
+                )
+                if existing.scalar_one_or_none() is not None:
+                    continue
+
+                # Compute required_completion_fields from LANE_PAYLOADS
+                completion_fields: list[str] = []
+                try:
+                    from core.kanban_protocol.payloads import LANE_PAYLOADS
+                    if lane.key in LANE_PAYLOADS:
+                        completion_fields = list(
+                            LANE_PAYLOADS[lane.key].model_fields.keys()
+                        )
+                except Exception:
+                    pass  # payloads not available; leave empty
+
+                row = AgentRole(
+                    id=f"role_{lane.key}",
+                    key=lane.key,
+                    display_name=lane.display_name,
+                    description=lane.description,
+                    allowed_profiles=lane.allowed_profiles,
+                    default_provider=lane.default_provider,
+                    default_model=lane.default_model,
+                    allowed_commands=lane.allowed_commands,
+                    timeout_seconds=lane.timeout_seconds,
+                    retry_policy=lane.retry_policy,
+                    retry_max=lane.retry_max,
+                    next_roles=lane.next_lanes,
+                    human_approval_required=lane.human_approval_required,
+                    enabled=True,
+                    is_system=True,
+                    required_completion_fields=completion_fields,
+                )
+                session.add(row)
+                count += 1
+
+            if count > 0:
+                await session.commit()
+            return count
+    except Exception as e:
+        logger.warning(f"Failed to seed default agent roles: {e}")
+        return 0
+
+
+async def list_agent_roles(include_disabled: bool = True) -> list[dict]:
+    """Return all agent roles ordered by key.
+
+    If include_disabled is False, only enabled roles are returned.
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = select(AgentRole).order_by(AgentRole.key)
+            if not include_disabled:
+                stmt = stmt.where(AgentRole.enabled == True)
+            result = await session.execute(stmt)
+            return [r.to_dict() for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"Failed to list agent roles: {e}")
+        return []
+
+
+async def get_agent_role(key: str) -> Optional[dict]:
+    """Return a single agent role by key, or None."""
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(AgentRole).where(AgentRole.key == key)
+            )
+            row = result.scalar_one_or_none()
+            return row.to_dict() if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get agent role {key}: {e}")
+        return None
+
+
+async def create_agent_role(data: dict) -> dict:
+    """Insert a new agent role. Returns the created role as dict."""
+    await _ensure_init()()
+    now = datetime.now(timezone.utc)
+    row = AgentRole(
+        id=f"role_{uuid4().hex[:12]}",
+        key=data["key"],
+        display_name=data["display_name"],
+        description=data.get("description", ""),
+        allowed_profiles=data.get("allowed_profiles", []),
+        default_provider=data.get("default_provider", ""),
+        default_model=data.get("default_model", ""),
+        allowed_commands=data.get("allowed_commands", []),
+        timeout_seconds=data.get("timeout_seconds", 1800),
+        retry_policy=data.get("retry_policy", "none"),
+        retry_max=data.get("retry_max", 0),
+        next_roles=data.get("next_roles", []),
+        human_approval_required=data.get("human_approval_required", False),
+        enabled=data.get("enabled", True),
+        is_system=data.get("is_system", False),
+        required_completion_fields=data.get("required_completion_fields", []),
+        created_at=now,
+        updated_at=now,
+    )
+    async with _get_sessionmaker()() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def update_agent_role(key: str, data: dict) -> Optional[dict]:
+    """Update fields on an existing agent role. Returns updated dict or None."""
+    await _ensure_init()()
+    async with _get_sessionmaker()() as session:
+        result = await session.execute(
+            select(AgentRole).where(AgentRole.key == key)
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            return None
+
+        # Update only provided fields
+        _FIELDS = (
+            "display_name", "description", "allowed_profiles",
+            "default_provider", "default_model", "allowed_commands",
+            "timeout_seconds", "retry_policy", "retry_max",
+            "next_roles", "human_approval_required", "enabled",
+            "is_system", "required_completion_fields",
+        )
+        for field in _FIELDS:
+            if field in data:
+                setattr(row, field, data[field])
+
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def set_agent_role_enabled(key: str, enabled: bool) -> Optional[dict]:
+    """Toggle the enabled field on an agent role. Returns updated dict or None."""
+    return await update_agent_role(key, {"enabled": enabled})
+
+
+async def count_active_handoffs_for_role(role_key: str) -> int:
+    """Count non-terminal handoffs targeting the given role lane.
+
+    Terminal statuses: approved, rejected, cancelled.
+    """
+    TERMINAL = ("approved", "rejected", "cancelled")
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = select(func.count(IssueHandoff.id)).where(
+                IssueHandoff.to_lane == role_key,
+                IssueHandoff.status.notin_(TERMINAL),
+            )
+            result = await session.execute(stmt)
+            return result.scalar() or 0
+    except Exception as e:
+        logger.warning(f"Failed to count handoffs for role {role_key}: {e}")
+        return 0
