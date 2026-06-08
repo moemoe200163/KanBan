@@ -1,5 +1,6 @@
 """GitHub outbound API endpoints."""
 import logging
+import os
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,8 @@ from core.github.client import get_github_client
 from db.repository import find_issue_by_key, update_issue_pr_url
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_BOARD_ID = os.getenv("GITHUB_DEFAULT_BOARD_ID", "board-default")
 
 router = APIRouter()
 
@@ -51,7 +54,7 @@ async def create_pr(req: PRCreateRequest, current_user: dict = Depends(require_a
 
     # Link PR to issue if issue_key provided
     if req.issue_key:
-        issue = await find_issue_by_key(req.issue_key)
+        issue = await find_issue_by_key(req.issue_key, board_id=_DEFAULT_BOARD_ID)
         if issue:
             await update_issue_pr_url(issue["id"], result["html_url"])
 
@@ -64,14 +67,14 @@ async def create_pr(req: PRCreateRequest, current_user: dict = Depends(require_a
 
 
 @router.post("/github/issues/{issue_key}/labels", tags=["GitHub"])
-async def sync_labels(issue_key: str, req: LabelSyncRequest, current_user: dict = Depends(require_auth)):
+async def sync_labels(issue_key: str, req: LabelSyncRequest, current_user: dict = Depends(require_admin)):
     """Sync labels on the GitHub PR linked to a DevFlow issue."""
     gh = get_github_client()
     if not gh:
         raise HTTPException(status_code=503, detail="GitHub not configured")
 
     # Find PR number from issue
-    issue = await find_issue_by_key(issue_key)
+    issue = await find_issue_by_key(issue_key, board_id=_DEFAULT_BOARD_ID)
     if not issue or not issue.get("pr_url"):
         raise HTTPException(status_code=404, detail=f"No PR linked to issue {issue_key}")
 

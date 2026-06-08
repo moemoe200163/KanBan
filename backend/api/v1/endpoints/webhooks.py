@@ -25,6 +25,9 @@ router = APIRouter()
 # Webhook secret from environment variable (never hardcoded)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
+# Default board ID for GitHub webhooks (scoped issue lookup)
+_DEFAULT_BOARD_ID = os.getenv("GITHUB_DEFAULT_BOARD_ID", "board-default")
+
 
 # =============================================================================
 # Issue Key Extraction
@@ -561,7 +564,7 @@ async def _handle_github_pr_event(payload: dict) -> None:
         logger.debug("GitHub PR event: no issue key in PR #%s", pr.get("number"))
         return
 
-    issue = await repo.find_issue_by_key(issue_key)
+    issue = await repo.find_issue_by_key(issue_key, board_id=_DEFAULT_BOARD_ID)
     if not issue:
         return
 
@@ -601,7 +604,7 @@ async def _handle_github_workflow_run_event(payload: dict) -> None:
         logger.debug("GitHub workflow_run: no issue key from branch '%s'", head_branch)
         return
 
-    issue = await repo.find_issue_by_key(issue_key)
+    issue = await repo.find_issue_by_key(issue_key, board_id=_DEFAULT_BOARD_ID)
     if not issue:
         return
 

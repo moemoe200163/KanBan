@@ -171,21 +171,31 @@ class TestReadEndpointsRemainPublic:
 # ---------------------------------------------------------------------------
 
 class TestWriteEndpointsWithToken:
-    """Verify write endpoints accept valid token."""
+    """Verify write endpoints accept valid token (non-admin gets 403 on admin-only)."""
 
-    def test_github_pr_create_with_token(self, fresh_db):
+    def test_github_pr_create_member_gets_403(self, fresh_db):
+        """Non-admin user hitting admin-only endpoint gets 403."""
         token = _get_token()
         resp = client.post("/api/v1/github/pr/create",
             json={"title": "t", "body": "b", "head": "h"},
             headers=_auth_header(token),
         )
-        # 503 = GitHub not configured (expected in test), but NOT 401
-        assert resp.status_code != 401
+        assert resp.status_code == 403
 
-    def test_github_check_run_with_token(self, fresh_db):
+    def test_github_labels_member_gets_403(self, fresh_db):
+        """Label sync requires admin; member gets 403."""
+        token = _get_token()
+        resp = client.post("/api/v1/github/issues/DEV-001/labels",
+            json={"labels": ["bug"]},
+            headers=_auth_header(token),
+        )
+        assert resp.status_code == 403
+
+    def test_github_check_run_member_gets_403(self, fresh_db):
+        """Check-run requires admin; member gets 403."""
         token = _get_token()
         resp = client.post("/api/v1/github/check-run",
             json={"head_sha": "abc", "name": "CI", "status": "completed"},
             headers=_auth_header(token),
         )
-        assert resp.status_code != 401
+        assert resp.status_code == 403
