@@ -437,6 +437,9 @@ export interface LLMProvider {
   lastChecked: string | null
   errorSummary: string | null
   baseUrl: string | null
+  apiShape: string | null
+  endpointPath: string | null
+  credentialSource: 'none' | 'env' | 'db'
   lastTestStatus: string | null
   lastLatencyMs: number | null
   lastErrorMessage: string | null
