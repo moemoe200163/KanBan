@@ -122,7 +122,7 @@ const toggleExpand = (providerId: string) => {
 
 const testConnection = async (providerId: string) => {
   testingProvider.value = providerId
-  await llmStore.testHealth(providerId)
+  await llmStore.testProvider(providerId)
   testingProvider.value = null
 }
 
