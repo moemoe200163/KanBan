@@ -1594,4 +1594,50 @@ onUnmounted(() => {
   gap: 12px;
   color: var(--muted);
 }
+
+/* Mobile: full-width panel, no border, adjusted padding */
+@media (max-width: 640px) {
+  .issue-detail__panel {
+    max-width: 100%;
+    border-left: none;
+  }
+
+  .issue-detail__header {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .issue-detail__tabs {
+    padding: var(--space-2) var(--space-3);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .issue-detail__tab {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+
+  .issue-detail__content {
+    padding: var(--space-4);
+  }
+
+  .issue-detail__title {
+    font-size: var(--text-lg);
+  }
+
+  .issue-detail__meta-row {
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  .issue-detail__pr-actions {
+    flex-direction: column;
+  }
+
+  .issue-detail__run-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
 </style>

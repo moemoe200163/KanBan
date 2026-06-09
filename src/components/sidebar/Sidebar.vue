@@ -31,9 +31,19 @@ const router = useRouter()
 const route = useRoute()
 const isCollapsed = ref(false)
 
-const emit = defineEmits<{ collapsed: [value: boolean] }>()
+const emit = defineEmits<{ collapsed: [value: boolean]; navigate: [] }>()
 
 watch(isCollapsed, (val) => emit('collapsed', val), { immediate: true })
+
+// Auto-collapse to icon rail on tablet widths
+onMounted(() => {
+  const mq = window.matchMedia('(max-width: 920px)')
+  const handleMQ = (e: MediaQueryListEvent | MediaQueryList) => {
+    if (e.matches) isCollapsed.value = true
+  }
+  handleMQ(mq)
+  mq.addEventListener('change', handleMQ)
+})
 
 const navItems = computed(() => [
   { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban', to: '/' },
@@ -57,6 +67,7 @@ const activeNav = computed(() => {
 
 const navigate = (to: string) => {
   router.push(to)
+  emit('navigate')
 }
 
 // Recent jobs feed
@@ -304,15 +315,83 @@ const toggleCollapse = () => {
   transition: width var(--duration-normal) var(--ease-out);
 }
 
-.sidebar--collapsed .sidebar__content,
-.sidebar--collapsed .sidebar__footer {
+/* Icon rail mode: collapsed sidebar shows icons only */
+.sidebar--collapsed .sidebar__content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sidebar--collapsed .sidebar__section {
+  align-items: center;
+}
+
+.sidebar--collapsed .sidebar__eyebrow,
+.sidebar--collapsed .sidebar__heading {
   display: none;
 }
 
-/* Mobile: hide sidebar completely */
+.sidebar--collapsed .sidebar__nav {
+  align-items: center;
+}
+
+.sidebar--collapsed .sidebar__nav-item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 8px;
+  min-height: 38px;
+  width: 36px;
+}
+
+.sidebar--collapsed .sidebar__nav-label,
+.sidebar--collapsed .sidebar__nav-meta {
+  display: none;
+}
+
+.sidebar--collapsed .control-status {
+  padding: 8px;
+  align-items: center;
+}
+
+.sidebar--collapsed .control-status__row {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  min-height: 28px;
+}
+
+.sidebar--collapsed .control-status__row span {
+  display: none;
+}
+
+.sidebar--collapsed .sidebar__footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.sidebar--collapsed .harness-card {
+  display: none;
+}
+
+.sidebar--collapsed .theme-button {
+  justify-content: center;
+  padding: 8px;
+  min-height: 36px;
+  width: 36px;
+}
+
+.sidebar--collapsed .theme-button span {
+  display: none;
+}
+
+/* Mobile: sidebar is shown via wrapper drawer — no hide needed */
 @media (max-width: 640px) {
   .sidebar {
-    display: none;
+    width: 260px;
+    display: flex;
   }
 }
 

@@ -9,6 +9,7 @@ const boardStore = useBoardStore()
 const searchQuery = ref('')
 const selectedStatus = ref<IssueStatus | 'all'>('all')
 const selectedPriority = ref<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
+const filtersExpanded = ref(false)
 
 const filteredColumns = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -113,7 +114,13 @@ const handleStartIssue = (issueId: string) => {
         <input v-model="searchQuery" type="search" placeholder="Search key, title, or label" />
       </div>
 
-      <div class="board-toolbar__filters">
+      <!-- Mobile filter toggle -->
+      <button class="board-toolbar__filter-toggle" @click="filtersExpanded = !filtersExpanded">
+        <SlidersHorizontal :size="15" />
+        <span>Filters</span>
+      </button>
+
+      <div class="board-toolbar__filters" :class="{ 'board-toolbar__filters--expanded': filtersExpanded }">
         <Filter :size="16" />
         <select v-model="selectedStatus" aria-label="Filter by status">
           <option value="all">All statuses</option>
@@ -349,6 +356,10 @@ const handleStartIssue = (issueId: string) => {
   color: var(--muted);
 }
 
+.board-toolbar__filter-toggle {
+  display: none;
+}
+
 .board-toolbar select {
   min-height: 32px;
   max-width: 130px;
@@ -437,17 +448,40 @@ const handleStartIssue = (issueId: string) => {
   }
 
   .board-toolbar {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 6px;
     padding: 6px 8px;
   }
 
+  .board-toolbar__filter-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 6px 10px;
+    color: var(--muted);
+    background: var(--surface-soft);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
   .board-toolbar__filters {
     display: none;
+    width: 100%;
+  }
+
+  .board-toolbar__filters--expanded {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
   }
 
   .board-toolbar__agent {
-    display: none;
+    margin-left: auto;
   }
 
   .kanban-board__columns {

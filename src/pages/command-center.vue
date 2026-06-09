@@ -97,6 +97,27 @@ onMounted(async () => {
 @media (max-width: 1024px) {
   .command-center__grid {
     grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .command-center {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .command-center__title h1 {
+    font-size: 1.25rem;
+  }
+
+  .command-center__title p {
+    display: none;
+  }
+
+  .command-center__grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 }
 </style>

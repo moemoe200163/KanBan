@@ -218,4 +218,19 @@ const requestChanges = async (job: ECCDispatchJob) => {
   color: var(--on-primary);
   background: var(--clay-red);
 }
+
+@media (max-width: 640px) {
+  .review-queue__item {
+    flex-wrap: wrap;
+  }
+
+  .review-queue__actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .review-queue__actions button {
+    flex: 1;
+  }
+}
 </style>
