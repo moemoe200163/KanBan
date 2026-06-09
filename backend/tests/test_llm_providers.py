@@ -150,6 +150,17 @@ def test_list_providers_returns_200(fresh_db):
     assert len(body["providers"]) > 0
 
 
+def test_list_providers_includes_credential_source(fresh_db):
+    """Provider list includes credentialSource field."""
+    res = fresh_db.get("/api/v1/llm/providers")
+    assert res.status_code == 200
+    providers = res.json()["providers"]
+    assert len(providers) > 0
+    for p in providers:
+        assert "credentialSource" in p
+        assert p["credentialSource"] in ("none", "env", "db")
+
+
 # ---------------------------------------------------------------------------
 # 2. GET /providers/{id} returns provider
 # ---------------------------------------------------------------------------

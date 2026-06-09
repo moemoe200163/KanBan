@@ -94,6 +94,13 @@ def list_providers(db_configs: Optional[List[dict]] = None) -> List[dict]:
             # DB-provided base URL / model override static defaults
             # (These are surfaced in the result dict below.)
 
+        # Determine credential source
+        credential_source = "none"
+        if db_cfg and (db_cfg.get("apiKeyPrefix") or db_cfg.get("apiKeyLast4")):
+            credential_source = "db"
+        elif configured and p.auth_env_var:
+            credential_source = "env"
+
         status = "configured" if configured else ("disabled" if not p.enabled else "missing_key")
 
         result: dict = {
@@ -111,12 +118,17 @@ def list_providers(db_configs: Optional[List[dict]] = None) -> List[dict]:
             "healthStatus": health,
             "lastChecked": None,
             "errorSummary": error,
+            "credentialSource": credential_source,
         }
 
         # Surface DB-specific fields when present
         if db_cfg:
             if db_cfg.get("baseUrl"):
                 result["baseUrl"] = db_cfg["baseUrl"]
+            if db_cfg.get("apiShape"):
+                result["apiShape"] = db_cfg["apiShape"]
+            if db_cfg.get("endpointPath"):
+                result["endpointPath"] = db_cfg["endpointPath"]
             if db_cfg.get("lastTestStatus"):
                 result["healthStatus"] = db_cfg["lastTestStatus"]
             if db_cfg.get("lastTestAt"):
