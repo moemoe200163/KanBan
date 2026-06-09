@@ -1809,12 +1809,30 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
     async fetchAgentRoles() {
       const config = useRuntimeConfig()
       const token = useCookie('auth_token').value
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
+
+      // No token → read-only from public /lanes, skip protected /agent-roles
+      if (!token) {
+        try {
+          const lanesRes = await $fetch<{ lanes: any[] }>(`${config.public.apiBase}/lanes`)
+          this.agentRoles = (lanesRes.lanes ?? []).map((l: any) => ({
+            ...l,
+            id: l.key,
+            nextRoles: l.nextLanes ?? [],
+            enabled: true,
+          }))
+        } catch {
+          this.agentRoles = []
+        }
+        return
+      }
+
+      // Has token → try /agent-roles, fallback to /lanes on 401/403
       try {
-        const res = await $fetch<{ roles: AgentRole[] }>(`${config.public.apiBase}/agent-roles`, { headers })
+        const res = await $fetch<{ roles: AgentRole[] }>(`${config.public.apiBase}/agent-roles`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
         this.agentRoles = res.roles
       } catch (e: any) {
-        // 401/403 → fallback to public /lanes endpoint for read-only display
         if (e?.status === 401 || e?.status === 403) {
           try {
             const lanesRes = await $fetch<{ lanes: any[] }>(`${config.public.apiBase}/lanes`)
@@ -1825,7 +1843,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
               enabled: true,
             }))
           } catch {
-            console.error('Failed to fetch lanes fallback:', e)
+            this.agentRoles = []
           }
         } else {
           console.error('Failed to fetch agent roles:', e)
@@ -1836,7 +1854,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
     async createAgentRole(data: Record<string, unknown>) {
       const config = useRuntimeConfig()
       const token = useCookie('auth_token').value
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles`, {
         method: 'POST',
         body: data,
@@ -1849,7 +1868,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
     async updateAgentRole(key: string, data: Record<string, unknown>) {
       const config = useRuntimeConfig()
       const token = useCookie('auth_token').value
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}`, {
         method: 'PUT',
         body: data,
@@ -1862,7 +1882,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
     async toggleAgentRoleEnabled(key: string, enabled: boolean) {
       const config = useRuntimeConfig()
       const token = useCookie('auth_token').value
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}/enabled`, {
         method: 'PATCH',
         body: { enabled },

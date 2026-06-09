@@ -74,20 +74,24 @@ const startEditKey = (provider: LLMProvider) => {
 
 const saveApiKey = async (provider: LLMProvider) => {
   if (!newApiKey.value) return
+  if (!isAdmin.value) return
   await llmStore.updateProviderConfig(provider.id, { apiKey: newApiKey.value })
   editingKeyFor.value = null
   newApiKey.value = ''
 }
 
 const updateBaseUrl = async (provider: LLMProvider, baseUrl: string) => {
+  if (!isAdmin.value) return
   await llmStore.updateProviderConfig(provider.id, { baseUrl })
 }
 
 const updateModel = async (provider: LLMProvider, model: string) => {
+  if (!isAdmin.value) return
   await llmStore.updateProviderConfig(provider.id, { model })
 }
 
 const selectProviderAction = async (providerId: string) => {
+  if (!isAdmin.value) return
   await llmStore.selectProvider(providerId)
 }
 
@@ -123,6 +127,7 @@ const testConnection = async (providerId: string) => {
 }
 
 const toggleProviderEnabled = async (provider: LLMProvider) => {
+  if (!isAdmin.value) return
   await llmStore.updateProviderConfig(provider.id, { enabled: !provider.enabled })
 }
 
@@ -144,6 +149,7 @@ const loadDefaults = () => {
 }
 
 const saveDefaults = async () => {
+  if (!isAdmin.value) return
   savingDefaults.value = true
   await llmStore.updateDefaults({ ...defaultsForm })
   savingDefaults.value = false
@@ -491,7 +497,7 @@ const backendStatusColor = computed(() => {
             </button>
           </div>
 
-          <button class="settings-btn" :disabled="savingDefaults" @click="saveDefaults">
+          <button class="settings-btn" :disabled="savingDefaults || !isAdmin" @click="saveDefaults">
             <Loader2 v-if="savingDefaults" :size="14" class="spin" />
             Save Defaults
           </button>

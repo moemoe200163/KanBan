@@ -52,10 +52,15 @@ export const useLLMStore = defineStore('llm', {
     },
 
     async updateDefaults(patch: Partial<LLMDefaults>) {
+      const token = useCookie('auth_token').value
+      if (!token) {
+        this.error = 'Login required to save defaults'
+        return
+      }
       try {
         const res = await fetch(`${API_BASE}/llm/defaults`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(patch),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -94,18 +99,21 @@ export const useLLMStore = defineStore('llm', {
     },
 
     async updateProviderConfig(providerId: string, config: { baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean }) {
+      const token = useCookie('auth_token').value
+      if (!token) {
+        this.error = 'Login required to update provider settings'
+        return
+      }
       try {
-        const token = useCookie('auth_token').value
         const res = await fetch(`${API_BASE}/llm/providers/${providerId}/config`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(config),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        // Re-fetch providers to get updated state
         await this.fetchProviders()
       } catch (e: any) {
         this.error = e.message || 'Failed to update provider'
@@ -113,11 +121,15 @@ export const useLLMStore = defineStore('llm', {
     },
 
     async selectProvider(providerId: string) {
+      const token = useCookie('auth_token').value
+      if (!token) {
+        this.error = 'Login required to select a provider'
+        return
+      }
       try {
-        const token = useCookie('auth_token').value
         const res = await fetch(`${API_BASE}/llm/providers/${providerId}/select`, {
           method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          headers: { Authorization: `Bearer ${token}` },
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         await this.fetchDefaults()
