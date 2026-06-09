@@ -59,11 +59,11 @@ export const useLLMStore = defineStore('llm', {
 
     // ── Admin-only writes (auth required) ────────────────────────────
 
-    async updateProviderConfig(providerId: string, config: { baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean; endpointPath?: string }) {
+    async updateProviderConfig(providerId: string, config: { baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean; endpointPath?: string }): Promise<boolean> {
       const token = useCookie('auth_token').value
       if (!token) {
         this.error = 'Login required to update provider settings'
-        return
+        return false
       }
       try {
         const apiBase = useApiBase()
@@ -74,8 +74,10 @@ export const useLLMStore = defineStore('llm', {
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         await this.fetchProviders()
+        return true
       } catch (e: any) {
         this.error = e.message || 'Failed to update provider'
+        return false
       }
     },
 

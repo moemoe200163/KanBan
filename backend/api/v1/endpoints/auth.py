@@ -36,6 +36,7 @@ class UserResponse(BaseModel):
     id: str
     username: str
     email: Optional[str] = None
+    role: Optional[str] = None
     api_key_fingerprint: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -255,6 +256,7 @@ async def get_current_user_info(
             id=user.id,
             username=user.username,
             email=user.email,
+            role=user.role,
             api_key_fingerprint=user.api_key_fingerprint,
             created_at=user.created_at.isoformat() if user.created_at else None
         )

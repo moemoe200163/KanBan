@@ -2,6 +2,7 @@
 import { useBoardStore } from '~/stores/board'
 import { useLLMStore } from '~/stores/llm'
 import { useDarkMode } from '~/composables/useDarkMode'
+import { useAuth } from '~/composables/useAuth'
 import { HARNESS_CONFIGS } from '~/types'
 import type { LLMProvider, HarnessType } from '~/types'
 import {
@@ -15,7 +16,7 @@ const boardStore = useBoardStore()
 const llmStore = useLLMStore()
 const { isDark, toggleDark } = useDarkMode()
 const config = useRuntimeConfig()
-const isAdmin = computed(() => !!useCookie('auth_token').value)
+const { isAdmin, fetchRole } = useAuth()
 
 // Provider edit draft (only sent on Save)
 const providerDraft = ref<{
@@ -48,8 +49,8 @@ const saveProviderDraft = async () => {
   if (d.model) config.model = d.model
   if (d.apiKey) config.apiKey = d.apiKey
   if (d.endpointPath) config.endpointPath = d.endpointPath
-  await llmStore.updateProviderConfig(d.providerId, config)
-  providerDraft.value = null
+  const ok = await llmStore.updateProviderConfig(d.providerId, config)
+  if (ok) providerDraft.value = null
 }
 
 const apiShapeLabel = (provider: LLMProvider): string => {
@@ -189,6 +190,7 @@ const saveHarness = () => {
 // Initialize
 onMounted(async () => {
   checkBackend()
+  fetchRole()
   await Promise.all([
     llmStore.fetchProviders(),
     llmStore.fetchDefaults()

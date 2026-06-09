@@ -164,4 +164,33 @@ test.describe('LLM Providers settings', () => {
     ]
     expect(knownStatuses).toContain(badgeText)
   })
+
+  test('no 401 errors when visiting settings without auth', async ({ page }) => {
+    // Clear any auth cookie
+    await page.context().clearCookies()
+
+    // Collect all failed requests (status 401/403)
+    const protectedFailures: string[] = []
+    page.on('response', (res) => {
+      if (res.status() === 401 || res.status() === 403) {
+        protectedFailures.push(`${res.status()} ${res.url()}`)
+      }
+    })
+
+    await page.goto('/settings')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+
+    // Click LLM Providers tab
+    await page.locator('.settings-tab', { hasText: 'LLM Providers' }).click()
+    await expect(page.locator('.providers-grid')).toBeVisible({ timeout: 10_000 })
+
+    // Wait for provider cards to render
+    await expect(page.locator('.provider-card__name').first()).toBeVisible()
+
+    // No protected endpoints should have been hit
+    expect(protectedFailures).toEqual([])
+
+    // "Login to configure providers" notice should be visible
+    await expect(page.locator('.auth-notice')).toBeVisible()
+  })
 })
