@@ -17,14 +17,63 @@ const { isDark, toggleDark } = useDarkMode()
 const config = useRuntimeConfig()
 const isAdmin = computed(() => !!useCookie('auth_token').value)
 
+// Provider edit draft (only sent on Save)
+const providerDraft = ref<{
+  providerId: string
+  baseUrl: string
+  model: string
+  apiKey: string
+  endpointPath: string
+} | null>(null)
+
+const startEditProvider = (provider: LLMProvider) => {
+  providerDraft.value = {
+    providerId: provider.id,
+    baseUrl: provider.baseUrl || '',
+    model: provider.model || provider.defaultModel || '',
+    apiKey: '',
+    endpointPath: provider.endpointPath || '',
+  }
+}
+
+const cancelEditProvider = () => {
+  providerDraft.value = null
+}
+
+const saveProviderDraft = async () => {
+  if (!providerDraft.value || !isAdmin.value) return
+  const d = providerDraft.value
+  const config: Record<string, string> = {}
+  if (d.baseUrl) config.baseUrl = d.baseUrl
+  if (d.model) config.model = d.model
+  if (d.apiKey) config.apiKey = d.apiKey
+  if (d.endpointPath) config.endpointPath = d.endpointPath
+  await llmStore.updateProviderConfig(d.providerId, config)
+  providerDraft.value = null
+}
+
+const apiShapeLabel = (provider: LLMProvider): string => {
+  const shape = provider.apiShape
+  if (shape === 'anthropic-messages') return 'Anthropic Messages'
+  if (shape === 'openai-chat') return 'OpenAI Chat'
+  if (shape === 'openai-responses') return 'OpenAI Responses'
+  if (shape === 'ollama') return 'Ollama'
+  return provider.adapter
+}
+
+const credentialLabel = (provider: LLMProvider): string => {
+  const src = provider.credentialSource
+  if (src === 'db') return 'Saved in DB'
+  if (src === 'env') return 'Environment variable'
+  return 'Not configured'
+}
+
 const apiBase = ref(config.public.apiBase)
 const activeTab = ref<'system' | 'providers' | 'defaults' | 'appearance'>('system')
 const backendStatus = ref<'checking' | 'healthy' | 'error'>('checking')
 const expandedProvider = ref<string | null>(null)
 const testingProvider = ref<string | null>(null)
 const savingDefaults = ref(false)
-const editingKeyFor = ref<string | null>(null)
-const newApiKey = ref('')
 
 const harnessOptions = HARNESS_CONFIGS.filter(h => h.available).map(h => h.type)
 const selectedHarness = ref<HarnessType>(boardStore.activeHarness)
@@ -67,28 +116,6 @@ const healthStatusColor = (status: string | null) => {
   }
 }
 
-const startEditKey = (provider: LLMProvider) => {
-  editingKeyFor.value = provider.id
-  newApiKey.value = ''
-}
-
-const saveApiKey = async (provider: LLMProvider) => {
-  if (!newApiKey.value) return
-  if (!isAdmin.value) return
-  await llmStore.updateProviderConfig(provider.id, { apiKey: newApiKey.value })
-  editingKeyFor.value = null
-  newApiKey.value = ''
-}
-
-const updateBaseUrl = async (provider: LLMProvider, baseUrl: string) => {
-  if (!isAdmin.value) return
-  await llmStore.updateProviderConfig(provider.id, { baseUrl })
-}
-
-const updateModel = async (provider: LLMProvider, model: string) => {
-  if (!isAdmin.value) return
-  await llmStore.updateProviderConfig(provider.id, { model })
-}
 
 const selectProviderAction = async (providerId: string) => {
   if (!isAdmin.value) return
@@ -265,18 +292,24 @@ const backendStatusColor = computed(() => {
       <div v-else class="providers-grid">
         <div v-if="!isAdmin" class="auth-notice">
           <Shield :size="14" />
-          <span>Login to edit provider settings.</span>
+          <span>Login to configure providers.</span>
         </div>
+
         <div
           v-for="provider in llmStore.providers"
           :key="provider.id"
           :class="['provider-card', { 'provider-card--expanded': expandedProvider === provider.id }]"
         >
-          <!-- Provider Header -->
+          <!-- Zone 1: Provider Catalog (always visible) -->
           <div class="provider-card__header" @click="toggleExpand(provider.id)">
             <div class="provider-card__info">
               <span class="provider-card__name">{{ provider.name }}</span>
-              <span class="provider-card__adapter">{{ provider.adapter }}</span>
+              <span class="provider-card__adapter">
+                {{ apiShapeLabel(provider) }}
+                <span v-if="provider.endpointPath" class="provider-card__endpoint">
+                  {{ provider.endpointPath }}
+                </span>
+              </span>
             </div>
             <div class="provider-card__status">
               <span
@@ -289,7 +322,7 @@ const backendStatusColor = computed(() => {
             </div>
           </div>
 
-          <!-- Provider Summary -->
+          <!-- Zone 1b: Provider Summary (always visible) -->
           <div class="provider-card__summary">
             <div class="provider-card__model">
               <span class="label">Model:</span>
@@ -307,66 +340,103 @@ const backendStatusColor = computed(() => {
             </div>
           </div>
 
-          <!-- Expanded Details -->
+          <!-- Expanded details -->
           <div v-if="expandedProvider === provider.id" class="provider-card__details">
-            <!-- Base URL -->
+
+            <!-- Zone 2: Credential Status -->
+            <div class="provider-detail-row">
+              <span class="label">Credentials:</span>
+              <span class="value">
+                <code v-if="provider.maskedSecret" class="env-var">{{ provider.maskedSecret }}</code>
+                <span v-else class="text-muted">Not configured</span>
+                <span class="credential-tag" :class="`credential-tag--${provider.credentialSource || 'none'}`">
+                  {{ credentialLabel(provider) }}
+                </span>
+              </span>
+            </div>
+
+            <!-- Zone 3: Model Routing -->
             <div class="provider-detail-row">
               <span class="label">Base URL:</span>
-              <input
-                :value="provider.baseUrl || ''"
-                class="field__input field__input--sm"
-                placeholder="API base URL"
-                :disabled="!isAdmin"
-                @change="updateBaseUrl(provider, ($event.target as HTMLInputElement).value)"
-              />
+              <span class="value provider-url">{{ provider.baseUrl || 'Default' }}</span>
+            </div>
+            <div class="provider-detail-row">
+              <span class="label">Auth:</span>
+              <span class="value">{{ provider.authType }} <small v-if="provider.authEnvVar">({{ provider.authEnvVar }})</small></span>
             </div>
 
-            <!-- Model -->
-            <div class="provider-detail-row">
-              <span class="label">Model:</span>
-              <input
-                :value="provider.model || provider.defaultModel || ''"
-                class="field__input field__input--sm"
-                placeholder="Model name"
-                :disabled="!isAdmin"
-                @change="updateModel(provider, ($event.target as HTMLInputElement).value)"
-              />
-            </div>
-
-            <!-- API Key -->
-            <div class="provider-detail-row">
-              <span class="label">API Key:</span>
-              <div class="api-key-field">
-                <input
-                  v-if="editingKeyFor === provider.id"
-                  v-model="newApiKey"
-                  type="text"
-                  class="field__input field__input--sm"
-                  placeholder="Enter API key"
-                  @keyup.enter="saveApiKey(provider)"
-                />
-                <code v-else class="env-var">{{ provider.maskedSecret || 'Not configured' }}</code>
-                <button
-                  v-if="editingKeyFor === provider.id"
-                  class="action-btn action-btn--save"
-                  @click="saveApiKey(provider)"
-                >Save</button>
-                <button
-                  v-else
-                  class="action-btn action-btn--edit"
-                  :disabled="!isAdmin"
-                  @click="startEditKey(provider)"
-                >Edit</button>
+            <!-- Zone 4: Admin Configuration (draft-on-save) -->
+            <template v-if="isAdmin">
+              <div v-if="providerDraft?.providerId === provider.id" class="provider-config-form">
+                <div class="provider-detail-row">
+                  <span class="label">Base URL:</span>
+                  <input
+                    v-model="providerDraft.baseUrl"
+                    class="field__input field__input--sm"
+                    placeholder="API base URL"
+                  />
+                </div>
+                <div class="provider-detail-row">
+                  <span class="label">Model:</span>
+                  <input
+                    v-model="providerDraft.model"
+                    class="field__input field__input--sm"
+                    placeholder="Model name"
+                  />
+                </div>
+                <div class="provider-detail-row">
+                  <span class="label">API Key:</span>
+                  <input
+                    v-model="providerDraft.apiKey"
+                    type="password"
+                    class="field__input field__input--sm"
+                    placeholder="Enter API key (leave blank to keep current)"
+                  />
+                </div>
+                <div class="provider-config-form__actions">
+                  <button class="action-btn action-btn--save" @click.stop="saveProviderDraft">
+                    <Check :size="14" />
+                    Save
+                  </button>
+                  <button class="action-btn" @click.stop="cancelEditProvider">Cancel</button>
+                </div>
               </div>
-            </div>
+              <div v-else class="provider-card__actions">
+                <button
+                  class="action-btn action-btn--edit"
+                  @click.stop="startEditProvider(provider)"
+                >
+                  <Settings :size="14" />
+                  Configure
+                </button>
+                <button
+                  class="action-btn action-btn--test"
+                  :disabled="testingProvider === provider.id || !provider.maskedSecret"
+                  @click.stop="testConnection(provider.id)"
+                >
+                  <Loader2 v-if="testingProvider === provider.id" :size="14" class="spin" />
+                  <Zap v-else :size="14" />
+                  Test
+                </button>
+                <button
+                  class="action-btn action-btn--default"
+                  @click.stop="selectProviderAction(provider.id)"
+                >
+                  <Star :size="14" />
+                  Select Active
+                </button>
+                <button
+                  :class="['action-btn', provider.enabled ? 'action-btn--disable' : 'action-btn--enable']"
+                  @click.stop="toggleProviderEnabled(provider)"
+                >
+                  <PowerOff v-if="provider.enabled" :size="14" />
+                  <Power v-else :size="14" />
+                  {{ provider.enabled ? 'Disable' : 'Enable' }}
+                </button>
+              </div>
+            </template>
 
-            <!-- Warning about key types -->
-            <div class="provider-warning">
-              <AlertCircle :size="14" />
-              <span>Provider keys (sk-cp-...) are LLM API credentials, NOT SecurityWeb Access Keys.</span>
-            </div>
-
-            <!-- Last Test Info -->
+            <!-- Zone 5: Verification Panel -->
             <div v-if="provider.lastTestStatus" class="provider-detail-row">
               <span class="label">Last Test:</span>
               <span class="value">
@@ -380,34 +450,10 @@ const backendStatusColor = computed(() => {
               <span class="value provider-error">{{ provider.lastErrorMessage }}</span>
             </div>
 
-            <!-- Actions -->
-            <div class="provider-card__actions">
-              <button
-                class="action-btn action-btn--test"
-                :disabled="testingProvider === provider.id"
-                @click.stop="testConnection(provider.id)"
-              >
-                <Loader2 v-if="testingProvider === provider.id" :size="14" class="spin" />
-                <Zap v-else :size="14" />
-                Test
-              </button>
-              <button
-                class="action-btn action-btn--default"
-                :disabled="!isAdmin"
-                @click.stop="selectProviderAction(provider.id)"
-              >
-                <Star :size="14" />
-                Select Active
-              </button>
-              <button
-                :class="['action-btn', provider.enabled ? 'action-btn--disable' : 'action-btn--enable']"
-                :disabled="!isAdmin"
-                @click.stop="toggleProviderEnabled(provider)"
-              >
-                <PowerOff v-if="provider.enabled" :size="14" />
-                <Power v-else :size="14" />
-                {{ provider.enabled ? 'Disable' : 'Enable' }}
-              </button>
+            <!-- Warning -->
+            <div class="provider-warning">
+              <AlertCircle :size="14" />
+              <span>Provider keys are LLM API credentials, NOT SecurityWeb Access Keys.</span>
             </div>
           </div>
         </div>
@@ -524,15 +570,6 @@ const backendStatusColor = computed(() => {
     </div>
   </section>
 </template>
-
-<script lang="ts">
-// Helper to get models for a provider (simple placeholder)
-function getProviderModels(provider: LLMProvider): string[] {
-  // For now, return the default model as a single-item list
-  // This will be enhanced when model discovery is implemented
-  return provider.defaultModel ? [provider.defaultModel] : []
-}
-</script>
 
 <style scoped>
 .settings-page {
@@ -787,4 +824,52 @@ function getProviderModels(provider: LLMProvider): string[] {
 .action-btn--edit:hover {
   background: var(--primary); color: white;
 }
+
+/* Credential tag */
+.credential-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.credential-tag--db { background: rgba(125, 158, 125, 0.15); color: var(--sage); }
+.credential-tag--env { background: rgba(59, 130, 246, 0.1); color: var(--primary); }
+.credential-tag--none { background: var(--surface-soft); color: var(--muted); }
+
+/* Provider URL */
+.provider-url {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  word-break: break-all;
+}
+
+/* Provider endpoint */
+.provider-card__endpoint {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* Config form */
+.provider-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.provider-config-form__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Text muted helper */
+.text-muted { color: var(--muted); }
+
 </style>
