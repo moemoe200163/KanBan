@@ -602,6 +602,8 @@ class TestToolCallAudit:
         from fastapi.testclient import TestClient
         from main import app
         from db import repository as repo
+        from db.models import AgentRunEvent
+        from sqlalchemy import select
         from conftest import seed_test_user
 
         _, sessionmaker = fresh_db
@@ -616,16 +618,31 @@ class TestToolCallAudit:
         with TestClient(app) as client:
             resp = client.post(
                 "/api/v1/kanban/kanban_show",
-                json={"board_id": "board-default", "issue_id": issue["id"]},
+                json={"board_id": "board-default", "issue_id": issue["id"], "run_id": "run-audit-test-001"},
                 headers=headers,
             )
             assert resp.status_code == 200
+
+        # Verify the audit event was written to the DB
+        async with sessionmaker() as session:
+            result = await session.execute(
+                select(AgentRunEvent).where(AgentRunEvent.run_id == "run-audit-test-001")
+            )
+            events = result.scalars().all()
+            assert len(events) == 1
+            event = events[0]
+            assert event.event_type == "tool_call_completed"
+            meta = event.extra_metadata
+            assert meta["tool_name"] == "kanban_show"
+            assert meta["ok"] is True
 
     @pytest.mark.asyncio
     async def test_tool_call_writes_event_on_failure(self, fresh_db):
         """Failed tool call writes a tool_call_failed event."""
         from fastapi.testclient import TestClient
         from main import app
+        from db.models import AgentRunEvent
+        from sqlalchemy import select
         from conftest import seed_test_user
 
         _, sessionmaker = fresh_db
@@ -634,7 +651,19 @@ class TestToolCallAudit:
         with TestClient(app) as client:
             resp = client.post(
                 "/api/v1/kanban/kanban_show",
-                json={"board_id": "board-default", "issue_key": "NOPE-999"},
+                json={"board_id": "board-default", "issue_key": "NOPE-999", "run_id": "run-audit-test-002"},
                 headers=headers,
             )
             assert resp.status_code == 400
+
+        # Verify the audit event was written to the DB
+        async with sessionmaker() as session:
+            result = await session.execute(
+                select(AgentRunEvent).where(AgentRunEvent.run_id == "run-audit-test-002")
+            )
+            events = result.scalars().all()
+            assert len(events) == 1
+            event = events[0]
+            assert event.event_type == "tool_call_failed"
+            meta = event.extra_metadata
+            assert meta["ok"] is False

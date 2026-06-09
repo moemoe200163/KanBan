@@ -42,6 +42,9 @@ const displayRoles = computed(() => {
     humanApprovalRequired: l.humanApprovalRequired,
     enabled: true,
     isSystem: true,
+    systemPrompt: '',
+    taskPromptTemplate: '',
+    reviewPromptTemplate: '',
     createdAt: null,
     updatedAt: null,
   } satisfies AgentRole))

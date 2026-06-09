@@ -2119,6 +2119,9 @@ async def create_agent_role(data: dict) -> dict:
         enabled=data.get("enabled", True),
         is_system=data.get("is_system", False),
         required_completion_fields=data.get("required_completion_fields", []),
+        system_prompt=data.get("system_prompt", ""),
+        task_prompt_template=data.get("task_prompt_template", ""),
+        review_prompt_template=data.get("review_prompt_template", ""),
         created_at=now,
         updated_at=now,
     )
@@ -2147,6 +2150,7 @@ async def update_agent_role(key: str, data: dict) -> Optional[dict]:
             "timeout_seconds", "retry_policy", "retry_max",
             "next_roles", "human_approval_required", "enabled",
             "is_system", "required_completion_fields",
+            "system_prompt", "task_prompt_template", "review_prompt_template",
         )
         for field in _FIELDS:
             if field in data:

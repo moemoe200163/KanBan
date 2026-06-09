@@ -33,6 +33,9 @@ class AgentRoleCreate(BaseModel):
     humanApprovalRequired: bool = Field(default=False)
     enabled: bool = Field(default=True)
     requiredCompletionFields: List[str] = Field(default_factory=list)
+    systemPrompt: str = Field(default="", max_length=32768)
+    taskPromptTemplate: str = Field(default="", max_length=32768)
+    reviewPromptTemplate: str = Field(default="", max_length=32768)
 
 
 class AgentRoleUpdate(BaseModel):
@@ -54,6 +57,9 @@ class AgentRoleUpdate(BaseModel):
     humanApprovalRequired: Optional[bool] = None
     enabled: Optional[bool] = None
     requiredCompletionFields: Optional[List[str]] = None
+    systemPrompt: Optional[str] = Field(default=None, max_length=32768)
+    taskPromptTemplate: Optional[str] = Field(default=None, max_length=32768)
+    reviewPromptTemplate: Optional[str] = Field(default=None, max_length=32768)
 
 
 class AgentRoleEnabledToggle(BaseModel):
@@ -79,6 +85,9 @@ _CAMEL_TO_SNAKE = {
     "humanApprovalRequired": "human_approval_required",
     "enabled": "enabled",
     "requiredCompletionFields": "required_completion_fields",
+    "systemPrompt": "system_prompt",
+    "taskPromptTemplate": "task_prompt_template",
+    "reviewPromptTemplate": "review_prompt_template",
 }
 
 

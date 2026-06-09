@@ -261,6 +261,8 @@ class AgentWorkerProcess:
         self._workspace_path = workspace_path
         # Default executor — overridden per-run if harness is "claude-code"
         self._executor = SafeRunExecutor()
+        # Role config — loaded from DB when a run is claimed
+        self._role_config: Optional[dict] = None
         # Concurrency guard — tracks the ID of the currently executing run.
         # A non-None value means the worker is at max concurrency and must
         # not claim another run until the current one completes or fails.
@@ -338,6 +340,15 @@ class AgentWorkerProcess:
             self._active_run_id = run_id
             logger.info("Worker %s executing run %s", self.worker_id, run_id)
 
+            # Look up role config for prompt templates
+            self._role_config = None
+            role_key = run.get("requiredRole") or run.get("agentRole")
+            if role_key:
+                try:
+                    self._role_config = await repo.get_agent_role(role_key)
+                except Exception as exc:
+                    logger.debug("Could not load role config for '%s': %s", role_key, exc)
+
             try:
                 # Transition to running
                 await start_run(run_id, self.worker_id)
@@ -391,33 +402,70 @@ class AgentWorkerProcess:
 
                 # Execute with max runtime enforcement
                 try:
-                    from core.adapters.registry import HarnessRegistry
-                    adapter = HarnessRegistry.resolve_for_run(run)
+                    # --- Tool bridge path: agentic tool-use loop ---
+                    use_tools = run.get("metadata", {}).get("use_tools", False)
+                    provider = run.get("provider")
 
-                    if adapter:
-                        prompt = _build_api_prompt(ctx)
-                        exec_result = await asyncio.wait_for(
-                            adapter.execute(
-                                task_id=run_id,
-                                prompt=prompt,
-                                workspace=self._workspace_path,
+                    if use_tools and provider:
+                        from core.runtime.tool_bridge import run_tool_loop
+                        from api.v1.endpoints.kanban_tools import TOOL_SCHEMAS
+
+                        prompt = _build_api_prompt(ctx, self._role_config)
+                        bridge_system = (
+                            self._role_config.get("systemPrompt", "")
+                            if self._role_config
+                            else ""
+                        ) or "You are an AI agent working on a Kanban board. Use the provided tools to interact with issues, report progress, and complete work."
+                        bridge_result = await asyncio.wait_for(
+                            run_tool_loop(
+                                provider_id=provider,
+                                model=run.get("model", ""),
+                                system_prompt=bridge_system,
+                                user_prompt=prompt,
+                                tool_schemas=TOOL_SCHEMAS,
+                                board_id=self.board_id,
+                                issue_id=run.get("issueId"),
+                                issue_key=run.get("issueKey"),
+                                actor=self.worker_id,
+                                agent_role=run.get("agentRole", "safe-runner"),
+                                run_id=run_id,
                                 on_log=_on_log,
                             ),
                             timeout=max_runtime,
                         )
-                        result = (
-                            exec_result.output
-                            if exec_result.success
-                            else f"FAILED: {exec_result.error}"
-                        )
-                        if not exec_result.success:
-                            raise RuntimeError(exec_result.error or "Execution failed")
+                        if not bridge_result.success:
+                            raise RuntimeError(bridge_result.error or "Tool bridge failed")
+                        result = bridge_result.output
+
                     else:
-                        # No adapter found — use safe runner as ultimate fallback
-                        result = await asyncio.wait_for(
-                            self._executor.execute(ctx, _on_log),
-                            timeout=max_runtime,
-                        )
+                        # --- Standard adapter / safe-runner path ---
+                        from core.adapters.registry import HarnessRegistry
+                        adapter = HarnessRegistry.resolve_for_run(run)
+
+                        if adapter:
+                            prompt = _build_api_prompt(ctx, self._role_config)
+                            exec_result = await asyncio.wait_for(
+                                adapter.execute(
+                                    task_id=run_id,
+                                    prompt=prompt,
+                                    workspace=self._workspace_path,
+                                    on_log=_on_log,
+                                ),
+                                timeout=max_runtime,
+                            )
+                            result = (
+                                exec_result.output
+                                if exec_result.success
+                                else f"FAILED: {exec_result.error}"
+                            )
+                            if not exec_result.success:
+                                raise RuntimeError(exec_result.error or "Execution failed")
+                        else:
+                            # No adapter found — use safe runner as ultimate fallback
+                            result = await asyncio.wait_for(
+                                self._executor.execute(ctx, _on_log),
+                                timeout=max_runtime,
+                            )
 
                 except asyncio.TimeoutError:
                     raise RuntimeError(
@@ -460,6 +508,7 @@ class AgentWorkerProcess:
                     logger.error("Failed to report failure for run %s", run_id)
             finally:
                 self._active_run_id = None
+                self._role_config = None
 
         # Worker stopped — update status
         try:
@@ -478,8 +527,15 @@ class AgentWorkerProcess:
 # Helper: build prompt for API model execution
 # ---------------------------------------------------------------------------
 
-def _build_api_prompt(ctx: ExecutionContext) -> str:
-    """Build a prompt string from the execution context for LLM API calls."""
+def _build_api_prompt(
+    ctx: ExecutionContext,
+    role_config: Optional[dict] = None,
+) -> str:
+    """Build a prompt string from the execution context for LLM API calls.
+
+    If *role_config* is provided and has a non-empty ``systemPrompt``,
+    that value is used as the instructions section instead of the default.
+    """
     parts = [
         f"# Issue: {ctx.issue_key}",
         f"## Command: {ctx.command}",
@@ -489,13 +545,25 @@ def _build_api_prompt(ctx: ExecutionContext) -> str:
         parts.append(f"## Title: {ctx.extra_metadata['title']}")
     if ctx.extra_metadata.get("description"):
         parts.append(f"## Description:\n{ctx.extra_metadata['description']}")
+
+    # Use role-specific system prompt if available
+    custom_instructions = ""
+    if role_config and role_config.get("systemPrompt"):
+        custom_instructions = role_config["systemPrompt"]
+
+    if custom_instructions:
+        parts.append(f"\n---\n## Instructions\n{custom_instructions}")
+    else:
+        parts.append(
+            "\n---\n## Instructions\n"
+            "1. Analyze the issue using kanban_show\n"
+            "2. Provide a clear, detailed response\n"
+            "3. Include examples where appropriate\n"
+            "4. Report findings with kanban_comment\n"
+            "5. Complete with kanban_complete or block with kanban_block\n"
+        )
+
     parts.append(
-        "\n---\n## Instructions\n"
-        "1. Analyze the issue using kanban_show\n"
-        "2. Provide a clear, detailed response\n"
-        "3. Include examples where appropriate\n"
-        "4. Report findings with kanban_comment\n"
-        "5. Complete with kanban_complete or block with kanban_block\n"
         "\n---\n## Kanban Tool Protocol\n"
         "Use these tools to interact with the Kanban board:\n"
         "- kanban_show: Read issue details, handoffs, artifacts\n"

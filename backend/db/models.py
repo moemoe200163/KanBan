@@ -902,6 +902,9 @@ class AgentRole(Base):
     enabled = Column(Boolean, default=True)
     is_system = Column(Boolean, default=False)
     required_completion_fields = Column(JSON, default=list)
+    system_prompt = Column(Text, default="")
+    task_prompt_template = Column(Text, default="")
+    review_prompt_template = Column(Text, default="")
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -923,6 +926,9 @@ class AgentRole(Base):
             "enabled": self.enabled,
             "isSystem": self.is_system,
             "requiredCompletionFields": self.required_completion_fields or [],
+            "systemPrompt": self.system_prompt or "",
+            "taskPromptTemplate": self.task_prompt_template or "",
+            "reviewPromptTemplate": self.review_prompt_template or "",
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

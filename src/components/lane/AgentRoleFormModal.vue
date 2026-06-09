@@ -45,6 +45,9 @@ const retryMax = ref(0)
 const nextRoles = ref('')
 const humanApprovalRequired = ref(false)
 const enabled = ref(true)
+const systemPrompt = ref('')
+const taskPromptTemplate = ref('')
+const reviewPromptTemplate = ref('')
 
 const localError = ref('')
 const isSaving = ref(false)
@@ -66,6 +69,9 @@ function resetForm() {
     nextRoles.value = props.role.nextRoles.join(', ')
     humanApprovalRequired.value = props.role.humanApprovalRequired
     enabled.value = props.role.enabled
+    systemPrompt.value = props.role.systemPrompt
+    taskPromptTemplate.value = props.role.taskPromptTemplate
+    reviewPromptTemplate.value = props.role.reviewPromptTemplate
   } else {
     key.value = ''
     displayName.value = ''
@@ -81,6 +87,9 @@ function resetForm() {
     nextRoles.value = ''
     humanApprovalRequired.value = false
     enabled.value = true
+    systemPrompt.value = ''
+    taskPromptTemplate.value = ''
+    reviewPromptTemplate.value = ''
   }
   localError.value = ''
 }
@@ -122,6 +131,9 @@ async function submit() {
     nextRoles: parseList(nextRoles.value),
     humanApprovalRequired: humanApprovalRequired.value,
     enabled: enabled.value,
+    systemPrompt: systemPrompt.value,
+    taskPromptTemplate: taskPromptTemplate.value,
+    reviewPromptTemplate: reviewPromptTemplate.value,
   }
 
   if (!isEditing.value) {
@@ -191,6 +203,24 @@ async function submit() {
             <label class="agent-role-modal__field">
               <span>Description</span>
               <textarea v-model="description" rows="2" placeholder="Short description" />
+            </label>
+
+            <!-- System Prompt -->
+            <label class="agent-role-modal__field">
+              <span>System Prompt</span>
+              <textarea v-model="systemPrompt" rows="3" placeholder="Custom system prompt for this role (overrides default)" />
+            </label>
+
+            <!-- Task Prompt Template -->
+            <label class="agent-role-modal__field">
+              <span>Task Prompt Template</span>
+              <textarea v-model="taskPromptTemplate" rows="3" placeholder="Template for task execution prompts" />
+            </label>
+
+            <!-- Review Prompt Template -->
+            <label class="agent-role-modal__field">
+              <span>Review Prompt Template</span>
+              <textarea v-model="reviewPromptTemplate" rows="3" placeholder="Template for review prompts" />
             </label>
 
             <!-- Provider / Model row -->

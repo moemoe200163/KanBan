@@ -363,6 +363,9 @@ export interface AgentRole {
   humanApprovalRequired: boolean
   enabled: boolean
   isSystem: boolean
+  systemPrompt: string
+  taskPromptTemplate: string
+  reviewPromptTemplate: string
   createdAt: string | null
   updatedAt: string | null
 }
