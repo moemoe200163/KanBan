@@ -406,7 +406,7 @@ const handleStartIssue = (issueId: string) => {
 
 @media (max-width: 760px) {
   .kanban-board {
-    height: 100vh;
+    height: 100%;
     padding: 12px;
     gap: 10px;
     overflow-y: auto;

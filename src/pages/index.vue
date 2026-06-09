@@ -19,7 +19,9 @@ onMounted(() => {
 .board-page {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   background: var(--canvas);
 }
 </style>
