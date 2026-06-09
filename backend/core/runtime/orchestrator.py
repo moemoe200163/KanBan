@@ -425,6 +425,7 @@ async def reclaim_stale_runs(
 
     reclaimed = await repo.reclaim_stale_runs(
         stale_threshold_seconds=stale_threshold_seconds,
+        board_id=board_id,
     )
 
     for run in reclaimed:

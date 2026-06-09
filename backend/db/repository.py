@@ -485,16 +485,20 @@ async def list_jobs(
         return []
 
 
-async def load_all_jobs_into_memory() -> List[dict]:
+async def load_all_jobs_into_memory(board_id: Optional[str] = None) -> List[dict]:
     """Load all jobs from DB as dicts (for in-memory hot path).
 
-    Returns list of job dicts. The caller is responsible for converting
-    to Pydantic ECCDispatchJob objects.
+    If *board_id* is provided, only jobs belonging to that board are
+    returned.  Returns list of job dicts. The caller is responsible for
+    converting to Pydantic ECCDispatchJob objects.
     """
     try:
         await _ensure_init()()
         async with _get_sessionmaker()() as session:
-            result = await session.execute(select(JobModel))
+            stmt = select(JobModel)
+            if board_id is not None:
+                stmt = stmt.where(JobModel.board_id == board_id)
+            result = await session.execute(stmt)
             rows = result.scalars().all()
             return [_job_model_to_dict(r) for r in rows]
     except Exception as e:
@@ -1598,6 +1602,7 @@ async def atomic_claim_run(
 async def reclaim_stale_runs(
     stale_threshold_seconds: int = 300,
     max_retries: int = 3,
+    board_id: Optional[str] = None,
 ) -> List[dict]:
     """Detect runs stuck in 'claimed' or 'running' and reclaim them.
 
@@ -1616,15 +1621,15 @@ async def reclaim_stale_runs(
 
     async with _get_sessionmaker()() as session:
         # Find stale runs in claimed or running state
-        stmt = (
-            select(AgentRun)
-            .where(
-                AgentRun.status.in_(["claimed", "running"]),
-                # Use last_heartbeat_at if set, otherwise started_at
-                ((AgentRun.last_heartbeat_at.is_(None)) & (AgentRun.started_at < threshold))
-                | (AgentRun.last_heartbeat_at < threshold),
-            )
-        )
+        where_clauses = [
+            AgentRun.status.in_(["claimed", "running"]),
+            # Use last_heartbeat_at if set, otherwise started_at
+            ((AgentRun.last_heartbeat_at.is_(None)) & (AgentRun.started_at < threshold))
+            | (AgentRun.last_heartbeat_at < threshold),
+        ]
+        if board_id is not None:
+            where_clauses.append(AgentRun.board_id == board_id)
+        stmt = select(AgentRun).where(*where_clauses)
         result = await session.execute(stmt)
         stale_runs = result.scalars().all()
 

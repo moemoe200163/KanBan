@@ -39,14 +39,17 @@ class RunClaimRequest(BaseModel):
 
 class RunCompleteRequest(BaseModel):
     result_summary: Optional[str] = Field(None, description="Summary of the run result")
+    board_id: Optional[str] = Field(None, description="Board this run belongs to (for validation)")
 
 
 class RunFailRequest(BaseModel):
     error_message: str = Field(..., min_length=1, description="Error description")
+    board_id: Optional[str] = Field(None, description="Board this run belongs to (for validation)")
 
 
 class RunCancelRequest(BaseModel):
     reason: Optional[str] = Field(None, description="Cancellation reason")
+    board_id: Optional[str] = Field(None, description="Board this run belongs to (for validation)")
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +229,8 @@ async def complete_run_endpoint(run_id: str, request: RunCompleteRequest, curren
     run = await repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if request.board_id and run.get("boardId") != request.board_id:
+        raise HTTPException(status_code=403, detail="Run does not belong to this board")
     if run["status"] != "running":
         raise HTTPException(status_code=409, detail=f"Run is in '{run['status']}' state, expected 'running'")
 
@@ -243,6 +248,8 @@ async def fail_run_endpoint(run_id: str, request: RunFailRequest, current_user: 
     run = await repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if request.board_id and run.get("boardId") != request.board_id:
+        raise HTTPException(status_code=403, detail="Run does not belong to this board")
     if run["status"] not in ("claimed", "running"):
         raise HTTPException(status_code=409, detail=f"Run is in '{run['status']}' state, expected 'claimed' or 'running'")
 
@@ -264,6 +271,8 @@ async def cancel_run_endpoint(
     run = await repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if request.board_id and run.get("boardId") != request.board_id:
+        raise HTTPException(status_code=403, detail="Run does not belong to this board")
     if run["status"] in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=409,
