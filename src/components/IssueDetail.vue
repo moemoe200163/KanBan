@@ -26,6 +26,9 @@ const currentJob = computed(() => {
 // P4: AgentRun events fetched from the runtime API, merged into timeline
 const runEvents = ref<Array<ECCLogEntry>>([])
 
+const selectedRunId = ref<string | null>(null)
+const runDetails = ref<Map<string, { status: string; worker: string }>>(new Map())
+
 const timelineLogs = computed<ECCLogEntry[]>(() => {
   const jobLogs = currentJob.value
     ? currentJob.value.events
@@ -206,8 +209,15 @@ watch(
       const linkedRuns = await fetchRunsByJobId(job.id)
       if (linkedRuns.length === 0) {
         runEvents.value = []
+        runDetails.value = new Map()
         return
       }
+      // Store run metadata for the detail panel
+      const detailsMap = new Map<string, { status: string; worker: string }>()
+      for (const run of linkedRuns) {
+        detailsMap.set(run.id, { status: run.status, worker: run.workerId ?? 'unknown' })
+      }
+      runDetails.value = detailsMap
       // Fetch events for all linked runs and merge
       const allEvents = await Promise.all(
         linkedRuns.map(async (run) => {
@@ -220,6 +230,7 @@ watch(
               : 'observation') as ECCLogEntry['phase'],
             content: log.message ?? '',
             confidence: 0.85,
+            runId: run.id,
           }))
         })
       )
@@ -522,6 +533,13 @@ onUnmounted(() => {
                     <span class="issue-detail__ecc-log-time">{{ formatTimestamp(log.timestamp) }}</span>
                     <span v-if="log.toolUsed" class="issue-detail__ecc-log-tool">{{ log.toolUsed }}</span>
                     <span v-if="log.duration" class="issue-detail__ecc-log-duration">{{ log.duration }}ms</span>
+                    <button
+                      v-if="log.runId"
+                      class="issue-detail__run-link"
+                      @click="selectedRunId = selectedRunId === log.runId ? null : log.runId"
+                    >
+                      {{ selectedRunId === log.runId ? 'Hide' : 'View' }} Run
+                    </button>
                   </div>
                   <div class="issue-detail__ecc-log-content">
                     {{ log.content }}
@@ -536,6 +554,13 @@ onUnmounted(() => {
                     <span class="issue-detail__ecc-log-confidence-label">
                       {{ Math.round(log.confidence * 100) }}% confidence
                     </span>
+                  </div>
+                  <div v-if="selectedRunId === log.runId" class="issue-detail__run-detail" data-testid="run-detail-panel">
+                    <div class="issue-detail__run-meta">
+                      <span>Run: {{ selectedRunId }}</span>
+                      <span>Status: {{ runDetails.get(selectedRunId ?? '')?.status ?? 'unknown' }}</span>
+                      <span>Worker: {{ runDetails.get(selectedRunId ?? '')?.worker ?? 'unknown' }}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1543,5 +1568,30 @@ onUnmounted(() => {
   padding: 2px var(--space-2);
   background: rgba(204, 120, 92, 0.08);
   border-radius: var(--radius-sm);
+}
+
+.issue-detail__run-link {
+  font-size: 0.75rem;
+  color: var(--primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  margin-left: auto;
+}
+
+.issue-detail__run-detail {
+  margin: 8px 0;
+  padding: 10px;
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.issue-detail__run-meta {
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
 }
 </style>

@@ -765,6 +765,17 @@ class AgentRun(Base):
         }
 
 
+# AgentRunEvent event_type constants
+class RunEventType:
+    STATUS_CHANGE = "status_change"
+    LOG = "log"
+    ERROR = "error"
+    TOOL_CALL_COMPLETED = "tool_call_completed"
+    TOOL_CALL_FAILED = "tool_call_failed"
+    WORKER_LOST = "worker_lost"
+    HEARTBEAT = "heartbeat"
+
+
 class AgentRunEvent(Base):
     """
     Logs events within a run (status changes, log lines, errors).

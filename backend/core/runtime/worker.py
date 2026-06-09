@@ -434,6 +434,22 @@ class AgentWorkerProcess:
                 await complete_run(run_id, self.worker_id, result_summary=result)
                 logger.info("Worker %s completed run %s", self.worker_id, run_id)
 
+            except asyncio.CancelledError:
+                # Worker was killed — write final event so the run isn't orphaned
+                try:
+                    from db.repository import append_run_event
+                    import uuid
+                    await append_run_event(
+                        id=str(uuid.uuid4()),
+                        run_id=run_id,
+                        event_type="worker_lost",
+                        message="Worker process was cancelled or lost",
+                        extra_metadata={"worker_id": self.worker_id, "board_id": self.board_id},
+                    )
+                except Exception:
+                    pass  # best effort — don't mask the original error
+                raise  # re-raise so the orchestrator can handle cleanup
+
             except Exception as exc:
                 logger.error("Run %s failed: %s", run_id, exc)
                 try:

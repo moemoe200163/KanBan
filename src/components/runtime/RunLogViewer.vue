@@ -111,16 +111,32 @@ onBeforeUnmount(() => {
       <div
         v-for="log in logs"
         :key="log.id"
-        class="log-viewer__line"
       >
-        <span class="log-viewer__time">{{ formatTime(log.createdAt) }}</span>
-        <span
-          class="log-viewer__level"
-          :style="{ color: logLevelColor(logLevel(log)) }"
+        <div
+          v-if="log.eventType === 'tool_call_completed' || log.eventType === 'tool_call_failed'"
+          class="run-log__tool-card"
+          :class="log.eventType === 'tool_call_failed' ? 'run-log__tool-card--failed' : ''"
         >
-          {{ logLevel(log).toUpperCase().padEnd(5) }}
-        </span>
-        <span class="log-viewer__message">{{ log.message }}</span>
+          <span class="run-log__tool-icon">🔧</span>
+          <span class="run-log__tool-name">{{ (log.metadata as Record<string, unknown>)?.tool_name || 'tool' }}</span>
+          <span class="run-log__tool-actor">{{ (log.metadata as Record<string, unknown>)?.actor || '' }}</span>
+          <span
+            class="run-log__tool-status"
+            :class="log.eventType === 'tool_call_completed' ? 'text-green-500' : 'text-red-500'"
+          >
+            {{ log.eventType === 'tool_call_completed' ? 'OK' : 'FAILED' }}
+          </span>
+        </div>
+        <div v-else class="log-viewer__line">
+          <span class="log-viewer__time">{{ formatTime(log.createdAt) }}</span>
+          <span
+            class="log-viewer__level"
+            :style="{ color: logLevelColor(logLevel(log)) }"
+          >
+            {{ logLevel(log).toUpperCase().padEnd(5) }}
+          </span>
+          <span class="log-viewer__message">{{ log.message }}</span>
+        </div>
       </div>
     </div>
 
@@ -229,5 +245,31 @@ onBeforeUnmount(() => {
 
 .log-viewer__scroll-btn:hover {
   background: var(--primary-hover);
+}
+
+.run-log__tool-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.run-log__tool-card--failed {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.run-log__tool-name {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.run-log__tool-actor {
+  color: var(--muted);
 }
 </style>

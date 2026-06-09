@@ -65,6 +65,7 @@ export interface ECCLogEntry {
   confidence?: number  // 0-1, agent's confidence in the action
   toolUsed?: string    // e.g., "bash", "edit", "read"
   duration?: number    // ms, execution time
+  runId?: string       // linked AgentRun ID for run-specific entries
 }
 
 // PR Diff View
