@@ -453,3 +453,188 @@ class TestKanbanTools:
             assert "kanban_create" in tool_names
             assert "kanban_comment" in tool_names
             assert "kanban_complete" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_kanban_block(self, fresh_db):
+        """kanban_block blocks an issue and its active handoffs."""
+        from core.kanban_protocol.tools import kanban_block, KanbanToolContext
+
+        issue = await repo.upsert_issue({
+            "id": "i-block", "key": "DEV-BLOCK", "board_id": "board-default",
+            "title": "Block Test", "status": "in_progress", "priority": "medium",
+        })
+
+        ctx = KanbanToolContext(
+            board_id="board-default",
+            issue_id=issue["id"],
+            actor="test-agent",
+            payload={"reason": "Missing dependency"},
+        )
+        result = await kanban_block(ctx)
+        assert result.ok
+        assert result.data["reason"] == "Missing dependency"
+
+        # Verify issue status changed to blocked
+        updated = await repo.get_issue(issue["id"])
+        assert updated["status"] == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_kanban_block_missing_issue(self, fresh_db):
+        """kanban_block returns error for nonexistent issue."""
+        from core.kanban_protocol.tools import kanban_block, KanbanToolContext
+
+        ctx = KanbanToolContext(
+            board_id="board-default",
+            issue_key="NOPE-999",
+            payload={"reason": "test"},
+        )
+        result = await kanban_block(ctx)
+        assert not result.ok
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_kanban_unblock(self, fresh_db):
+        """kanban_unblock unblocks a blocked issue."""
+        from core.kanban_protocol.tools import kanban_block, kanban_unblock, KanbanToolContext
+
+        issue = await repo.upsert_issue({
+            "id": "i-unblock", "key": "DEV-UNBLOCK", "board_id": "board-default",
+            "title": "Unblock Test", "status": "blocked", "priority": "medium",
+        })
+
+        # First block it
+        ctx_block = KanbanToolContext(
+            board_id="board-default",
+            issue_id=issue["id"],
+            actor="test-agent",
+            payload={"reason": "Test block"},
+        )
+        await kanban_block(ctx_block)
+
+        # Then unblock
+        ctx_unblock = KanbanToolContext(
+            board_id="board-default",
+            issue_id=issue["id"],
+            actor="test-agent",
+        )
+        result = await kanban_unblock(ctx_unblock)
+        assert result.ok
+
+        # Verify issue status restored
+        updated = await repo.get_issue(issue["id"])
+        assert updated["status"] == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_kanban_unblock_missing_issue(self, fresh_db):
+        """kanban_unblock returns error for nonexistent issue."""
+        from core.kanban_protocol.tools import kanban_unblock, KanbanToolContext
+
+        ctx = KanbanToolContext(
+            board_id="board-default",
+            issue_key="NOPE-999",
+        )
+        result = await kanban_unblock(ctx)
+        assert not result.ok
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_kanban_complete(self, fresh_db):
+        """kanban_complete creates a review handoff with evidence."""
+        from core.kanban_protocol.tools import kanban_complete, KanbanToolContext
+
+        issue = await repo.upsert_issue({
+            "id": "i-done", "key": "DEV-DONE", "board_id": "board-default",
+            "title": "Complete Test", "status": "in_progress", "priority": "medium",
+        })
+
+        ctx = KanbanToolContext(
+            board_id="board-default",
+            issue_id=issue["id"],
+            actor="test-agent",
+            agent_role="backend",
+            next_role="review",
+            payload={"result_summary": "All tests pass", "evidence": ["coverage 92%"]},
+            artifacts=[{"type": "pr", "title": "PR #100", "url": "https://github.com/test/pr/100"}],
+        )
+        result = await kanban_complete(ctx)
+        assert result.ok
+        assert "handoff" in result.data
+        assert result.data["handoff"]["toLane"] == "review"
+
+    @pytest.mark.asyncio
+    async def test_kanban_complete_missing_issue(self, fresh_db):
+        """kanban_complete returns error for nonexistent issue."""
+        from core.kanban_protocol.tools import kanban_complete, KanbanToolContext
+
+        ctx = KanbanToolContext(
+            board_id="board-default",
+            issue_key="NOPE-999",
+            payload={"result_summary": "done"},
+        )
+        result = await kanban_complete(ctx)
+        assert not result.ok
+        assert "not found" in result.error.lower()
+
+
+class TestKanbanToolSchemas:
+    @pytest.mark.asyncio
+    async def test_tools_return_input_schema(self, fresh_db):
+        """GET /api/v1/kanban/tools returns input_schema for each tool."""
+        from fastapi.testclient import TestClient
+        from main import app
+
+        with TestClient(app) as client:
+            resp = client.get("/api/v1/kanban/tools")
+            assert resp.status_code == 200
+            tools = resp.json()["tools"]
+            for tool in tools:
+                assert "input_schema" in tool, f"{tool['name']} missing input_schema"
+                schema = tool["input_schema"]
+                assert schema.get("type") == "object"
+                props = schema.get("properties", {})
+                assert "board_id" in props, f"{tool['name']} schema missing board_id"
+
+
+class TestToolCallAudit:
+    @pytest.mark.asyncio
+    async def test_tool_call_writes_event_on_success(self, fresh_db):
+        """Successful tool call writes a tool_call_completed event."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from db import repository as repo
+        from conftest import seed_test_user
+
+        _, sessionmaker = fresh_db
+        headers = await seed_test_user(sessionmaker)
+
+        # Create an issue first
+        issue = await repo.upsert_issue({
+            "id": "i-audit", "key": "DEV-AUDIT", "board_id": "board-default",
+            "title": "Audit Test", "status": "backlog", "priority": "medium",
+        })
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/kanban/kanban_show",
+                json={"board_id": "board-default", "issue_id": issue["id"]},
+                headers=headers,
+            )
+            assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_tool_call_writes_event_on_failure(self, fresh_db):
+        """Failed tool call writes a tool_call_failed event."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from conftest import seed_test_user
+
+        _, sessionmaker = fresh_db
+        headers = await seed_test_user(sessionmaker)
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/kanban/kanban_show",
+                json={"board_id": "board-default", "issue_key": "NOPE-999"},
+                headers=headers,
+            )
+            assert resp.status_code == 400

@@ -196,7 +196,24 @@ class ClaudeExecutor:
             parts.append(f"## Title: {ctx.extra_metadata['title']}")
         if ctx.extra_metadata.get("description"):
             parts.append(f"## Description:\n{ctx.extra_metadata['description']}")
-        parts.append("\n---\n## Instructions\n1. Analyze the issue\n2. Implement changes\n3. Return summary")
+        parts.append(
+            "\n---\n## Instructions\n"
+            "1. Analyze the issue using kanban_show\n"
+            "2. Implement changes\n"
+            "3. Report progress with kanban_comment\n"
+            "4. Link evidence with kanban_link\n"
+            "5. Complete with kanban_complete or block with kanban_block\n"
+            "\n---\n## Kanban Tool Protocol\n"
+            "Use these tools to interact with the Kanban board:\n"
+            "- kanban_show: Read issue details, handoffs, artifacts\n"
+            "- kanban_comment: Add progress notes or findings\n"
+            "- kanban_link: Attach PRs, files, or external resources\n"
+            "- kanban_complete: Mark work done (creates review handoff)\n"
+            "- kanban_block: Block issue with reason if stuck\n"
+            "- kanban_heartbeat: Keep your run alive\n"
+            "Always include board_id and issue_key when calling tools.\n"
+            "Complete your work by calling kanban_complete with a result_summary."
+        )
         return "\n\n".join(parts)
 
 
@@ -447,9 +464,19 @@ def _build_api_prompt(ctx: ExecutionContext) -> str:
         parts.append(f"## Description:\n{ctx.extra_metadata['description']}")
     parts.append(
         "\n---\n## Instructions\n"
-        "1. Analyze the issue\n"
+        "1. Analyze the issue using kanban_show\n"
         "2. Provide a clear, detailed response\n"
-        "3. Include examples where appropriate"
+        "3. Include examples where appropriate\n"
+        "4. Report findings with kanban_comment\n"
+        "5. Complete with kanban_complete or block with kanban_block\n"
+        "\n---\n## Kanban Tool Protocol\n"
+        "Use these tools to interact with the Kanban board:\n"
+        "- kanban_show: Read issue details, handoffs, artifacts\n"
+        "- kanban_comment: Add progress notes or findings\n"
+        "- kanban_link: Attach external resources\n"
+        "- kanban_complete: Mark work done (creates review handoff)\n"
+        "- kanban_block: Block issue with reason if stuck\n"
+        "Always include board_id and issue_key when calling tools."
     )
     return "\n\n".join(parts)
 
