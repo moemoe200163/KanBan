@@ -261,6 +261,10 @@ class AgentWorkerProcess:
         self._workspace_path = workspace_path
         # Default executor — overridden per-run if harness is "claude-code"
         self._executor = SafeRunExecutor()
+        # Concurrency guard — tracks the ID of the currently executing run.
+        # A non-None value means the worker is at max concurrency and must
+        # not claim another run until the current one completes or fails.
+        self._active_run_id: Optional[str] = None
 
     async def start(self) -> None:
         """Start the worker loop. Runs until stop() is called."""
@@ -288,7 +292,6 @@ class AgentWorkerProcess:
         last_heartbeat = asyncio.get_event_loop().time()
         last_stale_check = asyncio.get_event_loop().time()
         stale_check_interval = 60.0  # check for stale runs every 60s
-        active_run_task: Optional[asyncio.Task] = None
 
         while self._running:
             # Send heartbeat if due
@@ -313,6 +316,11 @@ class AgentWorkerProcess:
                     logger.warning("Stale reclaim check failed: %s", exc)
                 last_stale_check = now
 
+            # Concurrency guard — skip claiming if already at max concurrency
+            if self._active_run_id is not None:
+                await asyncio.sleep(self.poll_interval)
+                continue
+
             # Try to claim a run (atomic claim avoids race conditions)
             try:
                 run = await claim_next_run(self.worker_id, self.board_id)
@@ -327,6 +335,7 @@ class AgentWorkerProcess:
 
             # Execute the claimed run
             run_id = run["id"]
+            self._active_run_id = run_id
             logger.info("Worker %s executing run %s", self.worker_id, run_id)
 
             try:
@@ -433,6 +442,8 @@ class AgentWorkerProcess:
                     )
                 except Exception:
                     logger.error("Failed to report failure for run %s", run_id)
+            finally:
+                self._active_run_id = None
 
         # Worker stopped — update status
         try:

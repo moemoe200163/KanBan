@@ -1618,6 +1618,8 @@ async def reclaim_stale_runs(
     from datetime import timedelta
     threshold = now - timedelta(seconds=stale_threshold_seconds)
     reclaimed = []
+    # Collect runs whose linked issues should be auto-blocked after commit
+    runs_needing_auto_block: list = []
 
     async with _get_sessionmaker()() as session:
         # Find stale runs in claimed or running state
@@ -1657,8 +1659,24 @@ async def reclaim_stale_runs(
                     "Stale run %s exceeded max retries (%d), marking failed",
                     run.id, run.max_retries or max_retries,
                 )
+                # Collect for auto-blocking after commit
+                if run.issue_id:
+                    runs_needing_auto_block.append(run)
 
         await session.commit()
+
+    # Auto-block linked issues for runs that exhausted retries.
+    # This happens after the session commit so that each auto_block call
+    # uses its own session and never conflicts with the reclaimed batch.
+    for run in runs_needing_auto_block:
+        await auto_block_issue_on_failure(
+            issue_id=run.issue_id,
+            issue_key=run.issue_key,
+            board_id=run.board_id,
+            run_id=run.id,
+            retry_count=run.retry_count,
+            max_retries=run.max_retries or max_retries,
+        )
 
     return reclaimed
 
@@ -1699,6 +1717,44 @@ async def schedule_retry(run_id: str, delay_seconds: int = 30) -> Optional[dict]
         await session.commit()
         await session.refresh(row)
         return row.to_dict()
+
+
+async def auto_block_issue_on_failure(
+    issue_id: str,
+    issue_key: str,
+    board_id: str,
+    run_id: str,
+    retry_count: int,
+    max_retries: int,
+) -> None:
+    """Auto-block an issue when its run exhausts all retries.
+
+    Fetches the issue to get the title, updates status to 'blocked',
+    and creates an issue event recording the auto-block. Failures are
+    logged and swallowed so they never prevent the caller from continuing.
+    """
+    try:
+        issue = await get_issue(issue_id)
+        if not issue:
+            logger.warning(
+                "Issue %s not found for auto-block after run %s", issue_id, run_id,
+            )
+            return
+        await update_issue_status(issue_id, "blocked")
+        await create_issue_event(
+            issue_id=issue_id,
+            event_type="auto_blocked",
+            summary=f"Auto-blocked after {max_retries} failed retries (run {run_id})",
+            board_id=board_id,
+        )
+        logger.info(
+            "Auto-blocked issue %s after %d failed retries (run %s)",
+            issue_key, retry_count, run_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to auto-block issue %s: %s", issue_key, exc)
+
+
 # ---------------------------------------------------------------------------
 
 async def append_run_event(
