@@ -15,6 +15,7 @@ const boardStore = useBoardStore()
 const llmStore = useLLMStore()
 const { isDark, toggleDark } = useDarkMode()
 const config = useRuntimeConfig()
+const isAdmin = computed(() => !!useCookie('auth_token').value)
 
 const apiBase = ref(config.public.apiBase)
 const activeTab = ref<'system' | 'providers' | 'defaults' | 'appearance'>('system')
@@ -256,6 +257,10 @@ const backendStatusColor = computed(() => {
       </div>
 
       <div v-else class="providers-grid">
+        <div v-if="!isAdmin" class="auth-notice">
+          <Shield :size="14" />
+          <span>Login to edit provider settings.</span>
+        </div>
         <div
           v-for="provider in llmStore.providers"
           :key="provider.id"
@@ -305,6 +310,7 @@ const backendStatusColor = computed(() => {
                 :value="provider.baseUrl || ''"
                 class="field__input field__input--sm"
                 placeholder="API base URL"
+                :disabled="!isAdmin"
                 @change="updateBaseUrl(provider, ($event.target as HTMLInputElement).value)"
               />
             </div>
@@ -316,6 +322,7 @@ const backendStatusColor = computed(() => {
                 :value="provider.model || provider.defaultModel || ''"
                 class="field__input field__input--sm"
                 placeholder="Model name"
+                :disabled="!isAdmin"
                 @change="updateModel(provider, ($event.target as HTMLInputElement).value)"
               />
             </div>
@@ -341,6 +348,7 @@ const backendStatusColor = computed(() => {
                 <button
                   v-else
                   class="action-btn action-btn--edit"
+                  :disabled="!isAdmin"
                   @click="startEditKey(provider)"
                 >Edit</button>
               </div>
@@ -379,6 +387,7 @@ const backendStatusColor = computed(() => {
               </button>
               <button
                 class="action-btn action-btn--default"
+                :disabled="!isAdmin"
                 @click.stop="selectProviderAction(provider.id)"
               >
                 <Star :size="14" />
@@ -386,6 +395,7 @@ const backendStatusColor = computed(() => {
               </button>
               <button
                 :class="['action-btn', provider.enabled ? 'action-btn--disable' : 'action-btn--enable']"
+                :disabled="!isAdmin"
                 @click.stop="toggleProviderEnabled(provider)"
               >
                 <PowerOff v-if="provider.enabled" :size="14" />
@@ -578,6 +588,7 @@ function getProviderModels(provider: LLMProvider): string[] {
   font-family: var(--font-mono);
 }
 .field__input:focus { outline: none; border-color: var(--primary); }
+.field__input:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Buttons */
 .settings-btn {
@@ -597,6 +608,12 @@ function getProviderModels(provider: LLMProvider): string[] {
   color: var(--muted);
 }
 .settings-error { color: var(--clay-red); }
+.auth-notice {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  color: var(--muted); background: var(--surface-soft);
+  border: 1px solid var(--hairline); border-radius: 8px;
+  font-size: 0.85rem; grid-column: 1 / -1;
+}
 
 /* Providers Grid */
 .providers-grid {
