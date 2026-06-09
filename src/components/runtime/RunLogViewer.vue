@@ -28,11 +28,7 @@ onMounted(() => {
 watch(() => props.runId, (newRunId, oldRunId) => {
   if (oldRunId) unsubscribe(oldRunId)
   if (newRunId) {
-    // Pre-fill with initial logs if provided
-    if (props.initialLogs?.length) {
-      logs.value = [...props.initialLogs]
-    }
-    subscribe(newRunId)
+    subscribe(newRunId, props.initialLogs)
   }
 }, { immediate: true })
 

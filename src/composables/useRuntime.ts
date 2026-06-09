@@ -6,7 +6,15 @@
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const API_BASE = 'http://localhost:8000/api/v1'
+function useApiBase() {
+  const config = useRuntimeConfig()
+  return config.public.apiBase as string
+}
+
+function useAuthHeaders(): Record<string, string> {
+  const token = useCookie('auth_token').value
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 export interface RuntimeWorker {
   id: string
@@ -65,6 +73,8 @@ export interface AgentRole {
 
 export const useRuntime = (options: { refreshMs?: number } = {}) => {
   const refreshMs = options.refreshMs ?? 5_000
+  const apiBase = useApiBase()
+  const authHeaders = useAuthHeaders()
 
   const workers = ref<RuntimeWorker[]>([])
   const runs = ref<RuntimeRun[]>([])
@@ -79,7 +89,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
 
   const fetchWorkers = async () => {
     try {
-      const res = await fetch(`${API_BASE}/runtime/workers?board_id=board-default`)
+      const res = await fetch(`${apiBase}/runtime/workers?board_id=board-default`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       workers.value = data.workers ?? []
@@ -92,7 +102,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
     try {
       const params = new URLSearchParams({ board_id: 'board-default', limit: '50' })
       if (status) params.set('status', status)
-      const res = await fetch(`${API_BASE}/runtime/runs?${params}`)
+      const res = await fetch(`${apiBase}/runtime/runs?${params}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       runs.value = data.runs ?? []
@@ -104,7 +114,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
   const fetchRunsByJobId = async (jobId: string): Promise<RuntimeRun[]> => {
     try {
       const params = new URLSearchParams({ board_id: 'board-default', job_id: jobId, limit: '50' })
-      const res = await fetch(`${API_BASE}/runtime/runs?${params}`)
+      const res = await fetch(`${apiBase}/runtime/runs?${params}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       return data.runs ?? []
@@ -116,7 +126,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
 
   const fetchRunLogs = async (runId: string): Promise<RuntimeLog[]> => {
     try {
-      const res = await fetch(`${API_BASE}/runtime/runs/${runId}/logs`)
+      const res = await fetch(`${apiBase}/runtime/runs/${runId}/logs`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       return data.logs ?? []
@@ -128,7 +138,7 @@ export const useRuntime = (options: { refreshMs?: number } = {}) => {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch(`${API_BASE}/runtime/roles`)
+      const res = await fetch(`${apiBase}/runtime/roles`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       roles.value = data.roles ?? []
@@ -198,7 +208,14 @@ export const useRuntimeLogStream = () => {
   const connect = () => {
     if (ws && ws.readyState === WebSocket.OPEN) return
 
-    const wsUrl = 'ws://localhost:8000/ws/runtime/runs?token=dev'
+    const config = useRuntimeConfig()
+    const apiBase = config.public.apiBase as string
+    const token = useCookie('auth_token').value || 'dev'
+    // Derive WS URL from API base: http://host:port/api/v1 → ws://host:port
+    const httpBase = apiBase.replace(/\/api\/v1\/?$/, '')
+    const wsProtocol = httpBase.startsWith('https') ? 'wss' : 'ws'
+    const wsHost = httpBase.replace(/^https?:\/\//, '')
+    const wsUrl = `${wsProtocol}://${wsHost}/ws/runtime/runs?token=${token}`
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
@@ -245,9 +262,14 @@ export const useRuntimeLogStream = () => {
     }
   }
 
-  const subscribe = (runId: string) => {
+  const subscribe = (runId: string, initialLogs?: RuntimeLog[]) => {
     subscribedRunId.value = runId
-    logs.value = [] // clear previous logs
+    // Preserve REST pre-fetched logs; only clear if no initial logs provided
+    if (initialLogs?.length) {
+      logs.value = [...initialLogs]
+    } else {
+      logs.value = []
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: 'subscribe', run_id: runId }))
     }
