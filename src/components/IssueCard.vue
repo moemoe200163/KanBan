@@ -28,7 +28,13 @@ const ciStatusConfig = computed(() => {
   return {
     pending: { label: 'CI pending', className: 'issue-card__ci--pending' },
     passed: { label: 'CI passed', className: 'issue-card__ci--passed' },
-    failed: { label: 'CI failed', className: 'issue-card__ci--failed' }
+    failed: { label: 'CI failed', className: 'issue-card__ci--failed' },
+    // ``error`` is the new state written by the PR/CI webhook
+    // auto-fill path when the CI provider reports a system-level
+    // error (timeout, infra outage, etc.) — distinct from a normal
+    // test failure. Orange dot so the leader can spot it at a
+    // glance without hovering.
+    error: { label: 'CI error', className: 'issue-card__ci--error' }
   }[props.issue.ciStatus]
 })
 
@@ -168,14 +174,29 @@ const handleStart = (event: Event) => {
           Start
         </button>
         <span v-if="issue.storyPoints" class="issue-card__points">{{ issue.storyPoints }}pt</span>
-        <span v-if="issue.prUrl" class="issue-card__signal" title="Pull request">
+        <!-- PR icon — wrapped in an anchor so the leader can jump
+             straight to the PR without opening the detail drawer.
+             We stop propagation in the click handler so the anchor
+             click doesn't also fire the card's outer click (which
+             would open the drawer and then immediately close it). -->
+        <a
+          v-if="issue.prUrl"
+          :href="issue.prUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="issue-card__signal issue-card__signal--link"
+          :title="`Open PR: ${issue.prUrl}`"
+          data-testid="pr-link"
+          @click.stop
+        >
           <GitPullRequest :size="13" />
-        </span>
+        </a>
         <span
           v-if="ciStatusConfig"
           class="issue-card__ci"
           :class="ciStatusConfig.className"
           :title="ciStatusConfig.label"
+          :data-testid="`ci-status-${issue.ciStatus}`"
         />
       </div>
     </div>
@@ -439,6 +460,30 @@ const handleStart = (event: Event) => {
 
 .issue-card__ci--failed {
   background: var(--clay-red);
+}
+
+/* Orange dot for system-level CI errors (timeout, infra outage).
+   Distinct from failed (which is a code/test failure) so the
+   leader can triage at a glance. */
+.issue-card__ci--error {
+  background: #E08A3C;
+}
+
+/* The PR anchor — same inline-flex baseline as the span it
+   replaced, but with hover affordance + a subtle colour shift
+   so it reads as clickable. ``color: inherit`` keeps the muted
+   ink from the .issue-card__signals parent. */
+.issue-card__signal--link {
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  padding: 1px 2px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.issue-card__signal--link:hover {
+  color: var(--primary-active);
+  background: rgba(204, 120, 92, 0.10);
 }
 
 .issue-card__execution,

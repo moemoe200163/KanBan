@@ -242,7 +242,12 @@ export interface Issue {
   storyPoints: number | null
   dependencies: string[]
   prUrl: string | null
-  ciStatus: 'pending' | 'passed' | 'failed' | null
+  // ``error`` is the new state added by the PR/CI webhook
+  // auto-fill path. It represents a system-level CI failure
+  // (timeout, infra outage) — distinct from ``failed`` which is
+  // a code/test failure. IssueCard.vue renders it as an orange
+  // dot so the leader can triage at a glance.
+  ciStatus: 'pending' | 'passed' | 'failed' | 'error' | null
   aiStatus: AIAgentStatus
   harnessType: HarnessType | null
   eccJobId: string | null
