@@ -3,8 +3,13 @@ import { useBoardStore } from '~/stores/board'
 import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
 import type { ECCLogEntry } from '~/types'
 import { useRuntime } from '~/composables/useRuntime'
+import { useToast } from '~/composables/useToast'
 import { authHeaders } from '~/utils/authHeaders'
-import { Bot, FileText, X, Archive, RotateCcw } from 'lucide-vue-next'
+import {
+  Bot, FileText, X, Archive, RotateCcw,
+  Plus, Pencil, Trash2, GripVertical, Check,
+} from 'lucide-vue-next'
+import draggable from 'vuedraggable'
 import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
 
@@ -95,6 +100,15 @@ interface CycleReport {
   verdictReason: string | null
   createdAt: string | null
   updatedAt: string | null
+  // Review fields — populated by POST /cycle-reports/{id}/review
+  // (see migration 0020). ``decision IS NULL`` means the report
+  // hasn't been reviewed yet; the UI hides the action buttons
+  // once a decision is recorded.
+  decision: 'approved' | 'changes_requested' | null
+  reviewComment: string | null
+  reviewedAt: string | null
+  reviewedBy: string | null
+  reviewedById: string | null
 }
 
 const cycleReports = ref<CycleReport[]>([])
@@ -195,6 +209,99 @@ const formatCycleTime = (ts: string | null) => {
   try {
     return new Date(ts).toLocaleString()
   } catch { return ts }
+}
+
+// ---------------------------------------------------------------------------
+// Review flow (POST /cycle-reports/{id}/review)
+//
+// Distinct from ``overrideVerdict``: a *verdict* override
+// (pass/fail/blocked) is the leader's accept/reject of the
+// work product, a *review* is the leader's accept/reject of
+// the report itself (approve, or send the worker back with
+// feedback). Both can coexist on the same report. The
+// backend writes the review fields on cycle_reports and emits
+// a ``cycle_report.review`` audit-log entry — see migration
+// 0020 + the endpoint in cycle_reports.py.
+// ---------------------------------------------------------------------------
+
+// Per-report comment input — a Map keyed by report id so
+// different reports on the same issue don't clobber each
+// other when the user types in one card then switches focus.
+const reviewComments = ref<Map<string, string>>(new Map())
+const reviewingReportId = ref<string | null>(null)
+const reviewErrors = ref<Map<string, string>>(new Map())
+
+const setReviewComment = (reportId: string, value: string) => {
+  const m = new Map(reviewComments.value)
+  m.set(reportId, value)
+  reviewComments.value = m
+}
+
+const setReviewError = (reportId: string, message: string | null) => {
+  const m = new Map(reviewErrors.value)
+  if (message === null) {
+    m.delete(reportId)
+  } else {
+    m.set(reportId, message)
+  }
+  reviewErrors.value = m
+}
+
+// Self-review guard client-side: the backend also rejects with
+// 403, but hiding the buttons up-front prevents the user from
+// spending time on a comment only to see the error after submit.
+const { authUser } = useAuth()
+const currentUserId = computed<string | null>(() => authUser.value?.id ?? null)
+
+const isSelfReview = (report: CycleReport) => {
+  return !!(report.authorId && currentUserId.value && report.authorId === currentUserId.value)
+}
+
+const isReviewed = (report: CycleReport) => {
+  return report.decision === 'approved' || report.decision === 'changes_requested'
+}
+
+const reviewDecisionLabel = (decision: 'approved' | 'changes_requested') => {
+  return decision === 'approved' ? 'Approved' : 'Changes requested'
+}
+
+const reviewDecisionClass = (decision: 'approved' | 'changes_requested') => {
+  return decision === 'approved' ? 'approved' : 'changes'
+}
+
+const submitReview = async (report: CycleReport, decision: 'approved' | 'changes_requested') => {
+  reviewingReportId.value = report.id
+  setReviewError(report.id, null)
+  const comment = (reviewComments.value.get(report.id) ?? '').trim() || null
+  try {
+    const config = useRuntimeConfig()
+    const updated = await $fetch<CycleReport>(
+      `${config.public.apiBase}/cycle-reports/${report.id}/review`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { decision, comment },
+      },
+    )
+    // Optimistic patch + a server-of-truth refetch — same
+    // pattern as the verdict override above. The two together
+    // make the row animate to the new state immediately while
+    // the next poll (or WS broadcast) reconciles any drift.
+    const idx = cycleReports.value.findIndex(r => r.id === updated.id)
+    if (idx >= 0) cycleReports.value[idx] = updated
+    setReviewComment(report.id, '')
+    if (issue.value?.id) {
+      void loadCycleReports(issue.value.id)
+    }
+  } catch (err: any) {
+    // Surface 4xx with a clear inline message; for 5xx
+    // fall back to the raw error string so the operator can
+    // at least copy it into a bug report.
+    const detail = err?.data?.detail ?? err?.message ?? 'Failed to submit review'
+    setReviewError(report.id, typeof detail === 'string' ? detail : 'Failed to submit review')
+  } finally {
+    reviewingReportId.value = null
+  }
 }
 
 const formatLogTime = (ts: string) => {
@@ -380,12 +487,22 @@ onUnmounted(() => {
 
 // ---------------------------------------------------------------------------
 // Acceptance Criteria — operator-driven AC management.
-// The "Suggest AC" button calls the backend endpoint, which uses the
-// active LLM provider if configured and falls back to a deterministic
-// heuristic otherwise. The result is presented inline as a
-// preview, and the operator commits it via "Apply all" (PATCH
-// /acceptance-criteria). Until the operator commits, the existing
-// AC on the issue is untouched.
+//
+// Two flows live here:
+//   1. AI Suggest AC:  the existing "Suggest AC" button calls the backend
+//      /suggest-ac endpoint, which uses the active LLM provider if
+//      configured and falls back to a deterministic heuristic. The
+//      operator commits via "Apply all" (PATCH /acceptance-criteria).
+//   2. Inline editor:  the operator can add / edit / delete / toggle /
+//      reorder AC entries directly. Every action does an *optimistic*
+//      update against the local mirror first, then calls PATCH
+//      /acceptance-criteria with the full array. On error we roll back
+//      the local mirror and surface a toast.
+//
+// We keep a local ref (`acLocal`) rather than mutating
+// `issue.value.acceptanceCriteria` directly so the rollback path is
+// obvious and so the AI-Suggest-apply can replace the mirror without
+// touching anything else.
 // ---------------------------------------------------------------------------
 interface AcItem { id: string; text: string; done: boolean }
 interface SuggestResponse {
@@ -398,6 +515,51 @@ interface SuggestResponse {
 const acSuggestion = ref<SuggestResponse | null>(null)
 const acSuggesting = ref(false)
 const acApplying = ref(false)
+
+// Local mirror of acceptanceCriteria on the current issue. We re-sync
+// from the issue when the issue id changes (board reuses the drawer
+// across selections), and after the AI-Suggest apply.
+const acLocal = ref<AcItem[]>([])
+let lastSyncedIssueId: string | null = null
+
+const syncAcFromIssue = () => {
+  if (!issue.value) {
+    acLocal.value = []
+    lastSyncedIssueId = null
+    return
+  }
+  // Deep clone the AC entries so optimistic edits don't mutate the
+  // board store's shared issue object.
+  acLocal.value = (issue.value.acceptanceCriteria ?? []).map(c => ({ ...c }))
+  lastSyncedIssueId = issue.value.id
+}
+
+// --- Inline editor state ---------------------------------------------------
+
+// Declared BEFORE the watcher below: the watcher runs
+// ``immediate: true`` so it fires during setup, and the TDZ would
+// bite us if the refs lived further down the file. Keep all editor
+// state above any watcher that touches it.
+const showAddRow = ref(false)
+const newAcText = ref('')
+const editingId = ref<string | null>(null)
+const editingText = ref('')
+const acSaving = ref(false)
+const acError = ref<string | null>(null)
+const { add: addToast } = useToast()
+
+watch(
+  () => issue.value?.id,
+  () => {
+    // Switching to a different issue: drop any open editor state and
+    // pull a fresh copy of the AC list.
+    editingId.value = null
+    newAcText.value = ''
+    showAddRow.value = false
+    syncAcFromIssue()
+  },
+  { immediate: true },
+)
 
 const suggestAcceptanceCriteria = async () => {
   if (!issue.value) return
@@ -428,24 +590,8 @@ const applySuggestion = async () => {
     // on the issue. The operator can re-edit / drop dupes after.
     // We don't dedupe on text here because re-suggesting the same
     // issue with a tweaked description is a legit workflow.
-    const existing: AcItem[] = issue.value.acceptanceCriteria ?? []
-    const merged: AcItem[] = [...existing, ...acSuggestion.value.criteria]
-    const config = useRuntimeConfig()
-    await $fetch(
-      `${config.public.apiBase}/issues/${issue.value.id}/acceptance-criteria`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: { criteria: merged },
-      },
-    )
-    // Patch the local issue copy so the rendered list reflects the
-    // new AC without waiting for a board re-fetch. The board store
-    // would re-fetch on the next drag/status change; for a quiet
-    // edit like this we just mutate the selectedIssue in place.
-    if (issue.value) {
-      issue.value.acceptanceCriteria = merged
-    }
+    const merged: AcItem[] = [...acLocal.value, ...acSuggestion.value.criteria]
+    await persistAcceptanceCriteria(merged, 'apply suggestion')
     acSuggestion.value = null
   } catch (err) {
     console.error('[AC] apply failed:', err)
@@ -454,27 +600,175 @@ const applySuggestion = async () => {
   }
 }
 
+// --- Inline editor state ---------------------------------------------------
+
+// (refs are declared above so the immediate watcher doesn't hit the
+// TDZ — the rest of the editor logic lives down here.)
+
+// Build a stable client-side id for new entries. The backend fills
+// any missing id with a uuid on save, but we keep the local one so
+// the optimistic render doesn't flicker if the server rewrites it.
+const makeAcId = () => `ac_local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+
+const beginAdd = () => {
+  showAddRow.value = true
+  newAcText.value = ''
+  editingId.value = null
+  editingText.value = ''
+}
+
+const cancelAdd = () => {
+  showAddRow.value = false
+  newAcText.value = ''
+}
+
+const commitAdd = async () => {
+  const text = newAcText.value.trim()
+  if (!text || !issue.value) return
+  const newItem: AcItem = { id: makeAcId(), text, done: false }
+  const previous = [...acLocal.value]
+  const next = [...acLocal.value, newItem]
+  // Optimistic: render immediately, close the input row, clear text.
+  acLocal.value = next
+  showAddRow.value = false
+  newAcText.value = ''
+  try {
+    await persistAcceptanceCriteria(next, 'add criterion')
+  } catch {
+    // persistAcceptanceCriteria already rolled back + toasted.
+    void previous
+  }
+}
+
+const beginEdit = (ac: AcItem) => {
+  editingId.value = ac.id
+  editingText.value = ac.text
+  // Close any open add row so the drawer doesn't grow two inputs.
+  showAddRow.value = false
+  newAcText.value = ''
+}
+
+const cancelEdit = () => {
+  editingId.value = null
+  editingText.value = ''
+}
+
+const commitEdit = async (ac: AcItem) => {
+  const text = editingText.value.trim()
+  if (!text || !issue.value) {
+    cancelEdit()
+    return
+  }
+  if (text === ac.text) {
+    // No change — don't fire an API call.
+    cancelEdit()
+    return
+  }
+  const next = acLocal.value.map(c => c.id === ac.id ? { ...c, text } : c)
+  acLocal.value = next
+  cancelEdit()
+  try {
+    await persistAcceptanceCriteria(next, 'edit criterion')
+  } catch {
+    // rolled back already
+  }
+}
+
+const removeAcceptanceCriterion = async (ac: AcItem) => {
+  if (!issue.value) return
+  // Use window.confirm so the prompt feels native to the existing
+  // archive flow. The operator can also cancel and keep the row.
+  // We don't want a fancy modal for one-click destructive ops.
+  const ok = window.confirm(
+    `Delete this acceptance criterion?\n\n"${ac.text}"`,
+  )
+  if (!ok) return
+  const next = acLocal.value.filter(c => c.id !== ac.id)
+  const previous = acLocal.value
+  acLocal.value = next
+  try {
+    await persistAcceptanceCriteria(next, 'delete criterion')
+  } catch {
+    // rolled back already
+    void previous
+  }
+}
+
 const toggleAcceptanceCriterion = async (ac: AcItem) => {
   if (!issue.value) return
-  const existing: AcItem[] = issue.value.acceptanceCriteria ?? []
-  const updated: AcItem[] = existing.map(c =>
-    c.id === ac.id ? { ...c, done: !c.done } : c
-  )
+  // Optimistic — flip locally first, then sync. The checkbox binds to
+  // acLocal via the render path so the visual update is instant; we
+  // don't wait for the API round-trip.
+  const next = acLocal.value.map(c => c.id === ac.id ? { ...c, done: !c.done } : c)
+  acLocal.value = next
+  try {
+    await persistAcceptanceCriteria(next, 'toggle criterion')
+  } catch {
+    // rolled back already
+  }
+}
+
+// --- Persist (with rollback + toast on error) -----------------------------
+
+async function persistAcceptanceCriteria(
+  next: AcItem[],
+  reason: string,
+): Promise<void> {
+  if (!issue.value) return
+  const previous = acLocal.value
+  const target = issue.value.id
+  acSaving.value = true
+  acError.value = null
   try {
     const config = useRuntimeConfig()
-    await $fetch(
-      `${config.public.apiBase}/issues/${issue.value.id}/acceptance-criteria`,
+    const res = await $fetch<{ acceptanceCriteria: AcItem[] } | null>(
+      `${config.public.apiBase}/issues/${target}/acceptance-criteria`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: { criteria: updated },
+        body: { criteria: next },
       },
     )
-    if (issue.value) {
-      issue.value.acceptanceCriteria = updated
+    // The endpoint returns the updated issue (with the cleaned AC
+    // list including server-assigned ids). We update both the
+    // mirror and the board store's selectedIssue so the next
+    // external refresh sees the same shape. Only mutate if we're
+    // still on the same issue — switching issues mid-flight would
+    // stomp the new selection.
+    if (issue.value && issue.value.id === target) {
+      const fresh: AcItem[] = ((res as any)?.acceptanceCriteria ?? next) as AcItem[]
+      acLocal.value = fresh.map((c: AcItem) => ({ ...c }))
+      issue.value.acceptanceCriteria = fresh
     }
-  } catch (err) {
-    console.error('[AC] toggle failed:', err)
+  } catch (err: any) {
+    // Roll back the optimistic update.
+    if (issue.value && issue.value.id === target) {
+      acLocal.value = previous
+    }
+    const detail = err?.data?.detail ?? err?.message ?? 'Network error'
+    acError.value = `Failed to ${reason}: ${detail}`
+    addToast(acError.value)
+    console.error('[AC] persist failed:', err)
+    throw err
+  } finally {
+    acSaving.value = false
+  }
+}
+
+// --- Drag-to-reorder -------------------------------------------------------
+
+// vuedraggable mutates the bound array in place when the user drops.
+// We hand it a v-model on acLocal and call persistAcceptanceCriteria
+// when the array length is unchanged (a real reorder, not an add/remove).
+const onAcReorder = async () => {
+  if (!issue.value) return
+  // No real length change — it's a pure reorder, push the new order.
+  try {
+    await persistAcceptanceCriteria([...acLocal.value], 'reorder')
+  } catch {
+    // rollback will restore the previous order; vuedraggable has
+    // already mutated the array, so we set acLocal back to the
+    // previous snapshot taken inside persistAcceptanceCriteria.
   }
 }
 
@@ -937,23 +1231,157 @@ const unarchiveIssue = async () => {
                     </li>
                   </ul>
                 </div>
-                <ul v-if="(issue.acceptanceCriteria?.length ?? 0) > 0" class="issue-detail__ac-list">
-                  <li
-                    v-for="ac in issue.acceptanceCriteria"
-                    :key="ac.id"
-                    :class="['issue-detail__ac-item', ac.done && 'issue-detail__ac-item--done']"
+                <!--
+                  Inline editor: every entry is a row. The default
+                  state shows checkbox + text + edit / delete / drag
+                  handle. Tapping edit swaps the text for an input;
+                  tapping the + at the bottom of the list reveals a
+                  new-row input. vuedraggable wraps the <ul> so a
+                  pure-reorder drop fires ``onAcReorder`` and saves
+                  the new order to the backend.
+                -->
+                <ul
+                  v-if="acLocal.length > 0"
+                  class="issue-detail__ac-list"
+                  data-testid="ac-list"
+                >
+                  <draggable
+                    v-model="acLocal"
+                    :animation="160"
+                    handle=".issue-detail__ac-drag"
+                    item-key="id"
+                    tag="div"
+                    class="issue-detail__ac-drag-root"
+                    @end="onAcReorder"
                   >
-                    <input
-                      type="checkbox"
-                      :checked="ac.done"
-                      @change="toggleAcceptanceCriterion(ac)"
-                    />
-                    <span>{{ ac.text }}</span>
-                  </li>
+                    <template #item="{ element: ac }">
+                      <li
+                        :key="ac.id"
+                        :class="['issue-detail__ac-item', ac.done && 'issue-detail__ac-item--done', editingId === ac.id && 'issue-detail__ac-item--editing']"
+                        :data-testid="`ac-item-${ac.id}`"
+                      >
+                        <span
+                          class="issue-detail__ac-drag"
+                          :title="acSaving ? 'Saving…' : 'Drag to reorder'"
+                          aria-label="Drag to reorder"
+                        >
+                          <GripVertical :size="14" />
+                        </span>
+                        <input
+                          type="checkbox"
+                          :checked="ac.done"
+                          :disabled="acSaving"
+                          :data-testid="`ac-toggle-${ac.id}`"
+                          @change="toggleAcceptanceCriterion(ac)"
+                        />
+                        <template v-if="editingId === ac.id">
+                          <input
+                            v-model="editingText"
+                            type="text"
+                            class="issue-detail__ac-edit-input"
+                            :data-testid="`ac-edit-input-${ac.id}`"
+                            autofocus
+                            @keydown.enter.prevent="commitEdit(ac)"
+                            @keydown.esc.prevent="cancelEdit"
+                            @blur="commitEdit(ac)"
+                          />
+                          <button
+                            type="button"
+                            class="issue-detail__ac-icon-btn"
+                            title="Save"
+                            :data-testid="`ac-save-${ac.id}`"
+                            @mousedown.prevent
+                            @click="commitEdit(ac)"
+                          >
+                            <Check :size="14" />
+                          </button>
+                          <button
+                            type="button"
+                            class="issue-detail__ac-icon-btn"
+                            title="Cancel"
+                            @mousedown.prevent
+                            @click="cancelEdit"
+                          >
+                            <X :size="14" />
+                          </button>
+                        </template>
+                        <template v-else>
+                          <span class="issue-detail__ac-text">{{ ac.text }}</span>
+                          <button
+                            type="button"
+                            class="issue-detail__ac-icon-btn"
+                            title="Edit"
+                            :data-testid="`ac-edit-${ac.id}`"
+                            @click="beginEdit(ac)"
+                          >
+                            <Pencil :size="13" />
+                          </button>
+                          <button
+                            type="button"
+                            class="issue-detail__ac-icon-btn issue-detail__ac-icon-btn--danger"
+                            title="Delete"
+                            :data-testid="`ac-delete-${ac.id}`"
+                            @click="removeAcceptanceCriterion(ac)"
+                          >
+                            <Trash2 :size="13" />
+                          </button>
+                        </template>
+                      </li>
+                    </template>
+                  </draggable>
                 </ul>
-                <p v-else class="issue-detail__ac-empty">
-                  No acceptance criteria yet. Click <strong>Suggest AC</strong> to generate a starter list, or add your own.
+                <p
+                  v-else
+                  class="issue-detail__ac-empty"
+                  data-testid="ac-empty-state"
+                >
+                  No acceptance criteria yet — add one or use <strong>AI Suggest</strong>.
                 </p>
+
+                <div
+                  v-if="showAddRow"
+                  class="issue-detail__ac-add-row"
+                  data-testid="ac-add-row"
+                >
+                  <input
+                    v-model="newAcText"
+                    type="text"
+                    class="issue-detail__ac-edit-input"
+                    placeholder="New criterion…"
+                    data-testid="ac-add-input"
+                    autofocus
+                    @keydown.enter.prevent="commitAdd"
+                    @keydown.esc.prevent="cancelAdd"
+                  />
+                  <button
+                    type="button"
+                    class="issue-detail__ac-icon-btn"
+                    title="Save"
+                    :disabled="!newAcText.trim() || acSaving"
+                    data-testid="ac-add-save"
+                    @click="commitAdd"
+                  >
+                    <Check :size="14" />
+                  </button>
+                  <button
+                    type="button"
+                    class="issue-detail__ac-icon-btn"
+                    title="Cancel"
+                    @click="cancelAdd"
+                  >
+                    <X :size="14" />
+                  </button>
+                </div>
+
+                <button
+                  v-if="!showAddRow"
+                  type="button"
+                  class="issue-detail__ac-add-btn"
+                  data-testid="ac-add-button"
+                  @click="beginAdd"
+                >
+                  <Plus :size="14" /> Add criterion
+                </button>
               </div>
 
               <!-- Labels -->
@@ -1324,6 +1752,88 @@ const unarchiveIssue = async () => {
                         Block
                       </button>
                     </footer>
+
+                    <!-- Review section (POST /cycle-reports/{id}/review).
+                         Distinct from the verdict override above: this
+                         captures the leader's *review* of the report
+                         itself — approve, or send the worker back with
+                         a comment. The buttons hide once a decision is
+                         recorded, and the backend self-review guard
+                         also blocks the worker who wrote the report
+                         from signing off on their own work. -->
+                    <section class="cycle-card__review" data-testid="cycle-review-section">
+                      <header class="cycle-card__review-header">
+                        <h4 class="cycle-card__section-title">Leader review</h4>
+                        <span
+                          v-if="isReviewed(report)"
+                          :class="['cycle-card__review-pill', `cycle-card__review-pill--${reviewDecisionClass(report.decision as 'approved' | 'changes_requested')}`]"
+                          data-testid="cycle-review-pill"
+                        >
+                          {{ reviewDecisionLabel(report.decision as 'approved' | 'changes_requested') }}
+                        </span>
+                      </header>
+
+                      <p
+                        v-if="isReviewed(report)"
+                        class="cycle-card__review-summary"
+                        data-testid="cycle-review-summary"
+                      >
+                        Reviewed by <strong>{{ report.reviewedBy || 'unknown' }}</strong>
+                        on {{ formatCycleTime(report.reviewedAt) }}
+                        — decision: {{ reviewDecisionLabel(report.decision as 'approved' | 'changes_requested') }}
+                      </p>
+
+                      <p
+                        v-if="isReviewed(report) && report.reviewComment"
+                        class="cycle-card__review-comment"
+                      >
+                        {{ report.reviewComment }}
+                      </p>
+
+                      <div
+                        v-if="!isReviewed(report) && isSelfReview(report)"
+                        class="cycle-card__review-self-hint"
+                      >
+                        You authored this cycle report — another reviewer must sign off.
+                      </div>
+
+                      <template v-if="!isReviewed(report) && !isSelfReview(report)">
+                        <textarea
+                          class="cycle-card__review-input"
+                          rows="2"
+                          placeholder="Optional comment for the worker (visible in the audit trail)…"
+                          :value="reviewComments.get(report.id) ?? ''"
+                          :disabled="reviewingReportId === report.id"
+                          :data-testid="`cycle-review-comment-${report.id}`"
+                          @input="setReviewComment(report.id, ($event.target as HTMLTextAreaElement).value)"
+                        />
+                        <div class="cycle-card__review-buttons">
+                          <button
+                            class="cycle-card__btn cycle-card__btn--approve"
+                            :disabled="reviewingReportId === report.id"
+                            :data-testid="`cycle-review-approve-${report.id}`"
+                            @click="submitReview(report, 'approved')"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            class="cycle-card__btn cycle-card__btn--changes"
+                            :disabled="reviewingReportId === report.id"
+                            :data-testid="`cycle-review-changes-${report.id}`"
+                            @click="submitReview(report, 'changes_requested')"
+                          >
+                            Request changes
+                          </button>
+                        </div>
+                        <p
+                          v-if="reviewErrors.get(report.id)"
+                          class="cycle-card__review-error"
+                          :data-testid="`cycle-review-error-${report.id}`"
+                        >
+                          {{ reviewErrors.get(report.id) }}
+                        </p>
+                      </template>
+                    </section>
                    </article>
                  </div>
                </div>
@@ -1772,6 +2282,93 @@ const unarchiveIssue = async () => {
 .cycle-card__btn--fail    { background: rgba(184, 92, 77, 0.18);  color: #B85C4D; border-color: rgba(184, 92, 77, 0.4); }
 .cycle-card__btn--blocked { background: rgba(212, 168, 75, 0.18); color: #8A6B22; border-color: rgba(212, 168, 75, 0.4); }
 
+/* Review section — sits below the verdict override block, same
+   .cycle-card__section visual rhythm so the card reads as
+   plan → progress → deliverable → reason → verdict → review. */
+.cycle-card__review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px dashed var(--hairline);
+  padding-top: var(--space-3);
+  margin-top: var(--space-2);
+}
+.cycle-card__review-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cycle-card__review-pill {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.cycle-card__review-pill--approved { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; }
+.cycle-card__review-pill--changes  { background: rgba(212, 168, 75, 0.18); color: #8A6B22; }
+
+.cycle-card__review-summary {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.cycle-card__review-comment {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-style: italic;
+  border-left: 2px solid var(--hairline);
+  padding-left: var(--space-3);
+}
+.cycle-card__review-self-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #8A6B22;
+  background: rgba(212, 168, 75, 0.1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.cycle-card__review-input {
+  font-size: var(--text-sm);
+  font-family: var(--font-sans, sans-serif);
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
+  color: var(--ink);
+  resize: vertical;
+  min-height: 44px;
+}
+.cycle-card__review-input:focus {
+  outline: none;
+  border-color: rgba(107, 139, 164, 0.6);
+}
+.cycle-card__review-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+.cycle-card__btn--approve {
+  background: rgba(125, 158, 125, 0.22);
+  color: #4F6F4F;
+  border-color: rgba(125, 158, 125, 0.5);
+}
+.cycle-card__btn--changes {
+  background: rgba(212, 168, 75, 0.22);
+  color: #8A6B22;
+  border-color: rgba(212, 168, 75, 0.5);
+}
+.cycle-card__review-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #B85C4D;
+  background: rgba(184, 92, 77, 0.1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+
 /* Error Banner */
 .issue-detail__error-banner {
   display: flex;
@@ -2033,6 +2630,11 @@ const unarchiveIssue = async () => {
   flex-direction: column;
   gap: 4px;
 }
+.issue-detail__ac-drag-root {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .issue-detail__ac-item {
   display: flex;
   align-items: center;
@@ -2040,12 +2642,138 @@ const unarchiveIssue = async () => {
   font-size: var(--text-sm);
   padding: 4px 6px;
   border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
 }
-.issue-detail__ac-item--done span {
+.issue-detail__ac-item:hover {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+.issue-detail__ac-item--done .issue-detail__ac-text {
   text-decoration: line-through;
   color: var(--ink-muted);
 }
-.issue-detail__ac-item input { margin: 0; }
+.issue-detail__ac-item--editing {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+.issue-detail__ac-item input[type="checkbox"] { margin: 0; cursor: pointer; }
+.issue-detail__ac-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.issue-detail__ac-drag {
+  color: var(--muted-soft);
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  user-select: none;
+}
+.issue-detail__ac-drag:hover { color: var(--ink-muted); }
+.issue-detail__ac-drag:active { cursor: grabbing; }
+
+.issue-detail__ac-icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.issue-detail__ac-icon-btn:hover {
+  background: var(--surface-card);
+  color: var(--ink);
+  border-color: var(--hairline);
+}
+.issue-detail__ac-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.issue-detail__ac-icon-btn--danger:hover {
+  color: var(--clay-red);
+  border-color: rgba(184, 92, 77, 0.4);
+}
+.issue-detail__ac-icon-btn--danger {
+  /* Make the danger glyph fade in only on hover so the row stays
+     calm in the default state. */
+  opacity: 0.55;
+}
+.issue-detail__ac-item:hover .issue-detail__ac-icon-btn--danger { opacity: 1; }
+
+.issue-detail__ac-edit-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font: inherit;
+  padding: 4px 8px;
+  outline: none;
+}
+.issue-detail__ac-edit-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(204, 120, 92, 0.18);
+}
+
+.issue-detail__ac-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  margin-top: 6px;
+}
+
+.issue-detail__ac-add-btn {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  background: transparent;
+  border: 1px dashed var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.issue-detail__ac-add-btn:hover {
+  background: var(--surface-soft);
+  color: var(--ink);
+  border-color: var(--muted-soft);
+}
+
+/* vuedraggable sort classes — light visual feedback while dragging. */
+.issue-detail__ac-drag-root:has(.sortable-ghost) {
+  background: rgba(204, 120, 92, 0.06);
+  border-radius: var(--radius-sm);
+}
+.issue-detail__ac-drag-root .sortable-ghost {
+  opacity: 0.4;
+}
+.issue-detail__ac-drag-root .sortable-chosen {
+  background: var(--surface-card);
+  border-color: var(--primary);
+}
 
 .issue-detail__ac-empty {
   font-size: var(--text-sm);
