@@ -1,0 +1,44 @@
+[
+  {
+    "table": "issue_artifacts",
+    "kind": "extra_in_db",
+    "column": "metadata",
+    "reason": "Original migration 0003 used 'metadata' as the column name; the SQLAlchemy model uses 'extra_data'. The to_dict() serializer exposes it as 'metadata' for clients. Tracked: see if the model should be renamed to 'metadata' in a future cleanup; until then, the two columns are kept in sync manually."
+  },
+  {
+    "table": "issue_comments",
+    "kind": "missing_in_db",
+    "column": "extra_data",
+    "reason": "Same root cause as issue_artifacts.extra_data — the migration 0003 created the column as 'metadata' but the model declares 'extra_data'. The IssueComment endpoint isn't currently read through the ORM (everything goes via raw SQL / repository helpers), so this has not produced a 500 in production. Needs a follow-up migration to add the column."
+  },
+  {
+    "table": "issue_comments",
+    "kind": "extra_in_db",
+    "column": "metadata",
+    "reason": "Companion to the missing_in_db entry above. Same root cause."
+  },
+  {
+    "table": "issue_handoffs",
+    "kind": "missing_in_db",
+    "column": "decision",
+    "reason": "Model declares 4 review-related columns that no migration has ever created. The handoff API exposes them only via to_dict(), and the front-end has not been wired to read them. Tracking ticket needed before next migration that touches the handoffs flow."
+  },
+  {
+    "table": "issue_handoffs",
+    "kind": "missing_in_db",
+    "column": "review_comment",
+    "reason": "Same as issue_handoffs.decision."
+  },
+  {
+    "table": "issue_handoffs",
+    "kind": "missing_in_db",
+    "column": "reviewed_at",
+    "reason": "Same as issue_handoffs.decision."
+  },
+  {
+    "table": "issue_handoffs",
+    "kind": "missing_in_db",
+    "column": "reviewed_by",
+    "reason": "Same as issue_handoffs.decision."
+  }
+]

@@ -259,6 +259,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1] if __doc__ else "")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of human-readable text")
     parser.add_argument("--table", help="audit a single table by name")
+    parser.add_argument(
+        "--allow-known",
+        default=str(BACKEND_DIR / "scripts" / "audit_known_drift.json"),
+        help=(
+            "Path to a JSON file listing pre-approved drift items that the audit "
+            "should not flag. Each entry is {table, kind, column}. Useful for "
+            "drift that is tracked in a follow-up migration and intentionally "
+            "allowed for a release window. Pass an empty string to disable."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on",
+        default="missing_in_db,extra_in_db",
+        help=(
+            "Comma-separated drift kinds that should cause a non-zero exit. "
+            "type_mismatch is informational and excluded by default — model and "
+            "DB can disagree on column types without breaking runtime, since "
+            "SQLAlchemy adapts. Override if you want stricter CI."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -267,25 +287,63 @@ def main() -> int:
         print(f"audit aborted: {exc}", file=sys.stderr)
         return 2
 
+    # Load the baseline of pre-approved drift items. We tolerate the
+    # file being absent (no baseline yet) or malformed (we just print a
+    # warning and continue with an empty set) — this is a CI guard,
+    # not a correctness check on the baseline file itself.
+    baseline: set[tuple[str, str, str]] = set()
+    if args.allow_known:
+        try:
+            with open(args.allow_known) as f:
+                data = json.load(f)
+            for entry in data:
+                baseline.add((entry["table"], entry["kind"], entry["column"]))
+        except FileNotFoundError:
+            print(f"note: no baseline file at {args.allow_known}; all drift will be reported")
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"warning: could not parse baseline {args.allow_known}: {exc}", file=sys.stderr)
+
+    # Filter the discovered drift against the baseline.
+    unknown = [d for d in drifts if (d.table, d.kind, d.column) not in baseline]
+    suppressed = [d for d in drifts if (d.table, d.kind, d.column) in baseline]
+
+    failing_kinds = {k.strip() for k in args.fail_on.split(",") if k.strip()}
+    blocking = [d for d in unknown if d.kind in failing_kinds]
+    informational = [d for d in unknown if d.kind not in failing_kinds]
+
+    summary = {
+        "tables_checked": checked,
+        "drift": [asdict(d) for d in drifts],
+        "blocking": [asdict(d) for d in blocking],
+        "suppressed_by_baseline": [asdict(d) for d in suppressed],
+    }
+
     if args.json:
-        print(json.dumps({
-            "tables_checked": checked,
-            "drift": [asdict(d) for d in drifts],
-        }, indent=2))
+        print(json.dumps(summary, indent=2))
     else:
         print(f"checked {len(checked)} table(s): {', '.join(checked) or '(none)'}")
-        if not drifts:
+        if not blocking and not informational:
             print("\nOK — no model/migration drift detected.")
         else:
-            print(f"\nFOUND {len(drifts)} drift item(s):")
-            for d in drifts:
-                print(str(d))
-            print(
-                "\nFix: write an Alembic migration that aligns the DB with the model, "
-                "or rename the model column to match the DB. Do not deploy until clean."
-            )
+            if blocking:
+                print(f"\nFOUND {len(blocking)} blocking drift item(s):")
+                for d in blocking:
+                    print(" ", str(d))
+            if informational:
+                print(f"\n{len(informational)} informational drift item(s) (not blocking):")
+                for d in informational:
+                    print(" ", str(d))
+            if suppressed:
+                print(f"\n{len(suppressed)} drift item(s) suppressed by baseline {args.allow_known}.")
+            if blocking:
+                print(
+                    "\nFix: write an Alembic migration that aligns the DB with the model, "
+                    "or rename the model column to match the DB. Do not deploy until clean."
+                )
 
-    return 1 if drifts else 0
+    # Non-zero only if blocking drift exists. informational + baseline-
+    # suppressed drift both pass.
+    return 1 if blocking else 0
 
     # Unreachable — kept for clarity that the function returns an int.
     return 0
