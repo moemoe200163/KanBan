@@ -487,6 +487,108 @@ const toggleAcceptanceCriterion = async (ac: AcItem) => {
 // doesn't have to stare at an empty drawer; unarchive keeps it
 // open since the issue is now back in the live set.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Link to epic (set parent).
+//
+// We don't expose every issue as a candidate parent — only root
+// epics (issues with no parent) on the same board. The board store
+// already holds them in `boardStore.issues`; we filter client-side
+// and exclude the current issue plus its descendants. A descendant
+// can't be set as parent because that would create a cycle in the
+// parent graph (the backend rejects it with 400 too, but the UI
+// should hint at this *before* the user picks one).
+// ---------------------------------------------------------------------------
+const showParentPicker = ref(false)
+const parentPickerLoading = ref(false)
+const parentPickerError = ref<string | null>(null)
+const linkingParent = ref(false)
+
+const parentIssue = computed(() => {
+  if (!issue.value?.parentId) return null
+  return boardStore.getAllIssues.find(i => i.id === issue.value?.parentId) ?? null
+})
+
+// Walk the current issue's descendants using whatever we know
+// about the local board state. This is best-effort: if the tree is
+// paged out we fall back to the empty set, and the backend's
+// `get_epic_chain` does the authoritative cycle check at PATCH
+// time.
+const descendantIds = computed(() => {
+  const all = boardStore.getAllIssues
+  if (!issue.value || !all.length) return new Set<string>()
+  const out = new Set<string>()
+  const queue = [issue.value.id]
+  while (queue.length) {
+    const cur = queue.shift()!
+    for (const cand of all) {
+      if (cand.parentId === cur && !out.has(cand.id)) {
+        out.add(cand.id)
+        queue.push(cand.id)
+      }
+    }
+  }
+  return out
+})
+
+const parentCandidates = computed(() => {
+  const all = boardStore.getAllIssues
+  if (!issue.value || !all.length) return []
+  const selfId = issue.value.id
+  const excluded = descendantIds.value
+  excluded.add(selfId)
+  return all
+    .filter(i => i.id !== selfId && i.parentId == null && !excluded.has(i.id))
+    .sort((a, b) => a.key.localeCompare(b.key))
+})
+
+const linkToEpic = async (parentId: string) => {
+  if (!issue.value) return
+  linkingParent.value = true
+  parentPickerError.value = null
+  try {
+    const config = useRuntimeConfig()
+    const updated = await $fetch<{ parentId: string | null }>(
+      `${config.public.apiBase}/issues/${issue.value.id}/parent`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { parentId },
+      },
+    )
+    issue.value.parentId = updated.parentId ?? null
+    showParentPicker.value = false
+  } catch (err: any) {
+    const detail = err?.data?.detail ?? err?.message ?? 'Failed to link to epic'
+    parentPickerError.value = detail
+  } finally {
+    linkingParent.value = false
+  }
+}
+
+const unlinkFromEpic = async () => {
+  if (!issue.value) return
+  linkingParent.value = true
+  parentPickerError.value = null
+  try {
+    const config = useRuntimeConfig()
+    const updated = await $fetch<{ parentId: string | null }>(
+      `${config.public.apiBase}/issues/${issue.value.id}/parent`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { parentId: null },
+      },
+    )
+    issue.value.parentId = updated.parentId ?? null
+  } catch (err: any) {
+    const detail = err?.data?.detail ?? err?.message ?? 'Failed to unlink from epic'
+    parentPickerError.value = detail
+  } finally {
+    linkingParent.value = false
+  }
+}
+
 const archiving = ref(false)
 
 const archiveIssue = async () => {
@@ -565,6 +667,41 @@ const unarchiveIssue = async () => {
               </span>
             </div>
             <div class="issue-detail__header-actions">
+              <span
+                v-if="parentIssue"
+                class="issue-detail__parent-chip"
+                :title="`Linked to epic ${parentIssue.key} — ${parentIssue.title}`"
+              >
+                <NuxtLink
+                  :to="`/board/epic/${parentIssue.id}`"
+                  class="issue-detail__parent-link"
+                >
+                  ↑ {{ parentIssue.key }}
+                </NuxtLink>
+                <button
+                  class="issue-detail__parent-unlink"
+                  :disabled="linkingParent"
+                  title="Unlink from this epic"
+                  @click="unlinkFromEpic"
+                >
+                  <X :size="12" />
+                </button>
+              </span>
+              <button
+                v-if="!issue.isArchived && !parentIssue"
+                class="issue-detail__link-epic-btn"
+                :disabled="parentPickerLoading"
+                @click="showParentPicker = true"
+              >
+                Link to epic
+              </button>
+              <span
+                v-if="parentPickerError"
+                class="issue-detail__parent-error"
+                :title="parentPickerError"
+              >
+                {{ parentPickerError }}
+              </span>
               <button
                 v-if="!issue.isArchived"
                 class="issue-detail__archive-btn"
@@ -1187,14 +1324,71 @@ const unarchiveIssue = async () => {
                         Block
                       </button>
                     </footer>
-                  </article>
-                </div>
-              </div>
+                   </article>
+                 </div>
+               </div>
+             </div>
+           </div>
+         </div>
+       </div>
+     </Transition>
+
+     <!-- Link-to-epic picker (modal). Lists root epics on the
+          same board, excludes the current issue and its
+          descendants to prevent cycle-creation. The backend
+          enforces the same rule, but the UI hints *before* a
+          request is fired so the operator doesn't have to wait
+          for a round-trip to see why something failed. -->
+     <Teleport to="body">
+       <Transition name="fade">
+         <div
+           v-if="showParentPicker && issue"
+           class="parent-picker__backdrop"
+           @click.self="showParentPicker = false"
+         >
+           <div class="parent-picker" role="dialog" aria-label="Link this issue to an epic">
+             <div class="parent-picker__header">
+               <h3>Link {{ issue.key }} to an epic</h3>
+              <button class="parent-picker__close" @click="showParentPicker = false">
+                <X :size="16" />
+              </button>
             </div>
+            <p class="parent-picker__hint">
+              Pick a root epic on this board. Cycles are blocked
+              (you can't pick this issue or any of its descendants).
+            </p>
+            <div v-if="parentCandidates.length === 0" class="parent-picker__empty">
+              No eligible epic on this board. Create a root epic first.
+            </div>
+            <ul v-else class="parent-picker__list">
+              <li
+                v-for="cand in parentCandidates"
+                :key="cand.id"
+                class="parent-picker__item"
+              >
+                <div class="parent-picker__item-main">
+                  <span class="parent-picker__key">{{ cand.key }}</span>
+                  <span class="parent-picker__title">{{ cand.title }}</span>
+                </div>
+                <button
+                  class="parent-picker__pick"
+                  :disabled="linkingParent"
+                  @click="linkToEpic(cand.id)"
+                >
+                  {{ linkingParent ? 'Linking…' : 'Link' }}
+                </button>
+              </li>
+            </ul>
+            <p
+              v-if="parentPickerError"
+              class="parent-picker__error"
+            >
+              {{ parentPickerError }}
+            </p>
           </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </Teleport>
 </template>
 
@@ -2482,6 +2676,213 @@ const unarchiveIssue = async () => {
   color: #6B6660;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* Parent (epic) linkage — chip in header + link button. The chip
+   shows the parent key and title on hover; the X unlinks. The
+   "Link to epic" button is hidden when an epic is already
+   linked, and on archived issues (the parent chain is still
+   readable but mutable, hence no chip unlink). */
+.issue-detail__parent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 3px 4px 3px 8px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #4F46E5;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+}
+.issue-detail__parent-link {
+  color: inherit;
+  text-decoration: none;
+}
+.issue-detail__parent-link:hover {
+  text-decoration: underline;
+}
+.issue-detail__parent-unlink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--duration-fast), background var(--duration-fast);
+}
+.issue-detail__parent-unlink:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(99, 102, 241, 0.18);
+}
+.issue-detail__parent-unlink:disabled {
+  cursor: not-allowed;
+}
+.issue-detail__link-epic-btn {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-sm);
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--canvas-elevated);
+  cursor: pointer;
+  color: var(--ink-muted);
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+.issue-detail__link-epic-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.08);
+  color: #4F46E5;
+  border-color: rgba(99, 102, 241, 0.3);
+}
+.issue-detail__link-epic-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.issue-detail__parent-error {
+  font-size: var(--text-xs);
+  color: #B85C4D;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Picker modal — same fade as the rest of the app, but small
+   panel (max 480px) because the candidate list rarely exceeds a
+   few rows. The empty state appears when the board has no root
+   epics, or when the only roots are the current issue or its
+   descendants. */
+.parent-picker__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 15, 18, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 16px;
+}
+.parent-picker {
+  background: var(--canvas-elevated);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--hairline);
+  padding: 20px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+}
+.parent-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.parent-picker__header h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+.parent-picker__close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--ink-muted);
+  padding: 4px;
+  border-radius: var(--radius-md);
+}
+.parent-picker__close:hover {
+  background: var(--canvas-muted);
+}
+.parent-picker__hint {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  margin: 0 0 12px;
+}
+.parent-picker__empty {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  padding: 16px;
+  border: 1px dashed var(--hairline);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+.parent-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.parent-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--canvas);
+}
+.parent-picker__item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.parent-picker__key {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+.parent-picker__title {
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.parent-picker__pick {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-sm);
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.08);
+  color: #4F46E5;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--duration-fast);
+}
+.parent-picker__pick:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.16);
+}
+.parent-picker__pick:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.parent-picker__error {
+  margin: 12px 0 0;
+  font-size: var(--text-sm);
+  color: #B85C4D;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--duration-fast);
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 /* Mobile: full-width panel, no border, adjusted padding */
