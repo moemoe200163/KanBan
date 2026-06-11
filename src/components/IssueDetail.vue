@@ -71,8 +71,144 @@ const close = () => {
   boardStore.closeDetail()
 }
 
-const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs') => {
+const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles') => {
   boardStore.setDetailTab(tab)
+}
+
+// ---------------------------------------------------------------------------
+// Cycle reports — Mavis-style worker handoffs. Each issue has 0..N reports,
+// newest first. Auto-written by the backend when an ECC job completes; the
+// leader can override the verdict here, which also drives a lane transition
+// for ``pass`` -> ``done``.
+// ---------------------------------------------------------------------------
+interface CycleReport {
+  id: string
+  issueId: string
+  jobId: string | null
+  authorId: string | null
+  authorName: string | null
+  plan: string
+  progressLog: Array<{ ts: string; status: string; message: string }>
+  deliverableSummary: string | null
+  verdict: 'pending' | 'pass' | 'fail' | 'blocked' | 'auto_passed'
+  verdictReason: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+const cycleReports = ref<CycleReport[]>([])
+const updatingReportId = ref<string | null>(null)
+let cycleAbort: AbortController | null = null
+
+const loadCycleReports = async (issueId: string) => {
+  // Abort any in-flight request so a fast tab-switch doesn't race two
+  // fetches and clobber the list with the older response.
+  cycleAbort?.abort()
+  const ac = new AbortController()
+  cycleAbort = ac
+  try {
+    const config = useRuntimeConfig()
+    const token = useCookie('auth_token').value
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await $fetch<{ cycleReports: CycleReport[] }>(
+      `${config.public.apiBase}/issues/${issueId}/cycle-reports`,
+      { signal: ac.signal, headers },
+    )
+    cycleReports.value = res.cycleReports ?? []
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return
+    console.error('[Cycles] failed to load reports:', err)
+    cycleReports.value = []
+  }
+}
+
+// Reload when the user switches to the cycles tab, or when the issue
+// changes (board store reuses the drawer across selections).
+watch(
+  [() => activeTab.value, () => issue.value?.id],
+  ([tab, id]) => {
+    if (tab === 'cycles' && id) {
+      void loadCycleReports(id)
+    }
+  },
+  { immediate: true },
+)
+
+const verdictLabel = (v: string) => {
+  switch (v) {
+    case 'pass': return 'Pass'
+    case 'auto_passed': return 'Auto-passed'
+    case 'fail': return 'Failed'
+    case 'blocked': return 'Blocked'
+    case 'pending': return 'Pending review'
+    default: return v
+  }
+}
+
+const verdictClass = (v: string) => {
+  if (v === 'pass' || v === 'auto_passed') return 'pass'
+  if (v === 'fail') return 'fail'
+  if (v === 'blocked') return 'blocked'
+  return 'pending'
+}
+
+// Only verdicts that the leader can still change are surfaced. Once the
+// report is in a terminal state, the override buttons hide to keep the
+// card honest about what hasn't been reviewed yet.
+const canOverride = (r: CycleReport) => {
+  return r.verdict === 'pending' || r.verdict === 'auto_passed'
+}
+
+const overrideVerdict = async (report: CycleReport, verdict: 'pass' | 'fail' | 'blocked') => {
+  if (!issue.value) return
+  updatingReportId.value = report.id
+  try {
+    const config = useRuntimeConfig()
+    const token = useCookie('auth_token').value
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
+    const updated = await $fetch<CycleReport>(
+      `${config.public.apiBase}/issues/${issue.value.id}/cycle-reports/${report.id}`,
+      {
+        method: 'PATCH',
+        body: {
+          verdict,
+          verdict_reason:
+            verdict === 'pass' ? 'Leader accepted the cycle report' :
+            verdict === 'fail' ? 'Leader rejected the cycle report' :
+            'Leader marked the cycle as blocked',
+        },
+        headers,
+      },
+    )
+    // Patch in place; the leader override on ``pass`` triggers a
+    // server-side issue auto-promote + WebSocket broadcast so the
+    // board moves the card to ``done`` without a second click.
+    const idx = cycleReports.value.findIndex(r => r.id === updated.id)
+    if (idx >= 0) cycleReports.value[idx] = updated
+  } catch (err) {
+    console.error('[Cycles] override failed:', err)
+  } finally {
+    updatingReportId.value = null
+  }
+}
+
+const formatCycleTime = (ts: string | null) => {
+  if (!ts) return ''
+  try {
+    return new Date(ts).toLocaleString()
+  } catch { return ts }
+}
+
+const formatLogTime = (ts: string) => {
+  if (!ts) return ''
+  try {
+    // The backend timestamps carry timezone offset; trim to HH:MM:SS
+    // so the progress log stays compact.
+    const d = new Date(ts)
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch { return ts }
 }
 
 const formatDate = (dateStr: string) => {
@@ -316,6 +452,15 @@ onUnmounted(() => {
               Handoffs
               <span v-if="issue.handoffs?.length" class="issue-detail__tab-badge">
                 {{ issue.handoffs.length }}
+              </span>
+            </button>
+            <button
+              :class="['issue-detail__tab', { 'issue-detail__tab--active': activeTab === 'cycles' }]"
+              @click="setTab('cycles')"
+            >
+              Cycles
+              <span v-if="cycleReports.length > 0" class="issue-detail__tab-badge">
+                {{ cycleReports.length }}
               </span>
             </button>
           </div>
@@ -679,6 +824,106 @@ onUnmounted(() => {
             <div v-if="activeTab === 'handoffs'" class="issue-detail__tab-pane">
               <HandoffSection />
             </div>
+            <div v-if="activeTab === 'cycles'" class="issue-detail__tab-pane">
+              <!-- Mavis collaboration: each cycle is plan + progress + verdict.
+                   Workers (incl. auto-promote) write a report when they finish
+                   a pass; the leader reviews the report here and flips the
+                   verdict to drive the next lane transition. -->
+              <div class="cycles-tab">
+                <div v-if="cycleReports.length === 0" class="cycles-tab__empty">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="40" height="40">
+                    <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+                    <rect x="9" y="3" width="6" height="4" rx="1" />
+                    <path d="M9 13h6M9 17h4" />
+                  </svg>
+                  <p>No cycle reports yet.</p>
+                  <p class="cycles-tab__empty-hint">
+                    Cycle reports appear here automatically when an ECC job completes,
+                    or when the leader writes a manual handoff.
+                  </p>
+                </div>
+                <div v-else class="cycles-tab__list">
+                  <article
+                    v-for="report in cycleReports"
+                    :key="report.id"
+                    class="cycle-card"
+                  >
+                    <header class="cycle-card__header">
+                      <div class="cycle-card__author">
+                        <span class="cycle-card__avatar">{{ (report.authorName || '?').slice(0,1).toUpperCase() }}</span>
+                        <div>
+                          <div class="cycle-card__name">{{ report.authorName || 'unknown' }}</div>
+                          <div class="cycle-card__meta">
+                            {{ formatCycleTime(report.createdAt) }}
+                            <span v-if="report.jobId" class="cycle-card__job-pill">job: {{ report.jobId.slice(0, 12) }}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <span :class="['cycle-card__verdict', `cycle-card__verdict--${verdictClass(report.verdict)}`]">
+                        {{ verdictLabel(report.verdict) }}
+                      </span>
+                    </header>
+
+                    <section class="cycle-card__section">
+                      <h4 class="cycle-card__section-title">Plan</h4>
+                      <p class="cycle-card__plan">{{ report.plan }}</p>
+                    </section>
+
+                    <section v-if="report.progressLog?.length" class="cycle-card__section">
+                      <h4 class="cycle-card__section-title">
+                        Progress
+                        <span class="cycle-card__section-count">{{ report.progressLog.length }}</span>
+                      </h4>
+                      <ol class="cycle-card__log">
+                        <li
+                          v-for="(ev, idx) in report.progressLog"
+                          :key="idx"
+                          :class="['cycle-card__log-item', `cycle-card__log-item--${(ev.status || 'info').toLowerCase()}`]"
+                        >
+                          <span class="cycle-card__log-ts">{{ formatLogTime(ev.ts) }}</span>
+                          <span class="cycle-card__log-status">{{ ev.status }}</span>
+                          <span class="cycle-card__log-msg">{{ ev.message }}</span>
+                        </li>
+                      </ol>
+                    </section>
+
+                    <section v-if="report.deliverableSummary" class="cycle-card__section">
+                      <h4 class="cycle-card__section-title">Deliverable</h4>
+                      <p class="cycle-card__deliverable">{{ report.deliverableSummary }}</p>
+                    </section>
+
+                    <section v-if="report.verdictReason" class="cycle-card__section">
+                      <h4 class="cycle-card__section-title">Reason</h4>
+                      <p class="cycle-card__reason">{{ report.verdictReason }}</p>
+                    </section>
+
+                    <footer v-if="canOverride(report)" class="cycle-card__actions">
+                      <button
+                        class="cycle-card__btn cycle-card__btn--pass"
+                        :disabled="updatingReportId === report.id || report.verdict === 'pass'"
+                        @click="overrideVerdict(report, 'pass')"
+                      >
+                        Mark as pass
+                      </button>
+                      <button
+                        class="cycle-card__btn cycle-card__btn--fail"
+                        :disabled="updatingReportId === report.id || report.verdict === 'fail'"
+                        @click="overrideVerdict(report, 'fail')"
+                      >
+                        Fail
+                      </button>
+                      <button
+                        class="cycle-card__btn cycle-card__btn--blocked"
+                        :disabled="updatingReportId === report.id || report.verdict === 'blocked'"
+                        @click="overrideVerdict(report, 'blocked')"
+                      >
+                        Block
+                      </button>
+                    </footer>
+                  </article>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -864,6 +1109,191 @@ onUnmounted(() => {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ---------- Cycles tab (Mavis collab) ---------- */
+.cycles-tab {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cycles-tab__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-8) var(--space-4);
+  color: var(--ink-muted);
+  gap: var(--space-2);
+}
+.cycles-tab__empty p { margin: 0; }
+.cycles-tab__empty-hint {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  max-width: 30ch;
+}
+
+.cycles-tab__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cycle-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--canvas-elevated);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.cycle-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.cycle-card__author {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.cycle-card__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft, rgba(125, 158, 125, 0.18));
+  color: var(--accent, #7D9E7D);
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.cycle-card__name { font-weight: 600; font-size: var(--text-sm); }
+.cycle-card__meta {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: 2px;
+}
+.cycle-card__job-pill {
+  font-family: var(--font-mono, monospace);
+  background: var(--canvas-subtle, rgba(0,0,0,0.04));
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+}
+
+.cycle-card__verdict {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.cycle-card__verdict--pass    { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; }
+.cycle-card__verdict--fail    { background: rgba(184, 92, 77, 0.18); color: #B85C4D; }
+.cycle-card__verdict--blocked { background: rgba(212, 168, 75, 0.18); color: #8A6B22; }
+.cycle-card__verdict--pending { background: rgba(140, 130, 121, 0.18); color: #6B6660; }
+
+.cycle-card__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cycle-card__section-title {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cycle-card__section-count {
+  font-size: 10px;
+  background: var(--canvas-subtle, rgba(0,0,0,0.04));
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.cycle-card__plan,
+.cycle-card__deliverable,
+.cycle-card__reason {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.cycle-card__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+.cycle-card__log-item {
+  display: grid;
+  grid-template-columns: 80px 90px 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+}
+.cycle-card__log-item--running { background: rgba(107, 139, 164, 0.08); }
+.cycle-card__log-item--queued  { background: rgba(140, 130, 121, 0.08); }
+.cycle-card__log-item--review_required,
+.cycle-card__log-item--completed { background: rgba(125, 158, 125, 0.08); }
+.cycle-card__log-item--failed,
+.cycle-card__log-item--cancelled { background: rgba(184, 92, 77, 0.08); }
+.cycle-card__log-ts { color: var(--ink-faint); }
+.cycle-card__log-status {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.cycle-card__log-msg { color: var(--ink); font-family: var(--font-sans, sans-serif); }
+
+.cycle-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
+  margin-top: var(--space-2);
+}
+.cycle-card__btn {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  cursor: pointer;
+  transition: opacity var(--duration-fast);
+}
+.cycle-card__btn:hover:not(:disabled) { opacity: 0.8; }
+.cycle-card__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.cycle-card__btn--pass    { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; border-color: rgba(125, 158, 125, 0.4); }
+.cycle-card__btn--fail    { background: rgba(184, 92, 77, 0.18);  color: #B85C4D; border-color: rgba(184, 92, 77, 0.4); }
+.cycle-card__btn--blocked { background: rgba(212, 168, 75, 0.18); color: #8A6B22; border-color: rgba(212, 168, 75, 0.4); }
 
 /* Error Banner */
 .issue-detail__error-banner {

@@ -58,6 +58,11 @@ class Issue(BaseModel):
     prDetails: Optional[dict] = None
     moveStatus: Optional[str] = None
     moveError: Optional[str] = None
+    # Mavis collaboration fields — exposed so the front-end can
+    # render the epic-subtask marker on the card and the structured
+    # acceptance-criteria checklist in the detail drawer.
+    parentId: Optional[str] = None
+    acceptanceCriteria: List[dict] = []
     created_at: str = ""
     updated_at: str = ""
     createdAt: Optional[str] = None
@@ -109,6 +114,8 @@ async def get_board(
             profile=issue_dict.get("profile", "general"),
             prUrl=issue_dict.get("pr_url"),
             ciStatus=issue_dict.get("ci_status"),
+            parentId=issue_dict.get("parent_id"),
+            acceptanceCriteria=issue_dict.get("acceptance_criteria") or [],
             created_at=issue_dict.get("created_at", ""),
             updated_at=issue_dict.get("updated_at", ""),
             createdAt=issue_dict.get("created_at"),

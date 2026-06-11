@@ -79,7 +79,22 @@ const handleStart = (event: Event) => {
     @dragstart="handleDragStart"
   >
     <div class="issue-card__top">
-      <span class="issue-card__key">{{ issue.key }}</span>
+      <span class="issue-card__key">
+        <svg
+          v-if="issue.parentId"
+          class="issue-card__epic-marker"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          title="Subtask of an epic"
+        >
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+          <path d="M9 13h6M9 17h4" />
+        </svg>
+        {{ issue.key }}
+      </span>
       <span class="issue-card__priority" :title="priorityConfig.label">
         {{ priorityConfig.label }}
       </span>

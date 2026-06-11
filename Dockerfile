@@ -18,13 +18,17 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --prefer-offline
 
-# Copy source code
+# Copy source code. The .dockerignore at the repo root prevents any
+# pre-existing host-side .output / .nuxt / node_modules from being
+# baked into the image — those must be regenerated inside the image,
+# otherwise stale chunks from a previous local build leak into the
+# production bundle.
 COPY . .
 
 # Set env for build (Nuxt evaluates this at build time)
 ENV NUXT_PUBLIC_API_BASE=${NUXT_PUBLIC_API_BASE}
 
-# Build the Nuxt application
+# Build the Nuxt application from a clean slate.
 RUN npm run build
 
 # Expose port (Nuxt handles its own PORT via NITRO_PORT)
@@ -64,7 +68,8 @@ EXPOSE 8000
 ENV PYTHONPATH=/app
 
 # Start FastAPI from the backend directory
-CMD ["sh", "-c", "cd backend && uvicorn main:app --host 0.0.0.0 --port 8000"]
+ENV PYTHONUNBUFFERED=1
+CMD ["sh", "-c", "cd backend && uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info"]
 
 
 # -----------------------------------------------------------------------------

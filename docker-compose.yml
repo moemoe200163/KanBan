@@ -1,24 +1,25 @@
 services:
   # Frontend - Nuxt application
   # NUXT_PUBLIC_API_BASE is consumed by the browser, not by container-to-container
-  # traffic, so it must point at a hostname the *browser on the host* can resolve.
-  # `http://backend:8000` works only inside the docker network -- the browser
-  # cannot resolve it. We use `http://127.0.0.1:8000/api/v1` because the backend
-  # exposes 8000:8000 to the host; this matches the assumption in e2e/board.spec.ts.
-  # If running behind nginx on port 80, set this to `/api/v1` instead.
+  # traffic. We point it at nginx's same-origin proxy path so the browser
+  # does not need CORS headers for cross-origin XHR. The nginx container
+  # listens on :80 and forwards /api/ to the backend.
+  # For direct backend access (bypassing nginx), set this to
+  # http://127.0.0.1:8000/api/v1 — but the backend CORS allowlist must
+  # then include the browser's origin.
   frontend:
     build:
       context: .
       dockerfile: Dockerfile
       target: frontend
       args:
-        - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+        - NUXT_PUBLIC_API_BASE=/api/v1
     container_name: devflow-frontend
     ports:
       - "3010:3010"
     environment:
       - NODE_ENV=production
-      - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+      - NUXT_PUBLIC_API_BASE=/api/v1
       - NITRO_PORT=3010
     depends_on:
       - backend
@@ -43,6 +44,7 @@ services:
       - JWT_EXPIRY_HOURS=24
       - ALLOW_ANONYMOUS_DISPATCH=${ALLOW_ANONYMOUS_DISPATCH:-false}
       - DATABASE_URL=postgresql+asyncpg://devflow:devflow_secret@postgres:5432/devflow
+      - SEED_DEV_DATA=${SEED_DEV_DATA:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,6 +57,10 @@ services:
   # Postgres - the official dev / local production-like database.
   # Data survives `docker compose down` because of the named volume;
   # only `docker compose down -v` resets it.
+  # Note: host port 5432 is remapped to 5433 to coexist with other
+  # Postgres containers on the host. Inside the devflow network the
+  # port is still 5432, so DATABASE_URL inside the backend container
+  # is unchanged.
   postgres:
     image: postgres:15
     container_name: devflow-postgres
@@ -63,7 +69,7 @@ services:
       - POSTGRES_USER=devflow
       - POSTGRES_PASSWORD=devflow_secret
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

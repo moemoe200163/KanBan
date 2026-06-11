@@ -5,376 +5,15 @@ import { useECCStreamSingleton } from '~/composables/useECCStream'
 import { useDependencyGraph } from '~/composables/useDependencyGraph'
 import { useFeedbackLoop } from '~/composables/useFeedbackLoop'
 import { useKanbanProtocol } from '~/composables/useKanbanProtocol'
+import { authHeaders } from '~/utils/authHeaders'
 
-// Generate edge-case rich mock data
-const generateMockIssues = (): Issue[] => ([
-  {
-    id: '1',
-    key: 'DEV-001',
-    title: 'Implement user authentication flow',
-    description: 'Set up OAuth 2.0 with Google and GitHub providers. Include session management and secure token storage.',
-    status: 'done',
-    priority: 'high',
-    profile: 'backend',
-    labels: [
-      { id: 'l1', name: 'auth', color: '#7D9E7D' },
-      { id: 'l2', name: 'security', color: '#B85C4D' }
-    ],
-    assigneeId: 'u1',
-    assigneeName: 'Alex Chen',
-    assigneeAvatar: 'https://i.pravatar.cc/150?u=alex',
-    storyPoints: 5,
-    dependencies: [],
-    prUrl: 'https://github.com/org/repo/pull/42',
-    ciStatus: 'passed',
-    harnessType: 'claude-code',
-    memoryRef: 'mem_001',
-    activityLog: [
-      { id: 'a1', type: 'ai_started', message: 'Agent started: claude-code', actor: 'ai', timestamp: '2026-05-28T09:00:00Z' },
-      { id: 'a2', type: 'status_change', message: 'Moved to In Progress', actor: 'human', timestamp: '2026-05-28T09:05:00Z' },
-      { id: 'a3', type: 'pr_created', message: 'PR #42 created', actor: 'ai', timestamp: '2026-05-28T11:30:00Z' },
-      { id: 'a4', type: 'quality_gate', message: 'Quality gate passed', actor: 'system', timestamp: '2026-05-28T11:45:00Z' },
-      { id: 'a5', type: 'status_change', message: 'Moved to Done', actor: 'human', timestamp: '2026-05-28T14:00:00Z' }
-    ],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-20T08:00:00Z',
-    updatedAt: '2026-05-28T14:00:00Z'
-  },
-  {
-    id: '2',
-    key: 'DEV-002',
-    title: 'Build Kanban board drag-and-drop with keyboard navigation and accessibility support for screen readers',
-    description: 'Implement interactive Kanban with vuedraggable. Support cross-column dragging, visual feedback, and keyboard navigation. Ensure ARIA labels and focus management for accessibility.',
-    status: 'in_progress',
-    priority: 'high',
-    profile: 'frontend',
-    labels: [
-      { id: 'l3', name: 'ui', color: '#6B8BA4' },
-      { id: 'l4', name: 'ux', color: '#C67B4E' },
-      { id: 'l4a', name: 'accessibility', color: '#7D9E7D' },
-      { id: 'l4b', name: 'a11y', color: '#7D9E7D' }
-    ],
-    assigneeId: 'u2',
-    assigneeName: 'Jamie Rivera',
-    assigneeAvatar: 'https://i.pravatar.cc/150?u=jamie',
-    storyPoints: 8,
-    dependencies: [],
-    prUrl: 'https://github.com/org/repo/pull/46',
-    ciStatus: 'pending',
-    harnessType: 'claude-code',
-    memoryRef: null,
-    activityLog: [
-      { id: 'a6', type: 'status_change', message: 'Moved to In Progress', actor: 'human', timestamp: '2026-05-30T10:00:00Z' },
-      { id: 'a7', type: 'ai_started', message: 'Agent dispatched: /loop-start --profile=frontend', actor: 'system', timestamp: '2026-05-30T10:00:05Z' }
-    ],
-    eccLogs: [
-      { id: 'e1', timestamp: '2026-05-30T10:00:05Z', phase: 'observation', content: 'Analyzing Vue component structure...', confidence: 0.9, toolUsed: 'read' },
-      { id: 'e2', timestamp: '2026-05-30T10:00:15Z', phase: 'reasoning', content: 'Need to integrate vuedraggable with existing Pinia store for state synchronization', confidence: 0.85 },
-      { id: 'e3', timestamp: '2026-05-30T10:00:20Z', phase: 'action', content: 'Modifying IssueCard.vue to add draggable attributes and ARIA labels', confidence: 0.9, toolUsed: 'edit', duration: 450 },
-      { id: 'e4', timestamp: '2026-05-30T10:00:35Z', phase: 'action', content: 'Updating board store to handle cross-column move logic', confidence: 0.95, toolUsed: 'edit', duration: 320 },
-      { id: 'e5', timestamp: '2026-05-30T10:00:40Z', phase: 'output', content: 'Drag-and-drop implementation complete. Running accessibility audit...', confidence: 0.88 }
-    ],
-    prDetails: {
-      number: 46,
-      title: 'feat: implement kanban drag-and-drop with accessibility',
-      body: 'This PR adds drag-and-drop functionality to the Kanban board with full keyboard navigation and screen reader support.',
-      author: 'Jamie Rivera',
-      avatarUrl: 'https://i.pravatar.cc/150?u=jamie',
-      state: 'open',
-      additions: 247,
-      deletions: 32,
-      changedFiles: 5,
-      headRef: 'feature/kanban-dnd',
-      baseRef: 'main',
-      files: [
-        { filename: 'src/components/IssueCard.vue', status: 'modified', additions: 89, deletions: 12, patch: '@@ -12,7 +12,15 @@ export default {\n   ...\n+  draggable: true,\n+  ariaLabel: "Drag issue card to reorder",' },
-        { filename: 'src/stores/board.ts', status: 'modified', additions: 156, deletions: 18, patch: '@@ -45,8 +45,15 @@ export const useBoardStore...' }
-      ],
-      comments: [
-        { id: 'c1', author: 'Alex Chen', avatarUrl: 'https://i.pravatar.cc/150?u=alex', body: 'LGTM! Consider adding keyboard hints in the tooltip.', line: 24, path: 'src/components/IssueCard.vue', createdAt: '2026-05-30T11:00:00Z' }
-      ],
-      reviewDecision: 'approved'
-    },
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-25T08:00:00Z',
-    updatedAt: '2026-05-30T10:00:05Z'
-  },
-  {
-    id: '3',
-    key: 'DEV-003',
-    title: 'Database schema for issue tracking',
-    description: 'Design PostgreSQL schema with Prisma. Include issues, labels, activity logs, and user assignments.',
-    status: 'in_progress',
-    priority: 'medium',
-    profile: 'backend',
-    labels: [
-      { id: 'l5', name: 'database', color: '#6B8BA4' },
-      { id: 'l6', name: 'prisma', color: '#D4A84B' }
-    ],
-    assigneeId: 'u1',
-    assigneeName: 'Alex Chen',
-    assigneeAvatar: 'https://i.pravatar.cc/150?u=alex',
-    storyPoints: 5,
-    dependencies: [],
-    prUrl: null,
-    ciStatus: 'pending',
-    harnessType: 'claude-code',
-    memoryRef: null,
-    activityLog: [
-      { id: 'a8', type: 'status_change', message: 'Moved to In Progress', actor: 'human', timestamp: '2026-05-29T14:00:00Z' }
-    ],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-26T08:00:00Z',
-    updatedAt: '2026-05-29T14:00:00Z'
-  },
-  {
-    id: '4',
-    key: 'DEV-004',
-    title: 'ECC memory layer integration',
-    description: 'Bridge DevFlow with ECC Observer memory. Implement persistent context sharing and throttled state updates.',
-    status: 'blocked',
-    priority: 'high',
-    profile: 'backend',
-    labels: [
-      { id: 'l7', name: 'ecc', color: '#C67B4E' },
-      { id: 'l8', name: 'memory', color: '#7D9E7D' },
-      { id: 'l9', name: 'observer', color: '#6B8BA4' },
-      { id: 'l10', name: 'throttle', color: '#D4A84B' }
-    ],
-    assigneeId: null,
-    assigneeName: null,
-    assigneeAvatar: null,
-    storyPoints: 8,
-    dependencies: ['DEV-003', 'DEV-006', 'DEV-007', 'DEV-009'],
-    prUrl: null,
-    ciStatus: null,
-    harnessType: null,
-    memoryRef: null,
-    activityLog: [
-      { id: 'a9', type: 'status_change', message: 'Blocked: depends on DEV-003, DEV-006, DEV-007, DEV-009', actor: 'system', timestamp: '2026-05-29T14:05:00Z' }
-    ],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-26T08:00:00Z',
-    updatedAt: '2026-05-29T14:05:00Z'
-  },
-  {
-    id: '5',
-    key: 'DEV-005',
-    title: 'CI/CD pipeline configuration',
-    description: 'Set up GitHub Actions with test, lint, and deploy stages. Integrate quality gate checks before merge.',
-    status: 'human_review',
-    priority: 'medium',
-    profile: 'general',
-    labels: [
-      { id: 'l11', name: 'ci/cd', color: '#D4A84B' },
-      { id: 'l12', name: 'github', color: '#8C8279' }
-    ],
-    assigneeId: 'u3',
-    assigneeName: 'Sam Taylor',
-    assigneeAvatar: 'https://i.pravatar.cc/150?u=sam',
-    storyPoints: 3,
-    dependencies: [],
-    prUrl: 'https://github.com/org/repo/pull/45',
-    ciStatus: 'passed',
-    harnessType: 'claude-code',
-    memoryRef: 'mem_005',
-    activityLog: [
-      { id: 'a10', type: 'status_change', message: 'Moved to Human Review', actor: 'ai', timestamp: '2026-05-29T16:00:00Z' },
-      { id: 'a11', type: 'quality_gate', message: 'All gates passed: security, tests, coverage', actor: 'system', timestamp: '2026-05-29T16:01:00Z' }
-    ],
-    eccLogs: [
-      { id: 'e6', timestamp: '2026-05-29T15:30:00Z', phase: 'action', content: 'Running npm run lint...', confidence: 1.0, toolUsed: 'bash', duration: 1200 },
-      { id: 'e7', timestamp: '2026-05-29T15:30:15Z', phase: 'output', content: '✓ Lint passed (0 errors, 0 warnings)', confidence: 1.0 },
-      { id: 'e8', timestamp: '2026-05-29T15:30:20Z', phase: 'action', content: 'Running npm run test...', confidence: 1.0, toolUsed: 'bash', duration: 8500 },
-      { id: 'e9', timestamp: '2026-05-29T15:30:45Z', phase: 'output', content: '✓ Tests passed (42 tests, 0 failures)', confidence: 1.0 },
-      { id: 'e10', timestamp: '2026-05-29T15:30:50Z', phase: 'action', content: 'Running security scan with AgentShield...', confidence: 0.95, toolUsed: 'bash', duration: 3200 },
-      { id: 'e11', timestamp: '2026-05-29T15:31:00Z', phase: 'output', content: '✓ Security scan passed. No vulnerabilities found.', confidence: 0.95 }
-    ],
-    prDetails: {
-      number: 45,
-      title: 'ci: add github actions pipeline with quality gates',
-      body: 'This PR adds a GitHub Actions workflow with automated linting, testing, and security scanning.',
-      author: 'Sam Taylor',
-      avatarUrl: 'https://i.pravatar.cc/150?u=sam',
-      state: 'open',
-      additions: 156,
-      deletions: 12,
-      changedFiles: 8,
-      headRef: 'feature/cicd-pipeline',
-      baseRef: 'main',
-      files: [
-        { filename: '.github/workflows/ci.yml', status: 'added', additions: 120, deletions: 0 },
-        { filename: 'package.json', status: 'modified', additions: 36, deletions: 12 }
-      ],
-      comments: [],
-      reviewDecision: 'approved'
-    },
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-27T08:00:00Z',
-    updatedAt: '2026-05-29T16:01:00Z'
-  },
-  {
-    id: '6',
-    key: 'DEV-006',
-    title: 'Quality gate automation with ECC quality-gate --verify and benchmark-optimization-loop integration for automated performance regression detection',
-    description: 'Implement ECC quality-gate checks: static analysis, test coverage thresholds, and security scanning. Integration with benchmark-optimization-loop for performance regression detection.',
-    status: 'backlog',
-    priority: 'high',
-    profile: 'security',
-    labels: [
-      { id: 'l13', name: 'security', color: '#B85C4D' },
-      { id: 'l14', name: 'quality', color: '#7D9E7D' },
-      { id: 'l15', name: 'benchmark', color: '#6B8BA4' },
-      { id: 'l16', name: 'automation', color: '#C67B4E' },
-      { id: 'l17', name: 'performance', color: '#D4A84B' }
-    ],
-    assigneeId: null,
-    assigneeName: null,
-    assigneeAvatar: null,
-    storyPoints: 5,
-    dependencies: [],
-    prUrl: null,
-    ciStatus: null,
-    harnessType: null,
-    memoryRef: null,
-    activityLog: [],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-28T08:00:00Z',
-    updatedAt: '2026-05-28T08:00:00Z'
-  },
-  {
-    id: '7',
-    key: 'DEV-007',
-    title: 'Error state: AI agent failed to complete task due to merge conflict in worktree. Need human intervention to resolve.',
-    description: 'The AI agent encountered a merge conflict while trying to merge feature/responsive-branch into main. Manual resolution required.',
-    status: 'blocked',
-    priority: 'critical',
-    profile: 'debug',
-    labels: [
-      { id: 'l18', name: 'error', color: '#B85C4D' },
-      { id: 'l19', name: 'merge-conflict', color: '#D4A84B' },
-      { id: 'l20', name: 'needs-review', color: '#B85C4D' }
-    ],
-    assigneeId: 'u2',
-    assigneeName: 'Jamie Rivera',
-    assigneeAvatar: 'https://i.pravatar.cc/150?u=jamie',
-    storyPoints: 3,
-    dependencies: ['DEV-002'],
-    prUrl: 'https://github.com/org/repo/pull/48',
-    ciStatus: 'failed',
-    harnessType: 'claude-code',
-    memoryRef: 'mem_007',
-    activityLog: [
-      { id: 'a12', type: 'status_change', message: 'Moved to In Progress', actor: 'ai', timestamp: '2026-05-29T09:00:00Z' },
-      { id: 'a13', type: 'error', message: 'Merge conflict detected. AI agent failed to auto-resolve.', actor: 'ai', timestamp: '2026-05-29T09:15:00Z' },
-      { id: 'a14', type: 'status_change', message: 'Moved to Blocked', actor: 'system', timestamp: '2026-05-29T09:15:05Z' }
-    ],
-    eccLogs: [
-      { id: 'e12', timestamp: '2026-05-29T09:00:00Z', phase: 'action', content: 'Attempting to merge feature/responsive-branch into main...', confidence: 0.9, toolUsed: 'bash' },
-      { id: 'e13', timestamp: '2026-05-29T09:00:30Z', phase: 'error', content: 'Merge conflict in src/components/IssueCard.vue:20-45. Auto-resolve failed.', confidence: 0.95, toolUsed: 'bash', duration: 30000 },
-      { id: 'e14', timestamp: '2026-05-29T09:00:35Z', phase: 'reasoning', content: 'Conflict involves conflicting changes to drag-drop handlers. Need human review.', confidence: 0.8 }
-    ],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-28T08:00:00Z',
-    updatedAt: '2026-05-29T09:15:05Z'
-  },
-  {
-    id: '8',
-    key: 'DEV-008',
-    title: 'Error tracking and logging with structured log levels and error aggregation',
-    description: 'Integrate structured logging with log levels. Set up error aggregation for AI agent runs.',
-    status: 'backlog',
-    priority: 'low',
-    profile: 'debug',
-    labels: [
-      { id: 'l21', name: 'logging', color: '#D4A84B' },
-      { id: 'l22', name: 'monitoring', color: '#8C8279' }
-    ],
-    assigneeId: null,
-    assigneeName: null,
-    assigneeAvatar: null,
-    storyPoints: 2,
-    dependencies: [],
-    prUrl: null,
-    ciStatus: null,
-    harnessType: null,
-    memoryRef: null,
-    activityLog: [],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-28T08:00:00Z',
-    updatedAt: '2026-05-28T08:00:00Z'
-  },
-  {
-    id: '9',
-    key: 'DEV-009',
-    title: 'Multi-harness support for Codex and alternative AI coding agents',
-    description: 'Add support for OpenAI Codex as alternative harness. Test cross-harness parity for basic operations.',
-    status: 'backlog',
-    priority: 'low',
-    profile: 'general',
-    labels: [
-      { id: 'l23', name: 'harness', color: '#C67B4E' },
-      { id: 'l24', name: 'codex', color: '#7D9E7D' }
-    ],
-    assigneeId: null,
-    assigneeName: null,
-    assigneeAvatar: null,
-    storyPoints: 5,
-    dependencies: [],
-    prUrl: null,
-    ciStatus: null,
-    harnessType: null,
-    memoryRef: null,
-    activityLog: [],
-    eccLogs: [],
-    prDetails: null,
-    moveStatus: 'idle',
-    moveError: null,
-    handoffs: [],
-    createdAt: '2026-05-28T08:00:00Z',
-    updatedAt: '2026-05-28T08:00:00Z'
-  }
-] as Array<Omit<Issue, 'aiStatus' | 'eccJobId' | 'eccJobStatus' | 'eccJobMessage' | 'eccJobUpdatedAt'> & {
-  aiStatus?: AIAgentStatus
-  eccJobId?: string | null
-  eccJobStatus?: Issue['eccJobStatus']
-  eccJobMessage?: string | null
-  eccJobUpdatedAt?: string | null
-}>).map(issue => ({
-  aiStatus: issue.status === 'in_progress' ? 'running' : 'idle',
-  eccJobId: null,
-  eccJobStatus: null,
-  eccJobMessage: null,
-  eccJobUpdatedAt: null,
-  ...issue
-}))
+// Helper to read cookie directly (works in Pinia actions where useCookie may not)
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  const match = document.cookie.match(new RegExp(`(^| )${name}=([^;]+)`))
+  return match ? decodeURIComponent(match[2]) : null
+}
+
 
 const _inferPhaseFromEvent = (message: string, status: string): ECCLogEntry['phase'] => {
   const m = message.toLowerCase()
@@ -433,6 +72,7 @@ export const useBoardStore = defineStore('board', {
     jobs: [],
     selectedJob: null,
     isLoadingJobs: false,
+    fetchError: null as string | null,
     isNewIssueModalOpen: false,
     createIssueError: null,
     isCreatingIssue: false,
@@ -548,6 +188,7 @@ export const useBoardStore = defineStore('board', {
   actions: {
     async fetchBoard() {
       this.isLoading = true
+      this.fetchError = null
 
       try {
         const config = useRuntimeConfig()
@@ -558,15 +199,11 @@ export const useBoardStore = defineStore('board', {
         }))
         await this.fetchJobs()
       } catch (error) {
-        console.warn('[BoardStore] fetchBoard failed, falling back to mock data:', error)
-        const issues = generateMockIssues()
-        const statuses: IssueStatus[] = ['backlog', 'in_progress', 'blocked', 'human_review', 'done']
-        this.columns = statuses.map(status => ({
-          id: status,
-          title: COLUMN_CONFIG[status].title,
-          color: COLUMN_CONFIG[status].color,
-          issues: issues.filter(issue => issue.status === status)
-        }))
+        // Real backend unavailable or returned an error. Surface it; do
+        // NOT fabricate data — that hides outages from the operator.
+        console.error('[BoardStore] fetchBoard failed:', error)
+        this.fetchError = error instanceof Error ? error.message : 'Failed to load board'
+        this.columns = []
       }
 
       this.isLoading = false
@@ -707,7 +344,8 @@ export const useBoardStore = defineStore('board', {
             command: `${ECC_COMMAND_MAP[toStatus]} --profile=${issue.profile}`,
             profile: issue.profile,
             harness: this.activeHarness
-          }
+          },
+          headers: authHeaders(),
         })
       } catch (error) {
         console.warn('[BoardStore] ECC dispatch endpoint unavailable, using local run telemetry', error)
@@ -944,9 +582,10 @@ export const useBoardStore = defineStore('board', {
             provider: payload.provider || null,
             model: payload.model || null,
             execution_mode: payload.execution_mode || null
-          }
+          },
+          headers: authHeaders(),
         })
-        this.fetchJobs()
+        await this.fetchJobs()
         return job
       } catch (error) {
         console.warn('[BoardStore] dispatchCommand failed:', error)
@@ -1263,7 +902,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       this.selectedJob = null
     },
 
-    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs') {
+    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles') {
       this.activeDetailTab = tab
     },
 
@@ -1305,10 +944,26 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
 
       try {
         const config = useRuntimeConfig()
-        await $fetch<Issue>(`${config.public.apiBase}/issues`, {
+        const token = getCookie('auth_token')
+        const res = await fetch(`${config.public.apiBase}/issues`, {
           method: 'POST',
-          body: payload
+          body: JSON.stringify(payload),
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          },
+          credentials: 'include',
         })
+        if (!res.ok) {
+          let errMsg = `HTTP ${res.status}`
+          try {
+            const errData = await res.json()
+            errMsg = errData.detail || errMsg
+          } catch {
+            errMsg = await res.text() || errMsg
+          }
+          throw new Error(errMsg)
+        }
         await this.fetchBoard()
         this.closeNewIssueModal()
         return true
@@ -1379,7 +1034,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         const config = useRuntimeConfig()
         const created = await $fetch<Issue>(`${config.public.apiBase}/issues`, {
           method: 'POST',
-          body: { title, status: columnId }
+          body: { title, status: columnId },
+          headers: authHeaders(),
         })
         // Normalize: ensure all required fields exist
         newIssue = {
@@ -1638,7 +1294,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         const config = useRuntimeConfig()
         const job = await $fetch<ECCDispatchJob>(
           `${config.public.apiBase}/ecc/jobs/${jobId}/cancel`,
-          { method: 'POST' }
+          { method: 'POST', headers: authHeaders() }
         )
         this.handleJobUpdate(job)
         return job
@@ -1653,7 +1309,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         const config = useRuntimeConfig()
         const job = await $fetch<ECCDispatchJob>(
           `${config.public.apiBase}/ecc/jobs/${jobId}/retry`,
-          { method: 'POST' }
+          { method: 'POST', headers: authHeaders() }
         )
         this.handleJobUpdate(job)
         // Kick a fetch so the new job shows up in the global list
@@ -1808,7 +1464,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
 
     async fetchAgentRoles() {
       const config = useRuntimeConfig()
-      const token = useCookie('auth_token').value
+      const token = getCookie('auth_token')
 
       // No token → read-only from public /lanes, skip protected /agent-roles
       if (!token) {
@@ -1853,7 +1509,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
 
     async createAgentRole(data: Record<string, unknown>) {
       const config = useRuntimeConfig()
-      const token = useCookie('auth_token').value
+      const token = getCookie('auth_token')
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles`, {
@@ -1867,7 +1523,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
 
     async updateAgentRole(key: string, data: Record<string, unknown>) {
       const config = useRuntimeConfig()
-      const token = useCookie('auth_token').value
+      const token = getCookie('auth_token')
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}`, {
@@ -1881,7 +1537,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
 
     async toggleAgentRoleEnabled(key: string, enabled: boolean) {
       const config = useRuntimeConfig()
-      const token = useCookie('auth_token').value
+      const token = getCookie('auth_token')
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const res = await $fetch<AgentRole>(`${config.public.apiBase}/agent-roles/${key}/enabled`, {

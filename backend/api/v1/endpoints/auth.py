@@ -93,13 +93,22 @@ def create_jwt_token(user_id: str, username: str) -> tuple[str, int]:
 
 
 def verify_jwt_token(token: str) -> dict:
-    from jose import jwt, JWTError
+    # The codebase ships with `python-jose` declared in requirements but
+    # the Docker image only has `PyJWT`. Use the latter so verify works
+    # in the container, falling back to `jose` for environments that
+    # actually have it installed.
+    try:
+        import jwt as _pyjwt  # type: ignore
+        from jwt import PyJWTError as JWTError  # type: ignore
+    except ImportError:  # pragma: no cover - jose fallback path
+        from jose import jwt as _pyjwt  # type: ignore
+        from jose import JWTError  # type: ignore
 
     secret = get_jwt_secret()
     algorithm = get_jwt_algorithm()
 
     try:
-        payload = jwt.decode(token, secret, algorithms=[algorithm])
+        payload = _pyjwt.decode(token, secret, algorithms=[algorithm])
         return {
             "user_id": payload.get("sub"),
             "username": payload.get("username"),

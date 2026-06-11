@@ -106,6 +106,8 @@ async def create_issue(
     Persists through the repository. The repository generates the next
     DEV-NNN key based on existing rows.
     """
+    import logging
+    logging.getLogger(__name__).error(f"[create_issue] reached: status={request.status!r} priority={request.priority!r} profile={request.profile!r} user={current_user!r}")
     try:
         assert_board_id_allowed(request.board_id)
     except LookupError as exc:

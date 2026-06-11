@@ -16,6 +16,8 @@ from sqlalchemy import (
     Text,
     Boolean,
     Integer,
+    BigInteger,
+    LargeBinary,
     Index,
     ForeignKey,
 )
@@ -54,6 +56,13 @@ class Issue(Base):
     dependencies = Column(JSON, nullable=True, default=list)
     pr_url = Column(String(512), nullable=True)
     ci_status = Column(String(32), nullable=True, index=True)  # pending | passed | failed
+    # Mavis-collaboration fields: epics + structured acceptance criteria.
+    # ``parent_id`` is a self-FK so an issue can belong to an epic.
+    # ``acceptance_criteria`` is a list of {id, text, done} entries; the
+    # front-end renders the checklist, and a future AI agent can use
+    # it as a completion gate.
+    parent_id = Column(String(64), ForeignKey("issues.id", ondelete="SET NULL"), nullable=True, index=True)
+    acceptance_criteria = Column(JSON, nullable=True, default=list)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -80,6 +89,8 @@ class Issue(Base):
             "dependencies": self.dependencies or [],
             "prUrl": self.pr_url,
             "ciStatus": self.ci_status,
+            "parentId": self.parent_id,
+            "acceptanceCriteria": self.acceptance_criteria or [],
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -489,6 +500,69 @@ class IssueArtifact(Base):
             "createdByName": self.created_by_name,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "boardId": self.board_id,
+        }
+
+
+class CycleReport(Base):
+    """
+    CycleReport — a Mavis-style handoff captured after a worker pass.
+
+    One row per cycle on an issue. Written by:
+
+    - The auto-promote hook when an ECC job reaches a terminal success
+      state (``review_required`` or ``completed``); the ``verdict`` is
+      set to ``auto_passed`` and the progress log mirrors the ECC job
+      events. A leader can later override the verdict.
+    - The leader manually when overriding the auto decision, e.g.
+      when AC are partially met and the issue needs to bounce back to
+      ``in_progress``.
+
+    A cycle report is the single artifact that ties together the plan
+    the worker started with, what happened during execution, what was
+    produced, and whether the leader accepts the result. The Kanban
+    detail drawer renders it as the primary review surface.
+    """
+    __tablename__ = "cycle_reports"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), ForeignKey("issues.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(String(64), nullable=True, index=True)
+    author_id = Column(String(64), nullable=True)
+    author_name = Column(String(128), nullable=True)
+    plan = Column(Text, nullable=False)
+    # ``progress_log`` mirrors the ECCJobEvent shape: a list of
+    # ``{ts, status, message}`` dicts. Stored as JSON so the safe
+    # runner can append incrementally.
+    progress_log = Column(JSON, nullable=True, default=list)
+    deliverable_summary = Column(Text, nullable=True)
+    # Verdict values: pending | pass | fail | blocked | auto_passed.
+    # ``auto_passed`` is the auto-promote hook's signature; a leader
+    # can later flip it to ``pass`` (with their own reason) or ``fail``.
+    verdict = Column(String(32), nullable=False, default="pending", index=True)
+    verdict_reason = Column(Text, nullable=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        Index("ix_cycle_reports_issue_created", "issue_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "jobId": self.job_id,
+            "authorId": self.author_id,
+            "authorName": self.author_name,
+            "plan": self.plan,
+            "progressLog": self.progress_log or [],
+            "deliverableSummary": self.deliverable_summary,
+            "verdict": self.verdict,
+            "verdictReason": self.verdict_reason,
+            "boardId": self.board_id,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -929,6 +1003,49 @@ class AgentRole(Base):
             "systemPrompt": self.system_prompt or "",
             "taskPromptTemplate": self.task_prompt_template or "",
             "reviewPromptTemplate": self.review_prompt_template or "",
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class Artifact(Base):
+    """
+    Stored file artifact (deliverable, screenshot, log, etc.).
+
+    Each upload is its own row; re-uploading the same logical name with
+    ``parent_id`` set creates a version chain. Tags are stored as a JSON
+    array on the row for cheap filtering without a join table.
+    Blob bytes live inline (``content`` LargeBinary) — the user explicitly
+    chose Postgres blob over filesystem for this iteration.
+    """
+    __tablename__ = "artifacts"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(512), nullable=False, index=True)
+    mime_type = Column(String(256), nullable=False, default="application/octet-stream")
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    content = Column(LargeBinary, nullable=False)
+    tags = Column(JSON, nullable=False, default=list)
+    description = Column(Text, nullable=True, default="")
+    uploader = Column(String(128), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    parent_id = Column(String(64), ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True)
+    folder_path = Column(String(512), nullable=False, default="/Uploads", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "mimeType": self.mime_type,
+            "sizeBytes": self.size_bytes,
+            "tags": self.tags or [],
+            "description": self.description or "",
+            "uploader": self.uploader or "",
+            "version": self.version,
+            "parentId": self.parent_id,
+            "folderPath": self.folder_path or "/Uploads",
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

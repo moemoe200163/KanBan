@@ -34,6 +34,7 @@ from db.models import (
     AgentRunEvent,
     AgentSession,
     AgentRole,
+    Artifact as ArtifactModel,
 )
 
 
@@ -145,6 +146,8 @@ def _issue_model_to_dict(issue: IssueModel) -> dict:
         "profile": issue.profile or "general",
         "pr_url": issue.pr_url,
         "ci_status": issue.ci_status,
+        "parent_id": issue.parent_id,
+        "acceptance_criteria": issue.acceptance_criteria or [],
         "created_at": issue.created_at.isoformat() if issue.created_at else _utc_now(),
         "updated_at": issue.updated_at.isoformat() if issue.updated_at else _utc_now(),
     }
@@ -324,6 +327,155 @@ async def update_issue_pr_url(issue_id: str, pr_url: str) -> Optional[dict]:
             return _issue_model_to_dict(issue)
     except Exception as e:
         logger.warning(f"Failed to update issue {issue_id} pr_url: {e}")
+        return None
+
+
+async def update_issue(issue_id: str, updates: dict) -> Optional[dict]:
+    """Patch a subset of issue columns. Returns updated dict or None.
+
+    Only columns the cycle-reports endpoint needs are wired up here;
+    extend the whitelist if a new caller wants to mutate a different
+    field. We deliberately do NOT allow ``status`` to be patched here
+    — that has its own dedicated function with broadcast + auto-promote
+    semantics, and routing it through this generic function would
+    silently bypass both.
+    """
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            issue = result.scalar_one_or_none()
+            if not issue:
+                return None
+
+            ALLOWED = {
+                "parent_id", "acceptance_criteria", "title", "description",
+                "priority", "assignee_id", "assignee_name", "labels",
+            }
+            for key, value in updates.items():
+                if key not in ALLOWED:
+                    continue
+                setattr(issue, key, value)
+            issue.updated_at = now
+            await session.commit()
+            return _issue_model_to_dict(issue)
+    except Exception as e:
+        logger.warning(f"Failed to update issue {issue_id} fields {list(updates.keys())}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Cycle reports — Mavis-style handoffs captured after a worker pass.
+# ---------------------------------------------------------------------------
+
+def _cycle_report_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "issueId": row.issue_id,
+        "jobId": row.job_id,
+        "authorId": row.author_id,
+        "authorName": row.author_name,
+        "plan": row.plan,
+        "progressLog": row.progress_log or [],
+        "deliverableSummary": row.deliverable_summary,
+        "verdict": row.verdict,
+        "verdictReason": row.verdict_reason,
+        "boardId": row.board_id,
+        "createdAt": row.created_at.isoformat() if row.created_at else None,
+        "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+async def upsert_cycle_report(report: dict) -> dict:
+    """Create a cycle report. The id is the natural key."""
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            row = CycleReportModel(
+                id=report["id"],
+                issue_id=report["issue_id"],
+                job_id=report.get("job_id"),
+                author_id=report.get("author_id"),
+                author_name=report.get("author_name"),
+                plan=report["plan"],
+                progress_log=report.get("progress_log") or [],
+                deliverable_summary=report.get("deliverable_summary"),
+                verdict=report.get("verdict", "pending"),
+                verdict_reason=report.get("verdict_reason"),
+                board_id=report.get("board_id", DEFAULT_BOARD_ID),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            await session.commit()
+            return _cycle_report_to_dict(row)
+    except Exception as e:
+        logger.error(f"upsert_cycle_report failed: {e}", exc_info=True)
+        raise
+
+
+async def list_cycle_reports(issue_id: str, limit: int = 50) -> List[dict]:
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(CycleReportModel)
+                .where(CycleReportModel.issue_id == issue_id)
+                .order_by(CycleReportModel.created_at.desc())
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+            return [_cycle_report_to_dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"list_cycle_reports({issue_id}) failed: {e}")
+        return []
+
+
+async def get_cycle_report(report_id: str) -> Optional[dict]:
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(CycleReportModel).where(CycleReportModel.id == report_id)
+            )
+            row = result.scalar_one_or_none()
+            return _cycle_report_to_dict(row) if row else None
+    except Exception as e:
+        logger.warning(f"get_cycle_report({report_id}) failed: {e}")
+        return None
+
+
+async def update_cycle_report(report_id: str, updates: dict) -> Optional[dict]:
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(CycleReportModel).where(CycleReportModel.id == report_id)
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                return None
+            ALLOWED = {"verdict", "verdict_reason", "deliverable_summary", "progress_log"}
+            for key, value in updates.items():
+                if key in ALLOWED:
+                    setattr(row, key, value)
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return _cycle_report_to_dict(row)
+    except Exception as e:
+        logger.warning(f"update_cycle_report({report_id}) failed: {e}")
         return None
 
 
@@ -797,6 +949,58 @@ async def list_issue_artifacts(issue_id: str, limit: int = 100, board_id: Option
     except Exception as e:
         logger.warning(f"Failed to list issue artifacts for {issue_id}: {e}")
         return []
+
+
+async def list_all_issue_artifacts(
+    board_id: Optional[str] = None,
+    artifact_type: Optional[str] = None,
+    source: Optional[str] = None,
+    issue_id: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> List:
+    """
+    Cross-issue IssueArtifact list for the /deliveries view.
+
+    Filters: artifact_type, source, issue_id, board_id (all exact match
+    except board_id which is also exact). Returns the IssueArtifact
+    model instances (not dicts) so the router can join issue context
+    without an extra round-trip per row.
+    """
+    from sqlalchemy import select as _select
+    async with _get_sessionmaker()() as session:
+        stmt = _select(IssueArtifact)
+        if board_id:
+            stmt = stmt.where(IssueArtifact.board_id == board_id)
+        if artifact_type:
+            stmt = stmt.where(IssueArtifact.artifact_type == artifact_type)
+        if source:
+            stmt = stmt.where(IssueArtifact.source == source)
+        if issue_id:
+            stmt = stmt.where(IssueArtifact.issue_id == issue_id)
+        stmt = stmt.order_by(IssueArtifact.created_at.desc()).limit(limit).offset(offset)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def get_issue_summary(issue_id: str) -> Optional[dict]:
+    """Return the minimum issue fields needed by the /deliveries view:
+    key, title, status. None if the issue doesn't exist (or was deleted
+    while an IssueArtifact still references it).
+    """
+    from sqlalchemy import select as _select
+    async with _get_sessionmaker()() as session:
+        stmt = _select(IssueModel).where(IssueModel.id == issue_id)
+        result = await session.execute(stmt)
+        issue = result.scalar_one_or_none()
+        if not issue:
+            return None
+        return {
+            "id": issue.id,
+            "key": issue.key,
+            "title": issue.title,
+            "status": issue.status,
+        }
 
 
 async def create_issue_artifact(
@@ -2185,3 +2389,51 @@ async def count_active_handoffs_for_role(role_key: str) -> int:
     except Exception as e:
         logger.warning(f"Failed to count handoffs for role {role_key}: {e}")
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Artifact helpers
+# ---------------------------------------------------------------------------
+
+async def list_artifacts(session, limit: int = 200, offset: int = 0) -> list:
+    """Return artifacts newest-first. Caller is responsible for any
+    tag/name post-filtering (SQLite JSON support is limited, so we
+    filter in Python to keep the same code path on Postgres and SQLite).
+    """
+    from sqlalchemy import select as _select
+    stmt = _select(ArtifactModel).order_by(ArtifactModel.created_at.desc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_artifact(session, artifact_id: str):
+    """Return one artifact by id (or None). Includes the blob bytes."""
+    from sqlalchemy import select as _select
+    stmt = _select(ArtifactModel).where(ArtifactModel.id == artifact_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def list_artifacts_by_parent(session, parent_id: str) -> list:
+    """All artifact rows whose parent_id equals ``parent_id``."""
+    from sqlalchemy import select as _select
+    stmt = _select(ArtifactModel).where(ArtifactModel.parent_id == parent_id).order_by(ArtifactModel.version.asc())
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def create_artifact(session, artifact) -> ArtifactModel:
+    """Persist a new artifact. Caller builds the ArtifactModel instance."""
+    session.add(artifact)
+    await session.commit()
+    await session.refresh(artifact)
+    return artifact
+
+
+async def delete_artifact(session, artifact_id: str) -> bool:
+    """Hard-delete a single artifact by id. Returns True if a row was removed."""
+    from sqlalchemy import delete as _delete
+    stmt = _delete(ArtifactModel).where(ArtifactModel.id == artifact_id)
+    result = await session.execute(stmt)
+    await session.commit()
+    return (result.rowcount or 0) > 0

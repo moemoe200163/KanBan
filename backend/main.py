@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 import logging
 import asyncio
+import os
 from typing import Set
 
 # Configure logging
@@ -50,11 +51,16 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info(f"Database initialized: OK ({DATABASE_URL})")
 
-        seeded = await repo.seed_if_empty()
-        if seeded:
-            logger.info(f"Database seeded with {seeded} initial issues")
+        # Seed dev data only when explicitly requested. Production and
+        # demos that need a clean board should leave this off.
+        if os.getenv("SEED_DEV_DATA", "true").lower() in ("1", "true", "yes"):
+            seeded = await repo.seed_if_empty()
+            if seeded:
+                logger.info(f"Database seeded with {seeded} initial issues")
+            else:
+                logger.info("Database already seeded; skipping")
         else:
-            logger.info("Database already seeded; skipping")
+            logger.info("SEED_DEV_DATA is off; skipping seed")
 
         # Load existing jobs from DB into memory for the in-memory ECC hot path.
         from api.v1.endpoints.ecc import load_jobs_from_db
@@ -399,7 +405,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot, kanban_tools, github_api, agent_roles
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot, kanban_tools, github_api, agent_roles, artifacts, deliveries, cycle_reports
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
@@ -420,6 +426,9 @@ try:
     app.include_router(autopilot.router, prefix="/api/v1", tags=["Autopilot"])
     app.include_router(kanban_tools.router, prefix="/api/v1", tags=["Kanban Tools"])
     app.include_router(github_api.router, prefix="/api/v1", tags=["GitHub"])
+    app.include_router(artifacts.router, prefix="/api/v1", tags=["Artifacts"])
+    app.include_router(deliveries.router, prefix="/api/v1", tags=["Deliveries"])
+    app.include_router(cycle_reports.router, prefix="/api/v1", tags=["Cycle Reports"])
 
     # Dev management endpoints (stats + reset self-gate on dev mode; 404 in production)
     from api.v1.endpoints import dev
@@ -484,6 +493,12 @@ async def global_exception_handler(request, exc):
     Logs the error and returns a generic 500 response.
     """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    # Also flush to stderr so the trace is visible even when the global
+    # logger has its own handlers that buffer or filter.
+    import traceback, sys
+    print("=== UNHANDLED EXCEPTION ===", file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print("=== END ===", file=sys.stderr, flush=True)
     return JSONResponse(
         content={
             "error": "Internal Server Error",

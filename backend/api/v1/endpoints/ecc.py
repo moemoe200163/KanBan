@@ -132,11 +132,168 @@ def _transition_job(job: ECCDispatchJob, status: ECCJobStatus, message: str) -> 
     return job
 
 
+# Map of ECC terminal status -> next issue status. Failure / cancel
+# intentionally has no entry: the issue stays where it is so a human can
+# decide whether to retry, block, or re-prioritise.
+_ECC_ISSUE_PROMOTION: dict[str, str] = {
+    "review_required": "human_review",
+    "completed": "done",
+}
+
+
+async def _auto_promote_issue(job) -> None:
+    """Push the issue linked to a finished job to the next lane.
+
+    - `review_required` -> `human_review`  (PR / output ready for inspection)
+    - `completed`       -> `done`          (agent finished and self-validated)
+    - `failed` / `cancelled` / `running` / `paused` / `queued` -> no-op
+
+    The issue update is best-effort: if it fails (e.g. issue was deleted)
+    we log and move on so the job update itself isn't blocked.
+    """
+    next_status = _ECC_ISSUE_PROMOTION.get(job.status)
+    if not next_status:
+        return
+
+    issue_id = getattr(job, "issue_id", None)
+    if not issue_id:
+        return
+
+    try:
+        from db import repository as repo
+        updated = await repo.update_issue_status(issue_id, next_status)
+        if not updated:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[ECC] auto-promote: issue %s not found for job %s",
+                issue_id, job.id,
+            )
+            return
+        import logging
+        logging.getLogger(__name__).info(
+            "[ECC] auto-promote: job %s -> %s; issue %s -> %s",
+            job.id, job.status, issue_id, next_status,
+        )
+
+        # Write a Mavis-style cycle report alongside the auto-promote so
+        # the leader has the plan / progress log / deliverable on the
+        # review surface. Only fire once per job — for ``completed`` we
+        # get the full event list, for ``review_required`` we record
+        # the partial result and let the leader decide.
+        try:
+            await _write_auto_cycle_report(job, next_status)
+        except Exception as cr_exc:
+            logging.getLogger(__name__).warning(
+                "[ECC] auto-cycle-report failed for job %s: %s", job.id, cr_exc,
+            )
+
+        # Broadcast the change so the front-end can move the card live.
+        try:
+            from main import manager
+            await manager.broadcast({
+                "type": "issue_updated",
+                "timestamp": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+                "payload": {
+                    "issueId": issue_id,
+                    "changes": {
+                        "status": next_status,
+                    },
+                },
+            })
+        except Exception as broadcast_exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[ECC] auto-promote broadcast failed: %s", broadcast_exc,
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception(
+            "[ECC] auto-promote failed for job %s issue %s: %s",
+            job.id, issue_id, exc,
+        )
+
+
+async def _write_auto_cycle_report(job, next_status: str) -> None:
+    """Emit a Mavis-style cycle report when ECC auto-promotes a job.
+
+    Called from :func:`_auto_promote_issue` on every terminal-success
+    transition. The plan is a templated one-liner that names the
+    command + profile; the progress log mirrors the ECC job's event
+    list so a leader reviewing the report can see exactly what the
+    runner did. The verdict is ``auto_passed`` for ``completed`` and
+    ``pending`` for ``review_required`` (the leader is expected to
+    flip it to ``pass`` or ``fail`` after looking at the report).
+    """
+    import logging
+    import uuid as _uuid
+
+    issue_id = getattr(job, "issue_id", None)
+    if not issue_id:
+        return
+
+    verdict = "auto_passed" if next_status == "done" else "pending"
+    events = [
+        {"ts": e.timestamp, "status": e.status, "message": e.message}
+        for e in getattr(job, "events", [])
+    ]
+    last_message = getattr(job, "message", "") or ""
+    plan = (
+        f"Auto-run via {getattr(job, 'harness', 'safe-runner')}: "
+        f"`{getattr(job, 'command', '?')}` (profile={getattr(job, 'profile', '?')}). "
+        f"Linked issue {getattr(job, 'issue_key', '?')} on lane progression."
+    )
+    report = {
+        "id": f"cr_{_uuid.uuid4().hex[:16]}",
+        "issue_id": issue_id,
+        "job_id": job.id,
+        "author_id": None,
+        "author_name": "auto-promote",
+        "plan": plan,
+        "progress_log": events,
+        "deliverable_summary": last_message or None,
+        "verdict": verdict,
+        "verdict_reason": (
+            "auto-promoted from ECC job; awaiting leader review"
+            if verdict == "pending"
+            else "auto-promoted; safe-runner reported completed"
+        ),
+        "board_id": getattr(job, "board_id", "board-default"),
+    }
+    from db import repository as repo
+    await repo.upsert_cycle_report(report)
+    logging.getLogger(__name__).info(
+        "[ECC] auto cycle-report: job %s -> report %s verdict=%s",
+        job.id, report["id"], verdict,
+    )
+
+
+async def _transition_and_persist(
+    job: ECCDispatchJob,
+    status: ECCJobStatus,
+    message: str,
+) -> ECCDispatchJob:
+    """Transition a job, persist, and trigger auto-promote of the linked issue.
+
+    The safe runner and other internal callers used to mutate job state
+    via ``_transition_job`` (sync) and only the public ``PATCH`` endpoint
+    persisted. We consolidate that here so any transition — internal
+    or external — fans out to the DB, the linked issue, and the
+    WebSocket broadcast. The original sync ``_transition_job`` is kept
+    as a primitive for callers that explicitly want to defer persistence
+    (e.g. tests).
+    """
+    updated = _transition_job(job, status, message)
+    await _save_job_to_db(updated)
+    return updated
+
+
 async def _save_job_to_db(job: ECCDispatchJob) -> None:
     """Persist job state through the repository.
 
     Errors are logged and swallowed so a DB failure never breaks the
-    in-memory job flow.
+    in-memory job flow. After a successful persist we also auto-promote
+    the linked issue when the new status is a terminal success state
+    (see :func:`_auto_promote_issue`).
     """
     from db import repository as repo
 
@@ -154,6 +311,11 @@ async def _save_job_to_db(job: ECCDispatchJob) -> None:
         "updated_at": job.updated_at,
         "events": [e.model_dump() for e in job.events],
     })
+
+    # Side effect: when the safe runner (or any internal caller) writes
+    # a terminal success status, push the linked issue forward in the
+    # Kanban flow. Failure / cancel leave the issue in place.
+    await _auto_promote_issue(job)
 
 
 async def load_jobs_from_db() -> None:
@@ -389,11 +551,8 @@ async def update_ecc_job(job_id: str, request: ECCJobStatusUpdate, current_user:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")
 
     message = request.message or f"Job marked {request.status}"
-    updated_job = _transition_job(job, request.status, message)
-    
-    # Persist to database
-    await _save_job_to_db(updated_job)
-    
+    updated_job = await _transition_and_persist(job, request.status, message)
+
     return updated_job
 
 
