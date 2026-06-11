@@ -136,21 +136,22 @@ def _utc_now() -> str:
 
 
 def _issue_model_to_dict(issue: IssueModel) -> dict:
-    return {
-        "id": issue.id,
-        "key": issue.key,
-        "title": issue.title,
-        "description": issue.description or "",
-        "status": issue.status,
-        "priority": issue.priority or "medium",
-        "profile": issue.profile or "general",
-        "pr_url": issue.pr_url,
-        "ci_status": issue.ci_status,
-        "parent_id": issue.parent_id,
-        "acceptance_criteria": issue.acceptance_criteria or [],
-        "created_at": issue.created_at.isoformat() if issue.created_at else _utc_now(),
-        "updated_at": issue.updated_at.isoformat() if issue.updated_at else _utc_now(),
-    }
+    """Serialize an Issue row to the API's camelCase shape.
+
+    The board endpoint, the cycle-reports handler, and the front-end
+    all expect camelCase keys (e.g. ``parentId``, ``acceptanceCriteria``,
+    ``createdAt``). Historically the repository returned snake_case
+    and only the board endpoint manually rebuilt the shape; callers
+    like the new ``/issues/{id}/children`` and ``/issues/{id}``
+    endpoints that go straight through this function were returning
+    the snake_case shape, which broke the front-end.
+
+    We delegate to the SQLAlchemy model's own ``to_dict()`` so the
+    serialization rule lives in one place. The audit script that
+    parses the model file was written against the same columns, so
+    the public contract is unchanged from the model's perspective.
+    """
+    return issue.to_dict()
 
 
 def _job_model_to_dict(job: JobModel) -> dict:
@@ -226,6 +227,63 @@ async def list_issues(board_id: Optional[str] = None) -> List[dict]:
             return [_issue_model_to_dict(r) for r in rows]
     except Exception as e:
         logger.warning(f"Failed to list issues: {e}")
+        return []
+
+
+async def list_issue_children(parent_id: str) -> List[dict]:
+    """All issues whose ``parent_id`` equals ``parent_id``.
+
+    Used by the epic-tree page. The list is ordered by
+    ``created_at`` (newest first) so the page renders deterministically.
+    We don't filter by status here because the page groups by status
+    visually; filtering can be added on top if it becomes a hotspot.
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel)
+                .where(IssueModel.parent_id == parent_id)
+                .order_by(IssueModel.created_at.desc())
+            )
+            return [_issue_model_to_dict(r) for r in result.scalars().all()]
+    except Exception as e:
+        logger.warning(f"list_issue_children({parent_id}) failed: {e}")
+        return []
+
+
+async def get_epic_chain(issue_id: str, max_depth: int = 10) -> List[dict]:
+    """Walk ``parent_id`` up to a root epic, return the chain.
+
+    The list is ordered ``[root, ..., self]`` so a caller can render
+    a breadcrumb or a tree without re-sorting. ``max_depth`` bounds
+    the walk to defend against pathological self-cycles or
+    accidentally re-parented subtrees — at the first repetition we
+    stop and return what we have.
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            chain: list[IssueModel] = []
+            seen: set[str] = set()
+            current_id: Optional[str] = issue_id
+            for _ in range(max_depth):
+                if not current_id or current_id in seen:
+                    break
+                seen.add(current_id)
+                result = await session.execute(
+                    select(IssueModel).where(IssueModel.id == current_id)
+                )
+                row = result.scalar_one_or_none()
+                if not row:
+                    break
+                chain.append(row)
+                current_id = row.parent_id
+            # Reverse so the root is first, the original issue last.
+            chain.reverse()
+            return [_issue_model_to_dict(r) for r in chain]
+    except Exception as e:
+        logger.warning(f"get_epic_chain({issue_id}) failed: {e}")
         return []
 
 

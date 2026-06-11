@@ -80,19 +80,29 @@ const handleStart = (event: Event) => {
   >
     <div class="issue-card__top">
       <span class="issue-card__key">
-        <svg
+        <!-- Epic-subtask marker. Clickable so the leader can jump
+             from any child card straight to the epic tree view.
+             We stop propagation so the click doesn't also open
+             the issue drawer (the card's outer click handler). -->
+        <NuxtLink
           v-if="issue.parentId"
-          class="issue-card__epic-marker"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          title="Subtask of an epic"
+          :to="`/board/epic/${issue.parentId}`"
+          class="issue-card__epic-marker-link"
+          title="Open epic tree"
+          @click.stop
         >
-          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
-          <rect x="9" y="3" width="6" height="4" rx="1" />
-          <path d="M9 13h6M9 17h4" />
-        </svg>
+          <svg
+            class="issue-card__epic-marker"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+            <rect x="9" y="3" width="6" height="4" rx="1" />
+            <path d="M9 13h6M9 17h4" />
+          </svg>
+        </NuxtLink>
         {{ issue.key }}
       </span>
       <span class="issue-card__priority" :title="priorityConfig.label">
@@ -232,6 +242,27 @@ const handleStart = (event: Event) => {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.issue-card__epic-marker-link {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  color: var(--ink-muted);
+  text-decoration: none;
+  vertical-align: -1px;
+  border-radius: var(--radius-sm);
+  padding: 0 2px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+.issue-card__epic-marker-link:hover {
+  color: var(--ink);
+  background: rgba(125, 158, 125, 0.18);
+}
+.issue-card__epic-marker {
+  width: 11px;
+  height: 11px;
+  display: inline-block;
 }
 
 .issue-card__priority {

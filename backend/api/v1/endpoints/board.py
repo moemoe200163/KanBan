@@ -112,14 +112,14 @@ async def get_board(
             status=issue_dict["status"],
             priority=issue_dict.get("priority", "medium"),
             profile=issue_dict.get("profile", "general"),
-            prUrl=issue_dict.get("pr_url"),
-            ciStatus=issue_dict.get("ci_status"),
-            parentId=issue_dict.get("parent_id"),
-            acceptanceCriteria=issue_dict.get("acceptance_criteria") or [],
-            created_at=issue_dict.get("created_at", ""),
-            updated_at=issue_dict.get("updated_at", ""),
-            createdAt=issue_dict.get("created_at"),
-            updatedAt=issue_dict.get("updated_at"),
+            prUrl=issue_dict.get("prUrl"),
+            ciStatus=issue_dict.get("ciStatus"),
+            parentId=issue_dict.get("parentId"),
+            acceptanceCriteria=issue_dict.get("acceptanceCriteria") or [],
+            created_at=issue_dict.get("createdAt", ""),
+            updated_at=issue_dict.get("updatedAt", ""),
+            createdAt=issue_dict.get("createdAt"),
+            updatedAt=issue_dict.get("updatedAt"),
         ))
 
     columns = [

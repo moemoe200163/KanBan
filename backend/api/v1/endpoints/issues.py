@@ -95,6 +95,22 @@ async def list_issues(
     return {"issues": issues, "total": len(issues)}
 
 
+@router.get("/issues/{issue_id}")
+async def get_issue(issue_id: str, current_user: dict = Depends(require_auth)):
+    """Fetch a single issue by id.
+
+    Used by the epic-tree page to load the epic header (its title,
+    status, priority, creation time) so the page can render the
+    breadcrumb without a board-wide fetch. We return the same shape
+    as the list endpoint: a flat dict with the same fields the
+    front-end Issue type expects.
+    """
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    return issue
+
+
 @router.post("/issues")
 async def create_issue(
     request: IssueCreateRequest,
@@ -182,3 +198,49 @@ async def update_issue_status(
         )
 
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Epic / parent linkage
+# ---------------------------------------------------------------------------
+# Reads below the cycle-reports endpoints added earlier. The
+# frontend's /board/epic/{epic_id} page uses ``/issues/{id}/children``
+# to list every issue whose ``parent_id`` points at the epic, and
+# ``/issues/{id}/parent`` to follow the chain up to a root epic.
+# Both endpoints are read-only and stay that way — mutation goes
+# through the dedicated ``/parent`` PATCH in cycle_reports.py.
+
+@router.get("/issues/{issue_id}/children")
+async def list_issue_children(issue_id: str, current_user: dict = Depends(require_auth)):
+    """All issues whose ``parent_id`` equals the given issue id.
+
+    Used by the epic-tree page. The list is ordered by
+    ``created_at`` so the page renders deterministically; we don't
+    surface a ``status`` filter here because the page already groups
+    children by status visually.
+    """
+    parent = await repo.get_issue(issue_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        assert_board_id_allowed(parent["boardId"])
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    children = await repo.list_issue_children(issue_id)
+    return {"children": children, "total": len(children)}
+
+
+@router.get("/issues/{issue_id}/epic-chain")
+async def get_epic_chain(issue_id: str, current_user: dict = Depends(require_auth)):
+    """Walk parent_id up to a root epic, return the chain.
+
+    Returns ``[root, ..., self]`` (root first) so the frontend can
+    render a breadcrumb. The chain is bounded at 10 levels so a
+    pathological self-cycle doesn't lock the request. If the issue
+    is itself the root (no parent), the chain contains just the
+    issue itself.
+    """
+    chain = await repo.get_epic_chain(issue_id, max_depth=10)
+    if not chain:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    return {"chain": chain}
