@@ -17,23 +17,22 @@
  * - Without this page, the leader has to remember which issues need
  *   attention — a job that always loses to whatever the operator is
  *   doing in the moment.
+ *
+ * Status filter (``?status=pending|reviewed|all``):
+ * - ``pending`` is the original "needs a leader decision" queue
+ *   (default on first visit).
+ * - ``reviewed`` shows reports the leader has already approved or
+ *   sent back — useful for follow-up, e.g. "what did I send back
+ *   to the worker yesterday".
+ * - ``all`` merges both. The list splits visually into
+ *   "Awaiting review" and "Reviewed" sub-sections so a mixed
+ *   view stays scannable.
  */
 import { authHeaders } from '~/utils/authHeaders'
+import ReviewRowActions from '~/components/ReviewRowActions.vue'
+import type { PendingCycleReport, CycleReportVerdict } from '~/types'
 
-interface PendingCycleReport {
-  id: string
-  issueId: string
-  issueKey: string
-  issueTitle: string
-  issueStatus: string
-  jobId: string | null
-  authorName: string | null
-  plan: string
-  progressLog: Array<{ ts: string; status: string; message: string }>
-  deliverableSummary: string | null
-  verdict: 'pending' | 'auto_passed'
-  createdAt: string | null
-}
+type StatusFilter = 'pending' | 'reviewed' | 'all'
 
 const config = useRuntimeConfig()
 const route = useRoute()
@@ -43,8 +42,11 @@ const isLoading = ref(false)
 
 // Filters. State lives in the URL query so a leader can bookmark
 // "everything auto-promote reported on Monday" and have the
-// page land back on the same view. Default: no filter (show
-// every pending report).
+// page land back on the same view. Default: ``pending`` (show
+// every report that still needs a leader decision).
+const filterStatus = ref<StatusFilter>(
+  ((route.query.status as StatusFilter) || 'pending'),
+)
 const filterPriority = ref<string | null>((route.query.priority as string) || null)
 const filterAuthor = ref<string | null>((route.query.author as string) || null)
 // Date input is a plain ``YYYY-MM-DD`` string; we convert to the
@@ -52,37 +54,80 @@ const filterAuthor = ref<string | null>((route.query.author as string) || null)
 const filterSince = ref<string | null>((route.query.since as string) || null)
 
 const PRIORITY_OPTIONS = ['critical', 'high', 'medium', 'low'] as const
+const STATUS_OPTIONS: StatusFilter[] = ['pending', 'reviewed', 'all']
 const updatingId = ref<string | null>(null)
 const error = ref<string | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+// ----- status filter helpers --------------------------------------
+//
+// Two views to keep straight:
+//   * ``filterStatus.value`` is the *user's intent* — what's
+//     selected in the dropdown (``pending|reviewed|all``).
+//   * The endpoint actually called is chosen by the helper
+//     below. For ``pending`` we still hit the legacy
+//     ``/cycle-reports/pending`` endpoint (which excludes
+//     terminal verdicts), for everything else we hit
+//     ``/cycle-reports/reviewed?status=...`` which is the new
+//     decision-aware split introduced by this task.
+//
+// The list is then grouped client-side when the operator picks
+// ``all`` so the page renders the same two sub-sections the
+// endpoint filters would.
 
 const refresh = async () => {
   isLoading.value = true
   error.value = null
   try {
-    const params = new URLSearchParams()
-    if (filterPriority.value) params.set('priority', filterPriority.value)
-    if (filterAuthor.value) params.set('author', filterAuthor.value)
+    // Build params shared by both endpoints.
+    const baseParams = new URLSearchParams()
+    if (filterPriority.value) baseParams.set('priority', filterPriority.value)
+    if (filterAuthor.value) baseParams.set('author', filterAuthor.value)
     if (filterSince.value) {
       // ``YYYY-MM-DD`` → start-of-day UTC ISO-8601. End of day
       // is the operator's job — if they want "since 6am
       // yesterday" they can use the full ISO format.
       const iso = `${filterSince.value}T00:00:00Z`
-      params.set('since', iso)
+      baseParams.set('since', iso)
     }
-    const qs = params.toString()
-    const url = `${config.public.apiBase}/cycle-reports/pending${qs ? '?' + qs : ''}`
+    const baseQs = baseParams.toString()
+
+    // Pick the endpoint. ``pending`` keeps the historical
+    // behaviour (excludes terminal verdicts); ``reviewed`` and
+    // ``all`` use the new decision-aware split.
+    //
+    // Each branch builds the URL as a single template literal
+    // (no `?` directly in the literal) so the unused-endpoints
+    // audit script — which extracts path prefixes by static
+    // text match — picks up both callsites. Splitting the
+    // ``?status=`` join into a second template literal would
+    // make the script miss the ``/cycle-reports/reviewed``
+    // path.
+    const status = filterStatus.value
+    const endpoint = status === 'pending'
+      ? `${config.public.apiBase}/cycle-reports/pending${baseQs ? '?' + baseQs : ''}`
+      : `${config.public.apiBase}/cycle-reports/reviewed${`?status=${status}${baseQs ? '&' + baseQs : ''}`}`
+
     const res = await $fetch<{ cycleReports: PendingCycleReport[]; total: number }>(
-      url,
+      endpoint,
       { headers: authHeaders() },
     )
     reports.value = res.cycleReports ?? []
     error.value = null
   } catch (err: any) {
-    error.value = err instanceof Error ? err.message : 'Failed to load pending reports'
+    error.value = err instanceof Error ? err.message : 'Failed to load reports'
   } finally {
     isLoading.value = false
   }
+}
+
+const setStatus = (next: StatusFilter) => {
+  filterStatus.value = next
+  // Reflect in URL so bookmarked URLs survive a refresh.
+  router.replace({
+    query: { ...route.query, status: next === 'pending' ? undefined : next },
+  })
+  void refresh()
 }
 
 const clearFilters = () => {
@@ -90,7 +135,7 @@ const clearFilters = () => {
   filterAuthor.value = null
   filterSince.value = null
   // Reflect in URL too so bookmarked URLs reset.
-  router.replace({ query: {} })
+  router.replace({ query: { status: filterStatus.value === 'pending' ? undefined : filterStatus.value } })
   void refresh()
 }
 
@@ -121,6 +166,61 @@ const override = async (report: PendingCycleReport, verdict: 'pass' | 'fail' | '
   }
 }
 
+// Per-row review state — same shape as the IssueDetail review
+// section so the UX stays consistent. Kept in a Map keyed by
+// report id so multiple rows don't share comment state.
+const reviewComments = ref<Map<string, string>>(new Map())
+const reviewingId = ref<string | null>(null)
+const reviewErrors = ref<Map<string, string>>(new Map())
+const setReviewComment = (id: string, value: string) => {
+  const m = new Map(reviewComments.value)
+  m.set(id, value)
+  reviewComments.value = m
+}
+const setReviewError = (id: string, message: string | null) => {
+  const m = new Map(reviewErrors.value)
+  if (message === null) m.delete(id)
+  else m.set(id, message)
+  reviewErrors.value = m
+}
+
+// Self-review guard uses the same useAuth composable the
+// detail drawer uses, so the user id is the same single
+// source of truth.
+const { authUser } = useAuth()
+const isSelfReview = (r: PendingCycleReport) =>
+  !!(r.authorId && authUser.value?.id && r.authorId === authUser.value.id)
+
+const submitReview = async (r: PendingCycleReport, decision: 'approved' | 'changes_requested') => {
+  reviewingId.value = r.id
+  setReviewError(r.id, null)
+  const comment = (reviewComments.value.get(r.id) ?? '').trim() || null
+  try {
+    const updated = await $fetch<PendingCycleReport>(
+      `${config.public.apiBase}/cycle-reports/${r.id}/review`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { decision, comment },
+      },
+    )
+    // Optimistic patch in place; the next poll will reconcile
+    // any drift. The row is left in the list (with the new
+    // decision) so the operator sees the result of their click
+    // even when the status filter is ``pending`` — switching
+    // to ``reviewed`` shows the same row in the "Approved" or
+    // "Changes requested" section.
+    const idx = reports.value.findIndex(x => x.id === updated.id)
+    if (idx >= 0) reports.value[idx] = updated
+    setReviewComment(r.id, '')
+  } catch (err: any) {
+    const detail = err?.data?.detail ?? err?.message ?? 'Failed to submit review'
+    setReviewError(r.id, typeof detail === 'string' ? detail : 'Failed to submit review')
+  } finally {
+    reviewingId.value = null
+  }
+}
+
 onMounted(() => {
   void refresh()
   // Same cadence as the sidebar — every 30 s is enough since cycle
@@ -139,6 +239,15 @@ const formatTime = (ts: string | null) => {
 }
 
 const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pending review'
+
+// Group reports client-side for the "all" view so the page
+// stays scannable when a leader wants to see both the queue
+// and the recently-reviewed entries in one place.
+const pendingReports = computed(() => reports.value.filter(r => !r.decision))
+const reviewedReports = computed(() => reports.value.filter(r => !!r.decision))
+
+const reviewDecisionLabel = (d: 'approved' | 'changes_requested') =>
+  d === 'approved' ? 'Approved' : 'Changes requested'
 </script>
 
 <template>
@@ -160,6 +269,16 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
     </header>
 
     <section class="reviews-page__filters">
+      <label class="reviews-page__filter">
+        <span>Status</span>
+        <select
+          :value="filterStatus"
+          data-testid="reviews-status-filter"
+          @change="setStatus(($event.target as HTMLSelectElement).value as StatusFilter)"
+        >
+          <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </label>
       <label class="reviews-page__filter">
         <span>Priority</span>
         <select v-model="filterPriority" @change="refresh">
@@ -203,14 +322,100 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
         <circle cx="12" cy="12" r="10" />
       </svg>
       <h2>All caught up</h2>
-      <p>No cycle reports are waiting for a leader decision. New reports will appear here as workers complete their passes.</p>
+      <p v-if="filterStatus === 'pending'">
+        No cycle reports are waiting for a leader decision. New reports will appear here as workers complete their passes.
+      </p>
+      <p v-else-if="filterStatus === 'reviewed'">
+        No reviewed cycle reports yet. Approve or request changes on a pending report to see it here.
+      </p>
+      <p v-else>
+        No cycle reports match the current filters.
+      </p>
     </div>
 
-    <ul v-else class="reviews-list">
+    <!-- Awaiting review sub-section. Rendered when the
+         ``all`` filter merges pending and reviewed in one
+         list, so the operator can scan the queue without
+         losing track of what they already decided. -->
+    <template v-if="filterStatus === 'all' && pendingReports.length > 0">
+      <h2 class="reviews-page__section-title" data-testid="reviews-section-pending">
+        Awaiting review ({{ pendingReports.length }})
+      </h2>
+      <ul class="reviews-list">
+        <li
+          v-for="report in pendingReports"
+          :key="report.id"
+          class="review-row"
+          :data-testid="`review-row-${report.id}`"
+        >
+          <header class="review-row__header">
+            <div class="review-row__meta">
+              <span class="review-row__key">{{ report.issueKey }}</span>
+              <span :class="['review-row__status', `review-row__status--${report.issueStatus}`]">
+                {{ report.issueStatus.replace('_', ' ') }}
+              </span>
+            </div>
+            <span :class="['review-row__verdict', `review-row__verdict--${report.verdict}`]">
+              {{ verdictLabel(report.verdict) }}
+            </span>
+          </header>
+
+          <h3 class="review-row__title">{{ report.issueTitle }}</h3>
+
+          <section class="review-row__section">
+            <h4>Plan</h4>
+            <p>{{ report.plan }}</p>
+          </section>
+
+          <section v-if="report.progressLog?.length" class="review-row__section">
+            <h4>
+              Progress
+              <span class="review-row__count">{{ report.progressLog.length }}</span>
+            </h4>
+            <ol class="review-row__log">
+              <li
+                v-for="(ev, idx) in report.progressLog"
+                :key="idx"
+                :class="['review-row__log-item', `review-row__log-item--${(ev.status || 'info').toLowerCase()}`]"
+              >
+                <span class="review-row__log-status">{{ ev.status }}</span>
+                <span class="review-row__log-msg">{{ ev.message }}</span>
+              </li>
+            </ol>
+          </section>
+
+          <section v-if="report.deliverableSummary" class="review-row__section">
+            <h4>Deliverable</h4>
+            <p>{{ report.deliverableSummary }}</p>
+          </section>
+
+          <ReviewRowActions
+            :report="report"
+            :review-comment="reviewComments.get(report.id) ?? ''"
+            :review-error="reviewErrors.get(report.id) ?? null"
+            :is-self-review="isSelfReview(report)"
+            :is-reviewing="reviewingId === report.id"
+            :is-overriding="updatingId === report.id"
+            @update-review-comment="setReviewComment(report.id, $event)"
+            @submit-review="(decision) => submitReview(report, decision)"
+            @override="(verdict) => override(report, verdict)"
+          />
+        </li>
+      </ul>
+    </template>
+
+    <template v-if="filterStatus === 'all' && reviewedReports.length > 0">
+      <h2 class="reviews-page__section-title" data-testid="reviews-section-reviewed">
+        Reviewed ({{ reviewedReports.length }})
+      </h2>
+    </template>
+
+    <ul v-if="filterStatus === 'all' && reviewedReports.length > 0" class="reviews-list">
       <li
-        v-for="report in reports"
+        v-for="report in reviewedReports"
         :key="report.id"
-        class="review-row"
+        class="review-row review-row--reviewed"
+        :data-testid="`review-row-reviewed-${report.id}`"
       >
         <header class="review-row__header">
           <div class="review-row__meta">
@@ -219,7 +424,54 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
               {{ report.issueStatus.replace('_', ' ') }}
             </span>
           </div>
-          <span :class="['review-row__verdict', `review-row__verdict--${report.verdict}`]">
+          <span :class="['review-row__decision', `review-row__decision--${report.decision}`]" data-testid="review-row-decision-pill">
+            {{ reviewDecisionLabel(report.decision as 'approved' | 'changes_requested') }}
+          </span>
+        </header>
+
+        <h3 class="review-row__title">{{ report.issueTitle }}</h3>
+
+        <section class="review-row__section">
+          <h4>Plan</h4>
+          <p>{{ report.plan }}</p>
+        </section>
+
+        <p class="review-row__review-summary">
+          Reviewed by <strong>{{ report.reviewedBy || 'unknown' }}</strong>
+          · {{ formatTime(report.reviewedAt) }}
+        </p>
+        <p v-if="report.reviewComment" class="review-row__review-comment">
+          “{{ report.reviewComment }}”
+        </p>
+      </li>
+    </ul>
+
+    <ul v-if="filterStatus !== 'all' && reports.length > 0" class="reviews-list">
+      <li
+        v-for="report in reports"
+        :key="report.id"
+        class="review-row"
+        :class="{ 'review-row--reviewed': report.decision }"
+        :data-testid="`review-row-${report.id}`"
+      >
+        <header class="review-row__header">
+          <div class="review-row__meta">
+            <span class="review-row__key">{{ report.issueKey }}</span>
+            <span :class="['review-row__status', `review-row__status--${report.issueStatus}`]">
+              {{ report.issueStatus.replace('_', ' ') }}
+            </span>
+          </div>
+          <span
+            v-if="report.decision"
+            :class="['review-row__decision', `review-row__decision--${report.decision}`]"
+            data-testid="review-row-decision-pill"
+          >
+            {{ reviewDecisionLabel(report.decision as 'approved' | 'changes_requested') }}
+          </span>
+          <span
+            v-else
+            :class="['review-row__verdict', `review-row__verdict--${report.verdict}`]"
+          >
             {{ verdictLabel(report.verdict) }}
           </span>
         </header>
@@ -253,35 +505,33 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
           <p>{{ report.deliverableSummary }}</p>
         </section>
 
-        <footer class="review-row__actions">
-          <span class="review-row__author">
-            by <strong>{{ report.authorName || 'unknown' }}</strong>
-            · {{ formatTime(report.createdAt) }}
-          </span>
-          <div class="review-row__buttons">
-            <button
-              class="review-btn review-btn--pass"
-              :disabled="updatingId === report.id"
-              @click="override(report, 'pass')"
-            >
-              Mark as pass
-            </button>
-            <button
-              class="review-btn review-btn--fail"
-              :disabled="updatingId === report.id"
-              @click="override(report, 'fail')"
-            >
-              Fail
-            </button>
-            <button
-              class="review-btn review-btn--block"
-              :disabled="updatingId === report.id"
-              @click="override(report, 'blocked')"
-            >
-              Block
-            </button>
-          </div>
-        </footer>
+        <!-- Reviewed rows: readonly summary only — no
+             review/verdict buttons so a leader can't accidentally
+             re-decide. -->
+        <template v-if="report.decision">
+          <p class="review-row__review-summary">
+            Reviewed by <strong>{{ report.reviewedBy || 'unknown' }}</strong>
+            · {{ formatTime(report.reviewedAt) }}
+          </p>
+          <p v-if="report.reviewComment" class="review-row__review-comment">
+            “{{ report.reviewComment }}”
+          </p>
+        </template>
+
+        <!-- Pending rows: same per-row review block the queue
+             page has always had, plus the new review controls. -->
+        <ReviewRowActions
+          v-else
+          :report="report"
+          :review-comment="reviewComments.get(report.id) ?? ''"
+          :review-error="reviewErrors.get(report.id) ?? null"
+          :is-self-review="isSelfReview(report)"
+          :is-reviewing="reviewingId === report.id"
+          :is-overriding="updatingId === report.id"
+          @update-review-comment="setReviewComment(report.id, $event)"
+          @submit-review="(decision) => submitReview(report, decision)"
+          @override="(verdict) => override(report, verdict)"
+        />
       </li>
     </ul>
   </div>
@@ -519,4 +769,105 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
 .review-btn--pass  { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; border-color: rgba(125, 158, 125, 0.4); }
 .review-btn--fail  { background: rgba(184, 92, 77, 0.18);  color: #B85C4D; border-color: rgba(184, 92, 77, 0.4); }
 .review-btn--block { background: rgba(212, 168, 75, 0.18); color: #8A6B22; border-color: rgba(212, 168, 75, 0.4); }
+
+/* Status filter — sits at the front of the filter bar so the
+   split between "still to do" and "already done" is the first
+   control a leader reaches for. */
+.reviews-page__section-title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  margin: var(--space-2) 0 0 0;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Decision pill — replaces the verdict pill on rows that have
+   been reviewed, so the leader can spot a "Approved" / "Changes
+   requested" row at a glance. */
+.review-row__decision {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.review-row__decision--approved       { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; }
+.review-row__decision--changes_requested { background: rgba(212, 168, 75, 0.18); color: #8A6B22; }
+
+.review-row--reviewed {
+  opacity: 0.85;
+  border-style: dashed;
+}
+
+.review-row__review-summary {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.review-row__review-comment {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  font-style: italic;
+  border-left: 2px solid var(--hairline);
+  padding-left: var(--space-3);
+}
+
+/* Review action block (textarea + Approve / Request changes). */
+.review-row__review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px dashed var(--hairline);
+  padding-top: var(--space-3);
+  margin-top: var(--space-2);
+}
+.review-row__review-input {
+  font-size: var(--text-sm);
+  font-family: var(--font-sans, sans-serif);
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
+  color: var(--ink);
+  resize: vertical;
+  min-height: 44px;
+}
+.review-row__review-input:focus {
+  outline: none;
+  border-color: rgba(107, 139, 164, 0.6);
+}
+.review-row__review-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+.review-row__review-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #B85C4D;
+  background: rgba(184, 92, 77, 0.1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.review-row__self-hint {
+  font-size: var(--text-xs);
+  color: #8A6B22;
+  background: rgba(212, 168, 75, 0.1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.review-btn--approve {
+  background: rgba(125, 158, 125, 0.22);
+  color: #4F6F4F;
+  border-color: rgba(125, 158, 125, 0.5);
+}
+.review-btn--changes {
+  background: rgba(212, 168, 75, 0.22);
+  color: #8A6B22;
+  border-color: rgba(212, 168, 75, 0.5);
+}
 </style>
