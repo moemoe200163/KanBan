@@ -36,17 +36,44 @@ interface PendingCycleReport {
 }
 
 const config = useRuntimeConfig()
+const route = useRoute()
+const router = useRouter()
 const reports = ref<PendingCycleReport[]>([])
 const isLoading = ref(false)
+
+// Filters. State lives in the URL query so a leader can bookmark
+// "everything auto-promote reported on Monday" and have the
+// page land back on the same view. Default: no filter (show
+// every pending report).
+const filterPriority = ref<string | null>((route.query.priority as string) || null)
+const filterAuthor = ref<string | null>((route.query.author as string) || null)
+// Date input is a plain ``YYYY-MM-DD`` string; we convert to the
+// ISO-8601 lower bound the backend expects.
+const filterSince = ref<string | null>((route.query.since as string) || null)
+
+const PRIORITY_OPTIONS = ['critical', 'high', 'medium', 'low'] as const
 const updatingId = ref<string | null>(null)
 const error = ref<string | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const refresh = async () => {
   isLoading.value = true
+  error.value = null
   try {
+    const params = new URLSearchParams()
+    if (filterPriority.value) params.set('priority', filterPriority.value)
+    if (filterAuthor.value) params.set('author', filterAuthor.value)
+    if (filterSince.value) {
+      // ``YYYY-MM-DD`` → start-of-day UTC ISO-8601. End of day
+      // is the operator's job — if they want "since 6am
+      // yesterday" they can use the full ISO format.
+      const iso = `${filterSince.value}T00:00:00Z`
+      params.set('since', iso)
+    }
+    const qs = params.toString()
+    const url = `${config.public.apiBase}/cycle-reports/pending${qs ? '?' + qs : ''}`
     const res = await $fetch<{ cycleReports: PendingCycleReport[]; total: number }>(
-      `${config.public.apiBase}/cycle-reports/pending`,
+      url,
       { headers: authHeaders() },
     )
     reports.value = res.cycleReports ?? []
@@ -56,6 +83,15 @@ const refresh = async () => {
   } finally {
     isLoading.value = false
   }
+}
+
+const clearFilters = () => {
+  filterPriority.value = null
+  filterAuthor.value = null
+  filterSince.value = null
+  // Reflect in URL too so bookmarked URLs reset.
+  router.replace({ query: {} })
+  void refresh()
 }
 
 const override = async (report: PendingCycleReport, verdict: 'pass' | 'fail' | 'blocked') => {
@@ -122,6 +158,40 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
         Refresh
       </button>
     </header>
+
+    <section class="reviews-page__filters">
+      <label class="reviews-page__filter">
+        <span>Priority</span>
+        <select v-model="filterPriority" @change="refresh">
+          <option :value="null">All</option>
+          <option v-for="p in PRIORITY_OPTIONS" :key="p" :value="p">{{ p }}</option>
+        </select>
+      </label>
+      <label class="reviews-page__filter">
+        <span>Author</span>
+        <input
+          v-model="filterAuthor"
+          type="text"
+          placeholder="auto-promote, ..."
+          @change="refresh"
+        />
+      </label>
+      <label class="reviews-page__filter">
+        <span>Since</span>
+        <input
+          v-model="filterSince"
+          type="date"
+          @change="refresh"
+        />
+      </label>
+      <button
+        v-if="filterPriority || filterAuthor || filterSince"
+        class="reviews-page__filter-clear"
+        @click="clearFilters"
+      >
+        Clear
+      </button>
+    </section>
 
     <div v-if="error" class="reviews-page__error">
       {{ error }}
@@ -248,6 +318,52 @@ const verdictLabel = (v: string) => v === 'auto_passed' ? 'Auto-passed' : 'Pendi
   cursor: pointer;
 }
 .reviews-page__refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Filter bar — sits below the header so a leader can narrow
+   the queue without leaving the page. */
+.reviews-page__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--canvas-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  flex-wrap: wrap;
+}
+.reviews-page__filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.reviews-page__filter span {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.reviews-page__filter select,
+.reviews-page__filter input {
+  font-size: var(--text-sm);
+  padding: 5px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
+  color: var(--ink);
+  min-width: 140px;
+}
+.reviews-page__filter-clear {
+  font-size: var(--text-sm);
+  padding: 5px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
+  color: var(--ink-muted);
+  cursor: pointer;
+  align-self: flex-end;
+}
+.reviews-page__filter-clear:hover { color: var(--ink); }
 
 .reviews-page__error {
   background: rgba(184, 92, 77, 0.1);

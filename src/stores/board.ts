@@ -208,9 +208,14 @@ export const useBoardStore = defineStore('board', {
           } catch { /* localStorage unavailable */ }
         }
         const boardData = await $fetch<{ columns: Array<{ id: IssueStatus; title: string; color: string; issues: Issue[] }> }>(`${config.public.apiBase}/board${includeArchived}`)
+        if (!boardData || !Array.isArray(boardData.columns)) {
+          console.error('[BoardStore] /board returned malformed payload:', boardData)
+          this.columns = []
+          return
+        }
         this.columns = boardData.columns.map(column => ({
           ...column,
-          issues: column.issues.map(_normalizeIssue)
+          issues: (column.issues ?? []).map(_normalizeIssue)
         }))
         await this.fetchJobs()
       } catch (error) {
@@ -232,7 +237,7 @@ export const useBoardStore = defineStore('board', {
         const response = await $fetch<{ jobs: ECCDispatchJob[]; total: number }>(
           `${config.public.apiBase}/ecc/jobs${query}`
         )
-        const incoming = response.jobs
+        const incoming = Array.isArray(response?.jobs) ? response.jobs : []
 
         if (issueId) {
           const remaining = this.jobs.filter(job => job.issue_id !== issueId)

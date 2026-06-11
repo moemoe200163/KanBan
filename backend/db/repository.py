@@ -588,14 +588,32 @@ async def list_cycle_reports(issue_id: str, limit: int = 50) -> List[dict]:
         return []
 
 
-async def list_pending_cycle_reports(board_id: Optional[str] = None, limit: int = 100) -> List[dict]:
+async def list_pending_cycle_reports(
+    board_id: Optional[str] = None,
+    limit: int = 100,
+    priority: Optional[str] = None,
+    author: Optional[str] = None,
+    since: Optional[str] = None,
+) -> List[dict]:
     """Cycle reports awaiting leader review (pending + auto_passed).
 
     Joins the issue table so the leader can see the issue's key and
     title without a second round-trip. Used by the leader dashboard
     /reviews page and the sidebar ``Review (N)`` badge.
+
+    Optional filters compose with AND-semantics:
+
+    - ``priority`` matches on the parent issue's priority
+      column (critical|high|medium|low). The comparison is
+      exact, so an unknown value returns zero rows.
+    - ``author`` matches on the cycle report's ``author_name``
+      (e.g. ``auto-promote`` or a worker name). Exact match.
+    - ``since`` is an ISO-8601 timestamp; we parse with
+      ``datetime.fromisoformat`` (postgresql + sqlite both
+      accept the resulting ``datetime`` for ordering).
     """
     from db.models import CycleReport as CycleReportModel, Issue as IssueModel
+    from datetime import datetime as _dt
 
     try:
         await _ensure_init()()
@@ -614,6 +632,17 @@ async def list_pending_cycle_reports(board_id: Optional[str] = None, limit: int 
             )
             if board_id is not None:
                 stmt = stmt.where(CycleReportModel.board_id == board_id)
+            if priority is not None:
+                stmt = stmt.where(IssueModel.priority == priority)
+            if author is not None:
+                stmt = stmt.where(CycleReportModel.author_name == author)
+            if since is not None:
+                try:
+                    since_dt = _dt.fromisoformat(since.replace("Z", "+00:00"))
+                except ValueError:
+                    since_dt = None
+                if since_dt is not None:
+                    stmt = stmt.where(CycleReportModel.created_at >= since_dt)
             result = await session.execute(stmt)
             out: list[dict] = []
             for cr, issue in result.all():
@@ -624,6 +653,7 @@ async def list_pending_cycle_reports(board_id: Optional[str] = None, limit: int 
                 d["issueKey"] = issue.key
                 d["issueTitle"] = issue.title
                 d["issueStatus"] = issue.status
+                d["issuePriority"] = issue.priority
                 out.append(d)
             return out
     except Exception as e:
@@ -631,7 +661,12 @@ async def list_pending_cycle_reports(board_id: Optional[str] = None, limit: int 
         return []
 
 
-async def count_pending_cycle_reports(board_id: Optional[str] = None) -> int:
+async def count_pending_cycle_reports(
+    board_id: Optional[str] = None,
+    priority: Optional[str] = None,
+    author: Optional[str] = None,
+    since: Optional[str] = None,
+) -> int:
     """Cheap COUNT for the sidebar badge — no row materialization."""
     from db.models import CycleReport as CycleReportModel
 
@@ -645,6 +680,23 @@ async def count_pending_cycle_reports(board_id: Optional[str] = None) -> int:
             )
             if board_id is not None:
                 stmt = stmt.where(CycleReportModel.board_id == board_id)
+            if priority is not None:
+                # ``priority`` is on the parent issue, not the
+                # cycle report, so we have to join even for the
+                # cheap COUNT. Use an EXISTS-style subquery to
+                # keep the planner's choice open.
+                from db.models import Issue as IssueModel
+                stmt = stmt.join(IssueModel, CycleReportModel.issue_id == IssueModel.id).where(IssueModel.priority == priority)
+            if author is not None:
+                stmt = stmt.where(CycleReportModel.author_name == author)
+            if since is not None:
+                from datetime import datetime as _dt
+                try:
+                    since_dt = _dt.fromisoformat(since.replace("Z", "+00:00"))
+                except ValueError:
+                    since_dt = None
+                if since_dt is not None:
+                    stmt = stmt.where(CycleReportModel.created_at >= since_dt)
             result = await session.execute(stmt)
             return int(result.scalar() or 0)
     except Exception as e:

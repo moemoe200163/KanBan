@@ -131,6 +131,9 @@ async def list_cycle_reports(
 async def list_pending_cycle_reports(
     board_id: Optional[str] = Query(default=None, description="Filter to a single board; omit for all-boards view"),
     limit: int = Query(default=100, ge=1, le=500),
+    priority: Optional[str] = Query(default=None, description="Filter by issue priority: critical|high|medium|low"),
+    author: Optional[str] = Query(default=None, description="Filter by report author (e.g. 'auto-promote' or a worker name)"),
+    since: Optional[str] = Query(default=None, description="ISO-8601 lower bound on report.createdAt, e.g. 2026-06-01T00:00:00Z"),
     current_user: dict = Depends(require_auth),
 ):
     """All cycle reports awaiting leader review.
@@ -139,24 +142,51 @@ async def list_pending_cycle_reports(
     /reviews page can render rows without a follow-up fetch. Reports
     in terminal verdicts (pass/fail/blocked) are excluded — once a
     leader has decided, that cycle is no longer pending.
+
+    Optional filters: ``priority`` matches on the parent issue's
+    priority field, ``author`` matches on the cycle report's
+    ``authorName``, and ``since`` is an ISO-8601 lower bound on
+    the report's ``createdAt``. The filters compose with
+    AND-semantics and are applied in the repository so the
+    underlying SQL stays bounded by the same index scan.
     """
-    reports = await repo.list_pending_cycle_reports(board_id=board_id, limit=limit)
-    count = await repo.count_pending_cycle_reports(board_id=board_id)
+    reports = await repo.list_pending_cycle_reports(
+        board_id=board_id,
+        limit=limit,
+        priority=priority,
+        author=author,
+        since=since,
+    )
+    count = await repo.count_pending_cycle_reports(
+        board_id=board_id,
+        priority=priority,
+        author=author,
+        since=since,
+    )
     return {"cycleReports": reports, "total": count}
 
 
 @router.get("/cycle-reports/pending/count")
 async def count_pending_cycle_reports(
     board_id: Optional[str] = Query(default=None),
+    priority: Optional[str] = Query(default=None),
+    author: Optional[str] = Query(default=None),
+    since: Optional[str] = Query(default=None),
     current_user: dict = Depends(require_auth),
 ):
     """Cheap count for the sidebar Review badge.
 
     Separate endpoint from the list so the badge can poll every
     few seconds without pulling the full row payload. Same auth
-    as the rest of the cycle report API.
+    as the rest of the cycle report API. Filter params mirror
+    the list endpoint.
     """
-    count = await repo.count_pending_cycle_reports(board_id=board_id)
+    count = await repo.count_pending_cycle_reports(
+        board_id=board_id,
+        priority=priority,
+        author=author,
+        since=since,
+    )
     return {"count": count}
 
 
@@ -275,10 +305,13 @@ async def update_parent(
 ):
     """Link an issue to an epic parent, or unlink with ``parent_id: null``.
 
-    The parent must exist and belong to the same board. We don't
-    enforce a "no cycle" rule here — a leader may legitimately want a
-    worktree of an epic to point back to its own parent. If that
-    becomes a problem, add a cycle check here.
+    The parent must exist and belong to the same board. We also
+    defend against **transitive cycles** — if A's parent chain
+    passes through ``issue_id`` at any depth, setting
+    ``issue_id.parent_id = A`` would create a cycle in the
+    parent graph. The check is bounded at 10 levels deep (the
+    same bound as ``get_epic_chain``) to keep a corrupted
+    chain from spinning out of control.
     """
     issue = await repo.get_issue(issue_id)
     if not issue:
@@ -290,8 +323,21 @@ async def update_parent(
         parent = await repo.get_issue(body.parent_id)
         if not parent:
             raise HTTPException(status_code=404, detail=f"Parent issue '{body.parent_id}' not found")
-        if parent.get("board_id") != issue.get("board_id"):
+        if parent.get("boardId") != issue.get("boardId"):
             raise HTTPException(status_code=400, detail="Parent must be on the same board")
+        # Walk the candidate parent's chain to see if it
+        # already contains ``issue_id`` somewhere upstream. If
+        # it does, linking would create a cycle.
+        chain = await repo.get_epic_chain(body.parent_id, max_depth=10)
+        chain_ids = {row["id"] for row in chain}
+        if issue_id in chain_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Linking would create a cycle: issue {issue_id} is already "
+                    f"an ancestor of {body.parent_id}"
+                ),
+            )
 
     updated = await repo.update_issue(issue_id, {"parent_id": body.parent_id})
     if not updated:

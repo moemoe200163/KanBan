@@ -1,25 +1,23 @@
 services:
   # Frontend - Nuxt application
   # NUXT_PUBLIC_API_BASE is consumed by the browser, not by container-to-container
-  # traffic. We point it at nginx's same-origin proxy path so the browser
-  # does not need CORS headers for cross-origin XHR. The nginx container
-  # listens on :80 and forwards /api/ to the backend.
-  # For direct backend access (bypassing nginx), set this to
-  # http://127.0.0.1:8000/api/v1 — but the backend CORS allowlist must
-  # then include the browser's origin.
+  # traffic. We point it at the backend's direct port so the browser
+  # can call it without relying on the nginx proxy. The backend
+  # CORS allowlist (configured in core/auth.py via ALLOWED_ORIGINS)
+  # must include http://127.0.0.1:3010 and http://localhost:3010.
   frontend:
     build:
       context: .
       dockerfile: Dockerfile
       target: frontend
       args:
-        - NUXT_PUBLIC_API_BASE=/api/v1
+        - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
     container_name: devflow-frontend
     ports:
       - "3010:3010"
     environment:
       - NODE_ENV=production
-      - NUXT_PUBLIC_API_BASE=/api/v1
+      - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
       - NITRO_PORT=3010
     depends_on:
       - backend
