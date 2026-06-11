@@ -7,6 +7,8 @@ Endpoints:
 - ``GET    /api/v1/issues/{issue_id}/cycle-reports``  — list all reports for an issue
 - ``GET    /api/v1/issues/{issue_id}/cycle-reports/{report_id}``  — fetch one
 - ``PATCH  /api/v1/issues/{issue_id}/cycle-reports/{report_id}``  — leader override verdict
+- ``POST   /api/v1/cycle-reports/{report_id}/review``  — leader review (approve / request changes)
+- ``GET    /api/v1/cycle-reports/reviewed``           — list reviewed reports (filter by board + status)
 - ``PATCH  /api/v1/issues/{issue_id}/acceptance-criteria``  — update structured AC
 - ``PATCH  /api/v1/issues/{issue_id}/parent``  — link / unlink an epic parent
 
@@ -15,18 +17,24 @@ endpoints when a job reaches a terminal success state, so most
 operator traffic is read-only: the leader looks at the report,
 overrides the verdict if needed, and the issue auto-promotes to
 ``done`` once a leader flips the report to ``pass``.
+
+The ``/review`` endpoint is the leader's *review of the report
+itself* (approve, or send the worker back with feedback) — a
+separate concept from the verdict override. Both can coexist on
+the same report (e.g. ``verdict=pass, decision=approved``).
 """
 from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from api.v1.auth_deps import require_auth
+from api.v1.endpoints.audit import log_audit_event
 from db import repository as repo
 from db.database import AsyncSessionLocal
 from db.models import CycleReport, Issue
@@ -54,6 +62,19 @@ class CycleReportUpdate(BaseModel):
     verdict_reason: Optional[str] = None
     deliverable_summary: Optional[str] = None
     progress_log: Optional[List[Dict[str, Any]]] = None
+
+
+class CycleReportReviewRequest(BaseModel):
+    """Body for ``POST /cycle-reports/{id}/review``.
+
+    ``decision`` mirrors the task brief: ``approved`` (green light)
+    or ``changes_requested`` (worker needs another pass). The
+    endpoint enforces this enum and rejects any other value with
+    422 — keeping the writer side strict so a typo can't be
+    silently stored on the report.
+    """
+    decision: Literal["approved", "changes_requested"]
+    comment: Optional[str] = Field(default=None, max_length=8000)
 
 
 class AcceptanceCriteriaUpdate(BaseModel):
@@ -255,6 +276,167 @@ async def update_cycle_report(
             pass
 
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Review endpoint
+# ---------------------------------------------------------------------------
+#
+# The ``/review`` endpoint is the leader's *review of the report
+# itself* (approve, or send the worker back with feedback).
+# Distinct from the ``PATCH /cycle-reports/{id}`` verdict
+# override: verdict is about whether the work product is
+# accepted, decision is about whether the report (and the worker
+# who wrote it) needs to do another pass. Both can coexist on
+# the same report.
+#
+# Authorisation rules:
+# - require_auth (401 if no token)
+# - self-review guard: a non-admin reviewer cannot review a
+#   report they wrote. We compare the reviewer's user_id
+#   against the report's author_id; if they match, the request
+#   is rejected with 403 unless the reviewer is also an admin.
+#   Admins can review any report (the platform's audit team
+#   includes the original author's lead).
+
+async def _is_admin(user_id: str) -> bool:
+    """Return True if the user has the ``admin`` role.
+
+    Centralised here so the role check is consistent across the
+    review endpoint and any future admin-gated flows. Cached
+    in the request scope is unnecessary — admins are rare and
+    the role table is small.
+    """
+    from db.database import AsyncSessionLocal
+    from db.models import User
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            return bool(user and user.role == "admin")
+    except Exception:
+        # Fail closed — if we can't read the user record we
+        # don't want to grant admin bypass on a guess.
+        return False
+
+
+@router.post("/cycle-reports/{report_id}/review")
+async def review_cycle_report(
+    report_id: str = Path(..., description="Cycle report id, e.g. ``cr_abc123...``"),
+    body: CycleReportReviewRequest = Body(...),
+    current_user: dict = Depends(require_auth),
+):
+    """Record a review decision on a cycle report.
+
+    Body: ``{"decision": "approved" | "changes_requested", "comment": str | null}``
+
+    Side effects:
+    - Persists ``decision``, ``review_comment``, ``reviewed_at``,
+      ``reviewed_by`` and ``reviewed_by_id`` on the cycle report
+      (see migration 0020).
+    - Emits an audit log entry with action
+      ``cycle_report.review`` so the trail shows who decided
+      what, when, and why. The audit resource id is the cycle
+      report id; the audit ``details`` carries the decision
+      literal, the optional comment, and the linked issue id
+      so a single audit row is enough to navigate from log
+      -> report -> issue.
+    - Idempotent on repeat: a second call overwrites the
+      earlier review. The first review still appears in the
+      audit log (we never delete entries), so the trail
+      captures the change-of-mind.
+
+    Authorization:
+    - 401 if not authenticated.
+    - 403 if the reviewer is also the report's author and not
+      an admin (self-review guard).
+    - 404 if the report id is unknown.
+    """
+    existing = await repo.get_cycle_report(report_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Cycle report '{report_id}' not found")
+
+    reviewer_id = current_user.get("user_id")
+    reviewer_name = current_user.get("username") or "unknown"
+
+    # Self-review guard. A worker reviewing their own report is
+    # a classic 4-eyes control violation; we enforce it at the
+    # API edge so the rule is in one place, not duplicated in
+    # every UI that calls this endpoint.
+    is_admin = await _is_admin(reviewer_id) if reviewer_id else False
+    report_author_id = existing.get("authorId")
+    if (
+        report_author_id
+        and reviewer_id
+        and report_author_id == reviewer_id
+        and not is_admin
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot review a cycle report you authored (self-review guard)",
+        )
+
+    updated = await repo.set_cycle_report_review(
+        report_id,
+        decision=body.decision,
+        review_comment=body.comment,
+        reviewed_by=reviewer_name,
+        reviewed_by_id=reviewer_id or "unknown",
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to record review")
+
+    # Audit trail. ``log_audit_event`` is fire-and-forget — a
+    # failed write logs a warning but does not roll back the
+    # review, because the review is the user-visible action and
+    # the audit is a side channel.
+    await log_audit_event(
+        action="cycle_report.review",
+        resource="cycle_report",
+        resource_id=report_id,
+        agent_id=reviewer_id,
+        agent_name=reviewer_name,
+        details={
+            "decision": body.decision,
+            "comment": body.comment,
+            "issueId": existing.get("issueId"),
+        },
+    )
+
+    return updated
+
+
+@router.get("/cycle-reports/reviewed")
+async def list_reviewed_cycle_reports(
+    board_id: Optional[str] = Query(default=None, description="Filter to a single board; omit for all-boards view"),
+    status: str = Query(default="all", description="``pending`` (decision IS NULL), ``reviewed`` (decision IS NOT NULL), or ``all``"),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: dict = Depends(require_auth),
+):
+    """List cycle reports filtered by review status.
+
+    The leader's ``/reviews`` page uses this to split the queue
+    into "awaiting review" and "already reviewed" sections. The
+    default ``status='all'`` is convenient for the queue page's
+    "everything" filter; the ``pending`` / ``reviewed`` values
+    match the cycle report review flow exactly.
+
+    The query joins the issue table so the UI can render key,
+    title, status, and priority inline without a follow-up
+    fetch (same contract as ``/cycle-reports/pending``).
+    """
+    if status not in {"pending", "reviewed", "all"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status '{status}'; must be pending, reviewed, or all",
+        )
+    reports = await repo.list_cycle_reports_with_status(
+        board_id=board_id,
+        status=status,
+        limit=limit,
+    )
+    return {"cycleReports": reports, "total": len(reports)}
 
 
 # ----------------------------------------------------------------------------
