@@ -1,32 +1,74 @@
 <script setup lang="ts">
 import { useBoardStore } from '~/stores/board'
-import { Activity, Bot, ChevronRight, Columns3, GitPullRequest, Package, Terminal, TrendingUp } from 'lucide-vue-next'
+import { Activity, AlertCircle, Bot, ChevronRight, Columns3, GitPullRequest, Loader2, Package, Terminal, TrendingUp } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
+const config = useRuntimeConfig()
+const apiBase = config.public.apiBase as string
 
-onMounted(() => {
-  boardStore.fetchBoard()
-  boardStore.fetchJobs()
-})
+// Server-side analytics replaces the previous getAllIssues.filter() and
+// getColumnByStatus(...) fakes. The endpoint is the single source of
+// truth for KPI tiles, so the dashboard is no longer coupled to which
+// columns the user has loaded into the board store.
+interface AnalyticsKpis {
+  activeRuns: number
+  reviewCount: number
+  blockedCount: number
+  doneCount: number
+  throughput: number
+  throughputLast7d: number
+  avgCycleTimeMin: number
+  avgCycleTimeHours: number
+  aiSuccessRate: number
+  totalIssues: number
+  totalJobs: number
+  inReview: number
+}
 
-// KPI metrics
-const activeRuns = computed(() =>
-  boardStore.getAllIssues.filter(i => i.aiStatus === 'running').length
-)
-const reviewCount = computed(() =>
-  boardStore.getColumnByStatus('human_review')?.issues.length ?? 0
-)
-const blockedCount = computed(() =>
-  boardStore.getColumnByStatus('blocked')?.issues.length ?? 0
-)
-const doneCount = computed(() =>
-  boardStore.getColumnByStatus('done')?.issues.length ?? 0
-)
+interface AnalyticsPayload {
+  issues: { total: number; byStatus: Record<string, number> }
+  jobs: { total: number; running: number; inReview: number }
+  quality: { total: number; passed: number; avgCoverage: number }
+  audit: { total: number }
+  kpis: AnalyticsKpis
+}
 
-// Recent jobs (last 5)
+const analytics = ref<AnalyticsPayload | null>(null)
+const analyticsLoading = ref(true)
+const analyticsError = ref<string | null>(null)
+
+const fetchAnalytics = async () => {
+  analyticsLoading.value = true
+  analyticsError.value = null
+  try {
+    const res = await fetch(`${apiBase}/analytics/stats`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    analytics.value = await res.json()
+  } catch (e: any) {
+    analyticsError.value = e?.message || 'Failed to load analytics'
+  } finally {
+    analyticsLoading.value = false
+  }
+}
+
+// KPIs come from the server now. While loading we keep the tiles at 0
+// rather than showing stale board state, which was the original bug
+// this commit fixes.
+const activeRuns = computed(() => analytics.value?.kpis.activeRuns ?? 0)
+const reviewCount = computed(() => analytics.value?.kpis.reviewCount ?? 0)
+const blockedCount = computed(() => analytics.value?.kpis.blockedCount ?? 0)
+const doneCount = computed(() => analytics.value?.kpis.doneCount ?? 0)
+const throughputLast7d = computed(() => analytics.value?.kpis.throughputLast7d ?? 0)
+const avgCycleTimeHours = computed(() => analytics.value?.kpis.avgCycleTimeHours ?? 0)
+const aiSuccessRate = computed(() => analytics.value?.kpis.aiSuccessRate ?? 0)
+
+// Recent jobs (last 5) still come from the board store — that is its
+// own data source, not analytics, and is rendered below.
 const recentJobs = computed(() => boardStore.recentJobs)
 
-// Review queue issues
+// Review queue issues still come from the board store for now. The
+// store is already populated from the board fetch and gives us the
+// full issue payload (key/title) needed for the drawer links.
 const reviewQueueIssues = computed(() =>
   boardStore.getColumnByStatus('human_review')?.issues ?? []
 )
@@ -79,6 +121,12 @@ const jobStatusColor = (status: string) => {
     default: return 'var(--muted)'
   }
 }
+
+onMounted(() => {
+  boardStore.fetchBoard()
+  boardStore.fetchJobs()
+  fetchAnalytics()
+})
 </script>
 
 <template>
@@ -91,24 +139,69 @@ const jobStatusColor = (status: string) => {
       </div>
     </header>
 
-    <!-- KPI Strip -->
+    <!-- KPI Strip — fed by /analytics/stats, no more local fakes -->
     <div class="dashboard__kpis">
       <div class="kpi-tile">
         <span class="kpi-tile__label">Active Runs</span>
-        <strong class="kpi-tile__value">{{ activeRuns }}</strong>
+        <strong class="kpi-tile__value">
+          <Loader2 v-if="analyticsLoading" :size="20" class="spin spin--inline" />
+          <template v-else>{{ activeRuns }}</template>
+        </strong>
       </div>
       <div class="kpi-tile">
         <span class="kpi-tile__label">Review</span>
-        <strong class="kpi-tile__value">{{ reviewCount }}</strong>
+        <strong class="kpi-tile__value">
+          <Loader2 v-if="analyticsLoading" :size="20" class="spin spin--inline" />
+          <template v-else>{{ reviewCount }}</template>
+        </strong>
       </div>
       <div class="kpi-tile kpi-tile--warn">
         <span class="kpi-tile__label">Blocked</span>
-        <strong class="kpi-tile__value">{{ blockedCount }}</strong>
+        <strong class="kpi-tile__value">
+          <Loader2 v-if="analyticsLoading" :size="20" class="spin spin--inline" />
+          <template v-else>{{ blockedCount }}</template>
+        </strong>
       </div>
       <div class="kpi-tile">
         <span class="kpi-tile__label">Done</span>
-        <strong class="kpi-tile__value">{{ doneCount }}</strong>
+        <strong class="kpi-tile__value">
+          <Loader2 v-if="analyticsLoading" :size="20" class="spin spin--inline" />
+          <template v-else>{{ doneCount }}</template>
+        </strong>
       </div>
+    </div>
+
+    <!-- Secondary KPIs from analytics: throughput, cycle time, success rate -->
+    <div v-if="!analyticsLoading && !analyticsError" class="dashboard__kpis dashboard__kpis--secondary">
+      <div class="kpi-tile kpi-tile--sm">
+        <span class="kpi-tile__label">Throughput (7d)</span>
+        <strong class="kpi-tile__value kpi-tile__value--sm">{{ throughputLast7d }}</strong>
+        <span class="kpi-tile__hint">terminal jobs in last 7 days</span>
+      </div>
+      <div class="kpi-tile kpi-tile--sm">
+        <span class="kpi-tile__label">Avg cycle time</span>
+        <strong class="kpi-tile__value kpi-tile__value--sm">
+          {{ avgCycleTimeHours }}<span class="kpi-tile__unit">h</span>
+        </strong>
+        <span class="kpi-tile__hint">created → terminal</span>
+      </div>
+      <div class="kpi-tile kpi-tile--sm">
+        <span class="kpi-tile__label">AI success rate</span>
+        <strong class="kpi-tile__value kpi-tile__value--sm">{{ aiSuccessRate }}%</strong>
+        <span class="kpi-tile__hint">completed / terminal</span>
+      </div>
+      <div class="kpi-tile kpi-tile--sm">
+        <span class="kpi-tile__label">Total issues</span>
+        <strong class="kpi-tile__value kpi-tile__value--sm">{{ analytics?.issues.total ?? 0 }}</strong>
+        <span class="kpi-tile__hint">across all columns</span>
+      </div>
+    </div>
+
+    <!-- Error banner — keeps tiles renderable but tells the operator -->
+    <div v-if="analyticsError" class="dashboard__analytics-error">
+      <AlertCircle :size="14" />
+      <span>Analytics unavailable: {{ analyticsError }}. Showing last-known local values.</span>
+      <button class="dashboard__retry" @click="fetchAnalytics">Retry</button>
     </div>
 
     <!-- Navigation cards -->
@@ -247,6 +340,11 @@ const jobStatusColor = (status: string) => {
   background: color-mix(in srgb, var(--clay-red) 8%, var(--surface-card));
 }
 
+.kpi-tile--sm {
+  padding: 0.75rem 1.1rem;
+  gap: 0.2rem;
+}
+
 .kpi-tile__label {
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -261,6 +359,74 @@ const jobStatusColor = (status: string) => {
   color: var(--ink);
   letter-spacing: -0.03em;
   line-height: 1;
+}
+
+.kpi-tile__value--sm {
+  font-size: 1.4rem;
+}
+
+.kpi-tile__unit {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 0.15rem;
+}
+
+.kpi-tile__hint {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* Secondary KPI row — smaller tiles, same grid layout */
+.dashboard__kpis--secondary {
+  margin-top: -0.5rem;
+  background: var(--surface-soft);
+}
+
+/* Loader inside a KPI tile */
+.spin--inline {
+  display: inline-block;
+  vertical-align: middle;
+  color: var(--muted);
+}
+
+/* Inline animation — keep the keyframes local so the scoped CSS is
+   the only place that needs to know about the spinner. */
+@keyframes dashboard-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: dashboard-spin 1s linear infinite;
+}
+
+/* Error banner — small, dismissable via retry */
+.dashboard__analytics-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--clay-red) 8%, var(--surface-card));
+  border: 1px solid color-mix(in srgb, var(--clay-red) 30%, transparent);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: var(--clay-red);
+}
+
+.dashboard__retry {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dashboard__retry:hover {
+  background: var(--clay-red);
+  color: var(--surface-card);
 }
 
 /* Navigation cards */
