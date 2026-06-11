@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { useBoardStore } from '~/stores/board'
+import { useNotificationsStore } from '~/stores/notifications'
 import { useDarkMode } from '~/composables/useDarkMode'
 import { useRecentJobs } from '~/composables/useRecentJobs'
 import {
   Activity,
   Archive,
   BarChart3,
+  Bell,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -30,6 +32,7 @@ import {
 } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
+const notificationsStore = useNotificationsStore()
 const { isDark, toggleDark } = useDarkMode()
 const router = useRouter()
 const route = useRoute()
@@ -86,6 +89,16 @@ const navigate = (to: string) => {
   emit('navigate')
 }
 
+// Bell → /notifications. We deliberately do NOT open a drawer (per
+// task spec: drawer would crowd the sidebar). Click goes straight to
+// the inbox page. A `markAllRead` on navigate is tempting but
+// erases the "needs review" signal — leave that to the page.
+const unreadCount = computed(() => notificationsStore.unreadCount)
+const goToNotifications = () => {
+  router.push('/notifications')
+  emit('navigate')
+}
+
 // Recent jobs feed
 const { start: startRecentJobs, stop: stopRecentJobs } = useRecentJobs()
 
@@ -128,6 +141,13 @@ watch(showArchived, (val) => {
 // operator is on a page that doesn't otherwise watch the board.
 const pendingCycleCount = ref(0)
 let pendingCountTimer: ReturnType<typeof setInterval> | null = null
+
+// Bell badge: shows the unread count. The store hydrates from
+// localStorage lazily, but we want the bell to render with the
+// persisted value on the first paint — kick hydrate() in onMounted.
+onMounted(() => {
+  notificationsStore.hydrate()
+})
 
 const refreshPendingCount = async () => {
   try {
@@ -251,6 +271,21 @@ const toggleCollapse = () => {
         <strong>DevFlow</strong>
         <span>AI Control Plane</span>
       </div>
+      <button
+        class="sidebar__bell"
+        :class="{ 'sidebar__bell--has-unread': unreadCount > 0 }"
+        :aria-label="unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'"
+        :title="unreadCount > 0 ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}` : 'Notifications'"
+        data-testid="sidebar-bell"
+        @click="goToNotifications"
+      >
+        <Bell :size="18" />
+        <span
+          v-if="unreadCount > 0"
+          class="sidebar__bell-badge"
+          data-testid="sidebar-bell-badge"
+        >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+      </button>
     </div>
 
     <!-- Collapse toggle -->
@@ -468,6 +503,13 @@ const toggleCollapse = () => {
   display: none;
 }
 
+/* In collapsed (icon-rail) mode the bell still shows — it lives
+   in the brand row, not the nav. Pull it center so the column
+   stays balanced when the brand copy is hidden. */
+.sidebar--collapsed .sidebar__bell {
+  margin-left: 0;
+}
+
 /* Mobile: sidebar is shown via wrapper drawer — no hide needed */
 @media (max-width: 640px) {
   .sidebar {
@@ -483,6 +525,54 @@ const toggleCollapse = () => {
   gap: 12px;
   min-height: 44px;
   margin-bottom: 22px;
+}
+
+.sidebar__bell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--sidebar-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.sidebar__bell:hover {
+  color: var(--sidebar-text);
+  background: var(--sidebar-surface);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar__bell--has-unread {
+  color: var(--sidebar-text);
+}
+
+.sidebar__bell-badge {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--clay-red, #d04a3a);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--sidebar-bg);
 }
 
 .sidebar__mark {
