@@ -6,7 +6,7 @@ Data is derived from existing tables (issues, ecc_jobs, audit_logs,
 quality_gate_results) without introducing new storage.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -170,6 +170,40 @@ async def get_analytics_stats(
                         pass
             avg_cycle_time_s = sum(cycle_times) / len(cycle_times) if cycle_times else 0
             avg_cycle_time_min = round(avg_cycle_time_s / 60, 1)
+            avg_cycle_time_hours = round(avg_cycle_time_s / 3600, 2)
+
+            # Throughput last 7 days: jobs that reached a terminal state
+            # (completed/failed) within the last 7 days. JobModel.updated_at
+            # is a String(32) so we filter in Python after fetching.
+            # If the caller supplied ``date_to`` we treat that as the
+            # upper bound instead of now, so a back-dated analytics
+            # query still gets a sensible 7-day window.
+            now_utc = datetime.now(timezone.utc)
+            window_upper = parsed_to if parsed_to else now_utc
+            window_lower = window_upper - timedelta(days=7)
+            throughput_last7d = 0
+            for job in jobs:
+                if job.status not in ("completed", "failed"):
+                    continue
+                try:
+                    updated = datetime.fromisoformat(job.updated_at)
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                    if window_lower <= updated <= window_upper:
+                        throughput_last7d += 1
+                except (ValueError, TypeError):
+                    continue
+
+            # Board column counts derived from issue status. These match
+            # the dashboard's column mapping and are not duplicated with
+            # jobs.running (which counts in-flight jobs, not board cards).
+            review_count = by_status.get("human_review", 0)
+            blocked_count = by_status.get("blocked", 0)
+            done_count = by_status.get("done", 0)
+            # Active runs = issues in 'in_progress' (board view of "what's
+            # being worked on right now"). jobs.running is also surfaced
+            # separately so the UI can show job-state vs board-state.
+            active_runs = by_status.get("in_progress", 0)
 
             return {
                 "issues": {
@@ -196,10 +230,15 @@ async def get_analytics_stats(
                 "kpis": {
                     "aiSuccessRate": ai_success_rate,
                     "throughput": throughput,
+                    "throughputLast7d": throughput_last7d,
                     "avgCycleTimeMin": avg_cycle_time_min,
+                    "avgCycleTimeHours": avg_cycle_time_hours,
                     "totalIssues": total_issues,
                     "totalJobs": total_jobs,
-                    "activeRuns": running,
+                    "activeRuns": active_runs,
+                    "reviewCount": review_count,
+                    "blockedCount": blocked_count,
+                    "doneCount": done_count,
                     "inReview": review,
                 },
             }
@@ -213,5 +252,18 @@ async def get_analytics_stats(
             "jobs": {"total": 0, "byStatus": {}, "byProfile": {}, "running": 0, "inReview": 0},
             "quality": {"total": 0, "passed": 0, "avgCoverage": 0},
             "audit": {"total": 0},
-            "kpis": {"aiSuccessRate": 0, "throughput": 0, "avgCycleTimeMin": 0, "totalIssues": 0, "totalJobs": 0, "activeRuns": 0, "inReview": 0},
+            "kpis": {
+                "aiSuccessRate": 0,
+                "throughput": 0,
+                "throughputLast7d": 0,
+                "avgCycleTimeMin": 0,
+                "avgCycleTimeHours": 0,
+                "totalIssues": 0,
+                "totalJobs": 0,
+                "activeRuns": 0,
+                "reviewCount": 0,
+                "blockedCount": 0,
+                "doneCount": 0,
+                "inReview": 0,
+            },
         }
