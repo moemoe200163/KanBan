@@ -18,6 +18,13 @@ onMounted(() => {
 onUnmounted(() => {
   destroyKeyboard()
 })
+
+useHead({
+  title: 'DevFlow · AI Control Plane',
+  link: [
+    { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }
+  ]
+})
 </script>
 
 <template>

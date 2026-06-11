@@ -25,7 +25,7 @@ export default defineNuxtConfig({
   // SPA shell was already mounted, so the browser saw a blank /agents/roles
   // URL for a frame. Nitro handles the redirect before any HTML ships.
   routeRules: {
-    '/agents/roles': { redirect: '/agents?tab=roles' },
-    '/lanes': { redirect: '/agents?tab=roles' }
+    '/agents/roles': { redirect: '/lanes' },
+    '/board': { redirect: '/dashboard' }
   }
 })

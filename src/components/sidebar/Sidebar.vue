@@ -4,6 +4,7 @@ import { useDarkMode } from '~/composables/useDarkMode'
 import { useRecentJobs } from '~/composables/useRecentJobs'
 import {
   Activity,
+  Archive,
   BarChart3,
   Bot,
   CheckCircle2,
@@ -14,8 +15,10 @@ import {
   ClipboardList,
   Columns3,
   GitPullRequest,
+  LayoutDashboard,
   ListChecks,
   Moon,
+  Package,
   Radio,
   Settings,
   ShieldCheck,
@@ -46,12 +49,16 @@ onMounted(() => {
 })
 
 const navItems = computed(() => [
-  { id: 'board', icon: Columns3, label: 'Board', meta: 'Kanban', to: '/' },
+  { id: 'board', icon: Columns3, label: 'Board', meta: 'Issues', to: '/' },
   { id: 'command-center', icon: Terminal, label: 'Command Center', meta: 'ECC', to: '/command-center' },
+  { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', meta: 'Delivery', to: '/dashboard' },
   { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
+  { id: 'lanes', icon: GitPullRequest, label: 'Lanes', meta: 'Roles', to: '/lanes' },
   { id: 'runtime', icon: Radio, label: 'Runtime', meta: 'Workers', to: '/runtime' },
   { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
   { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
+  { id: 'uploads', icon: Archive, label: 'Uploads', meta: 'Files', to: '/artifacts' },
+  { id: 'deliveries', icon: Package, label: 'Deliveries', meta: 'Outputs', to: '/deliveries' },
   { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
   { id: 'analytics', icon: BarChart3, label: 'Analytics', meta: 'Flow', to: '/analytics' },
   { id: 'activity', icon: ClipboardList, label: 'Activity Log', meta: 'Audit', to: '/activity' },
@@ -61,6 +68,7 @@ const navItems = computed(() => [
 const activeNav = computed(() => {
   const path = route.path
   if (path === '/') return 'board'
+  if (path === '/dashboard') return 'dashboard'
   const match = navItems.value.find(item => item.to !== '/' && path.startsWith(item.to))
   return match?.id ?? 'board'
 })
