@@ -43,6 +43,16 @@ test.describe('Sidebar navigation', () => {
     await expect(page).toHaveURL(/\/activity/)
     await expect(page.getByRole('heading', { name: 'Activity Log' })).toBeVisible()
 
+    // Uploads
+    await page.locator('.sidebar__nav-item', { hasText: 'Uploads' }).click()
+    await expect(page).toHaveURL(/\/artifacts/)
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible()
+
+    // Deliveries
+    await page.locator('.sidebar__nav-item', { hasText: 'Deliveries' }).click()
+    await expect(page).toHaveURL(/\/deliveries/)
+    await expect(page.getByRole('heading', { name: 'Deliveries' })).toBeVisible()
+
     // Settings
     await page.locator('.sidebar__nav-item', { hasText: 'Settings' }).click()
     await expect(page).toHaveURL(/\/settings/)
@@ -122,5 +132,24 @@ test.describe('MVP pages', () => {
     await page.goto('/board')
     await expect(page).toHaveURL(/\/dashboard/)
     await expect(page.getByRole('heading', { name: 'Delivery Dashboard' })).toBeVisible()
+  })
+
+  test('Uploads page shows file list or empty state', async ({ page }) => {
+    await page.goto('/artifacts')
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible()
+    // Should show upload button and either file list or empty state
+    await expect(page.getByTestId('uploads-open')).toBeVisible()
+    await expect(
+      page.locator('.uploads-page__list, .uploads-page__empty')
+    ).toBeVisible()
+  })
+
+  test('Deliveries page shows delivery list or empty state', async ({ page }) => {
+    await page.goto('/deliveries')
+    await expect(page.getByRole('heading', { name: 'Deliveries' })).toBeVisible()
+    // Should show either delivery entries or empty state
+    await expect(
+      page.locator('.deliveries-page__list, .deliveries-page__empty')
+    ).toBeVisible()
   })
 })
