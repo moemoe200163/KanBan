@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useBoardStore } from '~/stores/board'
 import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
-import type { ECCLogEntry } from '~/types'
+import type { ECCLogEntry, CycleReport } from '~/types'
 import { useRuntime } from '~/composables/useRuntime'
 import { useToast } from '~/composables/useToast'
 import { authHeaders } from '~/utils/authHeaders'
@@ -87,30 +87,6 @@ const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'hando
 // leader can override the verdict here, which also drives a lane transition
 // for ``pass`` -> ``done``.
 // ---------------------------------------------------------------------------
-interface CycleReport {
-  id: string
-  issueId: string
-  jobId: string | null
-  authorId: string | null
-  authorName: string | null
-  plan: string
-  progressLog: Array<{ ts: string; status: string; message: string }>
-  deliverableSummary: string | null
-  verdict: 'pending' | 'pass' | 'fail' | 'blocked' | 'auto_passed'
-  verdictReason: string | null
-  createdAt: string | null
-  updatedAt: string | null
-  // Review fields — populated by POST /cycle-reports/{id}/review
-  // (see migration 0020). ``decision IS NULL`` means the report
-  // hasn't been reviewed yet; the UI hides the action buttons
-  // once a decision is recorded.
-  decision: 'approved' | 'changes_requested' | null
-  reviewComment: string | null
-  reviewedAt: string | null
-  reviewedBy: string | null
-  reviewedById: string | null
-}
-
 const cycleReports = ref<CycleReport[]>([])
 const updatingReportId = ref<string | null>(null)
 let cycleAbort: AbortController | null = null
