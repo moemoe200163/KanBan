@@ -32,3 +32,6 @@ venv/
 *.egg-info/
 .claude/
 file::memory:
+.agents/
+skills-lock.json
+backend/scripts/snake_game.py
