@@ -439,6 +439,70 @@ async def list_cycle_reports(issue_id: str, limit: int = 50) -> List[dict]:
         return []
 
 
+async def list_pending_cycle_reports(board_id: Optional[str] = None, limit: int = 100) -> List[dict]:
+    """Cycle reports awaiting leader review (pending + auto_passed).
+
+    Joins the issue table so the leader can see the issue's key and
+    title without a second round-trip. Used by the leader dashboard
+    /reviews page and the sidebar ``Review (N)`` badge.
+    """
+    from db.models import CycleReport as CycleReportModel, Issue as IssueModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            # Newest cycle first. Filter to the active verdicts the
+            # leader still needs to act on. We exclude ``pass``/``fail``/
+            # ``blocked`` here because those are terminal — once a
+            # leader flipped a cycle, it shouldn't show up in the
+            # pending queue again.
+            stmt = (
+                select(CycleReportModel, IssueModel)
+                .join(IssueModel, CycleReportModel.issue_id == IssueModel.id)
+                .where(CycleReportModel.verdict.in_(["pending", "auto_passed"]))
+                .order_by(CycleReportModel.created_at.desc())
+                .limit(limit)
+            )
+            if board_id is not None:
+                stmt = stmt.where(CycleReportModel.board_id == board_id)
+            result = await session.execute(stmt)
+            out: list[dict] = []
+            for cr, issue in result.all():
+                d = _cycle_report_to_dict(cr)
+                # Inline the bits the leader needs to triage. The
+                # front-end list doesn't have to do a follow-up
+                # /issues/{id} call to know what to review.
+                d["issueKey"] = issue.key
+                d["issueTitle"] = issue.title
+                d["issueStatus"] = issue.status
+                out.append(d)
+            return out
+    except Exception as e:
+        logger.warning(f"list_pending_cycle_reports failed: {e}")
+        return []
+
+
+async def count_pending_cycle_reports(board_id: Optional[str] = None) -> int:
+    """Cheap COUNT for the sidebar badge — no row materialization."""
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(func.count())
+                .select_from(CycleReportModel)
+                .where(CycleReportModel.verdict.in_(["pending", "auto_passed"]))
+            )
+            if board_id is not None:
+                stmt = stmt.where(CycleReportModel.board_id == board_id)
+            result = await session.execute(stmt)
+            return int(result.scalar() or 0)
+    except Exception as e:
+        logger.warning(f"count_pending_cycle_reports failed: {e}")
+        return 0
+
+
 async def get_cycle_report(report_id: str) -> Optional[dict]:
     from db.models import CycleReport as CycleReportModel
 

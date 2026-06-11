@@ -25,7 +25,8 @@ import {
   Square,
   Sun,
   Terminal,
-  Webhook
+  Webhook,
+  ClipboardCheck
 } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
@@ -57,6 +58,13 @@ const navItems = computed(() => [
   { id: 'runtime', icon: Radio, label: 'Runtime', meta: 'Workers', to: '/runtime' },
   { id: 'backlog', icon: ListChecks, label: 'Backlog', meta: 'Triage', to: '/backlog' },
   { id: 'runs', icon: Activity, label: 'Runs', meta: 'Logs', to: '/runs' },
+  {
+    id: 'reviews',
+    icon: ClipboardCheck,
+    label: 'Cycle Reviews',
+    meta: pendingCycleCount.value > 0 ? `${pendingCycleCount.value} pending` : 'Pending',
+    to: '/reviews'
+  },
   { id: 'uploads', icon: Archive, label: 'Uploads', meta: 'Files', to: '/artifacts' },
   { id: 'deliveries', icon: Package, label: 'Deliveries', meta: 'Outputs', to: '/deliveries' },
   { id: 'webhooks', icon: Webhook, label: 'Webhooks', meta: 'Events', to: '/settings/webhooks' },
@@ -87,6 +95,38 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopRecentJobs()
+})
+
+// Cycle-review pending count. Polled separately from the board
+// store so the sidebar can keep its number fresh even when the
+// operator is on a page that doesn't otherwise watch the board.
+const pendingCycleCount = ref(0)
+let pendingCountTimer: ReturnType<typeof setInterval> | null = null
+
+const refreshPendingCount = async () => {
+  try {
+    const config = useRuntimeConfig()
+    const res = await $fetch<{ count: number }>(
+      `${config.public.apiBase}/cycle-reports/pending/count`,
+      { headers: authHeaders() },
+    )
+    pendingCycleCount.value = res.count
+  } catch {
+    // Silently swallow — the badge is non-critical, and the
+    // endpoint requires auth which a logged-out visitor won't have.
+  }
+}
+
+onMounted(() => {
+  void refreshPendingCount()
+  // Light polling: the board endpoint already broadcasts issue
+  // changes; the count drifts slowly (only when a worker cycle
+  // finishes), so 30 s is enough to feel live.
+  pendingCountTimer = setInterval(refreshPendingCount, 30_000)
+})
+
+onUnmounted(() => {
+  if (pendingCountTimer) clearInterval(pendingCountTimer)
 })
 
 // Computed stats
@@ -229,7 +269,7 @@ const toggleCollapse = () => {
           <div class="control-status__row">
             <ShieldCheck :size="15" />
             <span v-show="!isCollapsed">Review</span>
-            <strong>{{ reviewCount }}</strong>
+            <strong>{{ pendingCycleCount }}</strong>
           </div>
           <div class="control-status__row">
             <GitPullRequest :size="15" />

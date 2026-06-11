@@ -118,6 +118,48 @@ async def list_cycle_reports(
     return {"cycleReports": reports, "total": len(reports)}
 
 
+# ---------------------------------------------------------------------------
+# Leader dashboard — top-level endpoints for the /reviews queue.
+#
+# Mounted at the router root (no /issues/{id} prefix) so the leader can
+# pull all boards at once for the badge and the queue page. Both are
+# cheap: a single query with a verdict filter and an index on
+# ``verdict`` (added in migration 0016).
+# ---------------------------------------------------------------------------
+
+@router.get("/cycle-reports/pending")
+async def list_pending_cycle_reports(
+    board_id: Optional[str] = Query(default=None, description="Filter to a single board; omit for all-boards view"),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: dict = Depends(require_auth),
+):
+    """All cycle reports awaiting leader review.
+
+    Includes the parent issue's key/title/status inline so the
+    /reviews page can render rows without a follow-up fetch. Reports
+    in terminal verdicts (pass/fail/blocked) are excluded — once a
+    leader has decided, that cycle is no longer pending.
+    """
+    reports = await repo.list_pending_cycle_reports(board_id=board_id, limit=limit)
+    count = await repo.count_pending_cycle_reports(board_id=board_id)
+    return {"cycleReports": reports, "total": count}
+
+
+@router.get("/cycle-reports/pending/count")
+async def count_pending_cycle_reports(
+    board_id: Optional[str] = Query(default=None),
+    current_user: dict = Depends(require_auth),
+):
+    """Cheap count for the sidebar Review badge.
+
+    Separate endpoint from the list so the badge can poll every
+    few seconds without pulling the full row payload. Same auth
+    as the rest of the cycle report API.
+    """
+    count = await repo.count_pending_cycle_reports(board_id=board_id)
+    return {"count": count}
+
+
 @router.get("/issues/{issue_id}/cycle-reports/{report_id}")
 async def get_cycle_report(
     issue_id: str,
@@ -125,7 +167,7 @@ async def get_cycle_report(
     current_user: dict = Depends(require_auth),
 ):
     report = await repo.get_cycle_report(report_id)
-    if not report or report.get("issue_id") != issue_id:
+    if not report or report.get("issueId") != issue_id:
         raise HTTPException(status_code=404, detail="Cycle report not found")
     return report
 
@@ -145,7 +187,7 @@ async def update_cycle_report(
     but is triggered by the leader instead of by the runner.
     """
     existing = await repo.get_cycle_report(report_id)
-    if not existing or existing.get("issue_id") != issue_id:
+    if not existing or existing.get("issueId") != issue_id:
         raise HTTPException(status_code=404, detail="Cycle report not found")
 
     if body.verdict is not None and body.verdict not in {"pending", "pass", "fail", "blocked", "auto_passed"}:

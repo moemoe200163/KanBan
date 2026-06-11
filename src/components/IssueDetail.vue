@@ -3,6 +3,7 @@ import { useBoardStore } from '~/stores/board'
 import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
 import type { ECCLogEntry } from '~/types'
 import { useRuntime } from '~/composables/useRuntime'
+import { authHeaders } from '~/utils/authHeaders'
 import { Bot, FileText, X } from 'lucide-vue-next'
 import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
@@ -108,12 +109,9 @@ const loadCycleReports = async (issueId: string) => {
   cycleAbort = ac
   try {
     const config = useRuntimeConfig()
-    const token = useCookie('auth_token').value
-    const headers: Record<string, string> = {}
-    if (token) headers.Authorization = `Bearer ${token}`
     const res = await $fetch<{ cycleReports: CycleReport[] }>(
       `${config.public.apiBase}/issues/${issueId}/cycle-reports`,
-      { signal: ac.signal, headers },
+      { signal: ac.signal, headers: authHeaders() },
     )
     cycleReports.value = res.cycleReports ?? []
   } catch (err: any) {
@@ -165,13 +163,11 @@ const overrideVerdict = async (report: CycleReport, verdict: 'pass' | 'fail' | '
   updatingReportId.value = report.id
   try {
     const config = useRuntimeConfig()
-    const token = useCookie('auth_token').value
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (token) headers.Authorization = `Bearer ${token}`
     const updated = await $fetch<CycleReport>(
       `${config.public.apiBase}/issues/${issue.value.id}/cycle-reports/${report.id}`,
       {
         method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: {
           verdict,
           verdict_reason:
@@ -842,7 +838,12 @@ onUnmounted(() => {
                     or when the leader writes a manual handoff.
                   </p>
                 </div>
-                <div v-else class="cycles-tab__list">
+                <template v-else>
+                  <NuxtLink to="/reviews" class="cycles-tab__queue-link">
+                    Open in review queue →
+                  </NuxtLink>
+                </template>
+                <div v-if="cycleReports.length > 0" class="cycles-tab__list">
                   <article
                     v-for="report in cycleReports"
                     :key="report.id"
@@ -1139,6 +1140,22 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-4);
 }
+
+.cycles-tab__queue-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--accent, #7D9E7D);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(125, 158, 125, 0.08);
+  transition: background var(--duration-fast);
+}
+.cycles-tab__queue-link:hover { background: rgba(125, 158, 125, 0.18); }
 
 .cycle-card {
   border: 1px solid var(--hairline);
