@@ -6,21 +6,39 @@ and managing execution defaults. Secrets are never returned to the frontend.
 """
 
 import logging
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from api.v1.endpoints.auth import get_current_user, get_optional_user
 from api.v1.auth_deps import require_admin
 from core.llm import registry
 from core.llm.crypto import encrypt_api_key, decrypt_api_key, mask_api_key
 from core.llm.health_check import run_health_check
+from db import database as _db
+from db.models import AuditLog
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/llm")
+
+
+# ---------------------------------------------------------------------------
+# Usage tracking
+# ---------------------------------------------------------------------------
+#
+# Per-invocation token usage is NOT yet persisted in its own table. The
+# /llm/usage endpoint reads from ``audit_logs`` where ``action='llm.invoke'``;
+# future LLM call sites should call ``log_audit_event('llm.invoke', ...)`` with
+# token counts in ``details`` and the aggregation below will pick them up.
+# When no such rows exist (the current state), the endpoint returns an empty
+# ``daily`` array with a ``note`` explaining the wiring. We do not create a
+# new table for this — keeping the data flow on the existing audit log
+# avoids a migration for what is, at the moment, observational metadata.
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +413,140 @@ async def update_defaults(
     """Update execution defaults."""
     data = body.model_dump(exclude_none=True)
     return registry.update_defaults(data)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/llm/usage?range=7d|30d
+# ---------------------------------------------------------------------------
+
+@router.get("/usage")
+async def get_usage(
+    range_label: str = Query(
+        "7d",
+        alias="range",
+        description="Lookback window: '7d' or '30d'",
+    ),
+):
+    """Return daily LLM invocation counts and token usage.
+
+    Reads from ``audit_logs`` where ``action='llm.invoke'`` and groups by
+    the date portion of the timestamp. Each row's ``details`` may carry
+    ``tokensIn`` and ``tokensOut`` ints; missing values default to 0.
+
+    The endpoint is observational only — it does not introduce a new
+    table. Until LLM call sites are wired to log ``llm.invoke`` events,
+    the ``daily`` array will be empty and ``totals`` will be zero; the
+    ``note`` field explains the wiring state to the UI.
+    """
+    # Parse and validate the lookback range. ``range`` is exposed in
+    # the query string for clarity, but the Python builtin would be
+    # shadowed if we named the parameter that — so we use ``range_label``
+    # internally and let FastAPI's alias map it back to ``?range=...``.
+    if range_label not in ("7d", "30d"):
+        raise HTTPException(status_code=422, detail="range must be '7d' or '30d'")
+    days = 7 if range_label == "7d" else 30
+
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(days=days)
+
+    # Seed every day in the window so the chart shows zeros for idle days.
+    # Build keys in the local-ish ``YYYY-MM-DD`` form (UTC for consistency
+    # with timestamps stored in audit_logs).
+    daily_index: list[str] = []
+    for offset in range(days - 1, -1, -1):
+        d = (now_utc - timedelta(days=offset)).date()
+        daily_index.append(d.isoformat())
+
+    bucket_calls: dict[str, int] = defaultdict(int)
+    bucket_in: dict[str, int] = defaultdict(int)
+    bucket_out: dict[str, int] = defaultdict(int)
+    total_calls = 0
+    total_in = 0
+    total_out = 0
+    last_invocation: Optional[str] = None
+
+    try:
+        await _db.ensure_db_init()
+        async with _db.AsyncSessionLocal() as session:
+            stmt = (
+                select(AuditLog)
+                .where(AuditLog.action == "llm.invoke")
+                .where(AuditLog.timestamp >= cutoff)
+                .order_by(AuditLog.timestamp.asc())
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            for row in rows:
+                if row.timestamp is None:
+                    continue
+                ts = row.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                day_key = ts.date().isoformat()
+                bucket_calls[day_key] += 1
+                total_calls += 1
+
+                # Token counts live in ``details``; tolerate any shape.
+                details = row.details or {}
+                try:
+                    in_tokens = int(details.get("tokensIn") or 0)
+                except (TypeError, ValueError):
+                    in_tokens = 0
+                try:
+                    out_tokens = int(details.get("tokensOut") or 0)
+                except (TypeError, ValueError):
+                    out_tokens = 0
+                bucket_in[day_key] += in_tokens
+                bucket_out[day_key] += out_tokens
+                total_in += in_tokens
+                total_out += out_tokens
+
+                last_invocation = ts.isoformat()
+
+        daily = [
+            {
+                "date": day,
+                "calls": bucket_calls.get(day, 0),
+                "tokensIn": bucket_in.get(day, 0),
+                "tokensOut": bucket_out.get(day, 0),
+            }
+            for day in daily_index
+        ]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"Failed to compute LLM usage: {exc}")
+        # Surface a clear empty state so the UI can render the "no data"
+        # card instead of failing the whole page.
+        daily = [
+            {"date": day, "calls": 0, "tokensIn": 0, "tokensOut": 0}
+            for day in daily_index
+        ]
+        total_calls = 0
+        total_in = 0
+        total_out = 0
+        last_invocation = None
+
+    if total_calls == 0:
+        note = (
+            "No LLM invocations recorded yet. Once call sites log "
+            "audit_logs entries with action='llm.invoke' and tokens in "
+            "details.tokensIn / details.tokensOut, the chart will populate."
+        )
+    else:
+        note = None
+
+    return {
+        "range": range_label,
+        "days": days,
+        "daily": daily,
+        "totals": {
+            "calls": total_calls,
+            "tokensIn": total_in,
+            "tokensOut": total_out,
+            "tokens": total_in + total_out,
+        },
+        "lastInvocation": last_invocation,
+        "note": note,
+    }
