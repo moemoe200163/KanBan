@@ -9,7 +9,7 @@ import {
   Check, Loader2, RefreshCw, Server, Settings, X,
   Zap, Shield, Code, MessageSquare, Eye, Terminal,
   ChevronDown, ChevronRight, AlertCircle, CheckCircle2,
-  Power, PowerOff, Star, Activity
+  Power, PowerOff, Star, Activity, BarChart3
 } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
@@ -70,11 +70,79 @@ const credentialLabel = (provider: LLMProvider): string => {
 }
 
 const apiBase = ref(config.public.apiBase)
-const activeTab = ref<'system' | 'providers' | 'defaults' | 'appearance'>('system')
+const activeTab = ref<'system' | 'providers' | 'defaults' | 'appearance' | 'usage'>('system')
 const backendStatus = ref<'checking' | 'healthy' | 'error'>('checking')
 const expandedProvider = ref<string | null>(null)
 const testingProvider = ref<string | null>(null)
 const savingDefaults = ref(false)
+
+// ── Usage tab state ─────────────────────────────────────────────────
+// LLM usage is read from /llm/usage which aggregates audit_logs. The
+// shape is documented in the backend endpoint; we keep the same names
+// here so a future schema change is a one-line tweak in this file.
+interface UsageDay {
+  date: string
+  calls: number
+  tokensIn: number
+  tokensOut: number
+}
+interface UsagePayload {
+  range: '7d' | '30d'
+  days: number
+  daily: UsageDay[]
+  totals: { calls: number; tokensIn: number; tokensOut: number; tokens: number }
+  lastInvocation: string | null
+  note: string | null
+}
+const usageRange = ref<'7d' | '30d'>('7d')
+const usage = ref<UsagePayload | null>(null)
+const usageLoading = ref(false)
+const usageError = ref<string | null>(null)
+
+const fetchUsage = async () => {
+  usageLoading.value = true
+  usageError.value = null
+  try {
+    const res = await fetch(`${apiBase.value}/llm/usage?range=${usageRange.value}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    usage.value = await res.json()
+  } catch (e: any) {
+    usageError.value = e?.message || 'Failed to load usage'
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+// Bar chart math: scale the largest call count in the window to the
+// chart height so the bars actually use the available space. We keep
+// tokens visible as a second smaller bar above each day's column so
+// the user can see both call volume and token volume at a glance.
+const usageMaxCalls = computed(() => {
+  if (!usage.value) return 0
+  return Math.max(1, ...usage.value.daily.map(d => d.calls))
+})
+const usageMaxTokens = computed(() => {
+  if (!usage.value) return 0
+  return Math.max(1, ...usage.value.daily.map(d => d.tokensIn + d.tokensOut))
+})
+const usageBarHeight = (value: number, max: number) => {
+  if (!max || max === 0) return 0
+  // Reserve a 4px floor so days with a single call are still visible.
+  return Math.max(4, Math.round((value / max) * 100))
+}
+const usageTotalTokens = computed(() => usage.value?.totals.tokens ?? 0)
+const usageTotalCalls = computed(() => usage.value?.totals.calls ?? 0)
+const formatTokens = (n: number) => {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+const usageDayLabel = (iso: string) => {
+  // "2026-06-05" -> "06-05" for compact display in the chart x-axis.
+  const parts = iso.split('-')
+  if (parts.length !== 3) return iso
+  return `${parts[1]}-${parts[2]}`
+}
 
 const harnessOptions = HARNESS_CONFIGS.filter(h => h.available).map(h => h.type)
 const selectedHarness = ref<HarnessType>(boardStore.activeHarness)
@@ -196,6 +264,14 @@ onMounted(async () => {
     llmStore.fetchDefaults()
   ])
   loadDefaults()
+  // Load usage lazily — it is observational, not blocking the tab.
+  fetchUsage()
+})
+
+// Re-fetch when the user flips the range toggle. The endpoint does the
+// aggregation server-side so this is a single round-trip.
+watch(usageRange, () => {
+  fetchUsage()
 })
 
 watch(() => llmStore.defaults, loadDefaults)
@@ -226,6 +302,7 @@ const backendStatusColor = computed(() => {
           { id: 'system', label: 'System', icon: Server },
           { id: 'providers', label: 'LLM Providers', icon: Zap },
           { id: 'defaults', label: 'Execution Defaults', icon: Settings },
+          { id: 'usage', label: 'Usage', icon: BarChart3 },
           { id: 'appearance', label: 'Appearance', icon: Eye }
         ]"
         :key="tab.id"
@@ -571,6 +648,148 @@ const backendStatusColor = computed(() => {
         </div>
       </div>
     </div>
+
+    <!-- Usage Tab -->
+    <div v-if="activeTab === 'usage'" class="settings-content">
+      <div class="settings-card settings-card--full">
+        <div class="settings-card__header">
+          <BarChart3 :size="18" />
+          <h3>LLM Usage</h3>
+          <div class="usage-range-toggle">
+            <button
+              :class="['usage-range-btn', { 'usage-range-btn--on': usageRange === '7d' }]"
+              @click="usageRange = '7d'"
+            >
+              7 days
+            </button>
+            <button
+              :class="['usage-range-btn', { 'usage-range-btn--on': usageRange === '30d' }]"
+              @click="usageRange = '30d'"
+            >
+              30 days
+            </button>
+          </div>
+          <button
+            class="settings-card__action"
+            title="Refresh"
+            @click="fetchUsage"
+          >
+            <RefreshCw :size="14" />
+          </button>
+        </div>
+        <div class="settings-card__body">
+          <!-- Loading -->
+          <div v-if="usageLoading && !usage" class="usage-loading">
+            <Loader2 :size="20" class="spin" />
+            <span>Loading usage…</span>
+          </div>
+
+          <!-- Error -->
+          <div v-else-if="usageError" class="usage-error">
+            <AlertCircle :size="16" />
+            <span>{{ usageError }}</span>
+            <button class="settings-btn settings-btn--sm" @click="fetchUsage">Retry</button>
+          </div>
+
+          <template v-else-if="usage">
+            <!-- Summary card — one line, the headline numbers -->
+            <div class="usage-summary">
+              <div class="usage-summary__cell">
+                <span class="usage-summary__label">Last {{ usage.days }} days</span>
+                <strong class="usage-summary__value">{{ usageTotalCalls }}</strong>
+                <span class="usage-summary__unit">calls</span>
+              </div>
+              <div class="usage-summary__cell">
+                <span class="usage-summary__label">Tokens in</span>
+                <strong class="usage-summary__value">{{ formatTokens(usage.totals.tokensIn) }}</strong>
+              </div>
+              <div class="usage-summary__cell">
+                <span class="usage-summary__label">Tokens out</span>
+                <strong class="usage-summary__value">{{ formatTokens(usage.totals.tokensOut) }}</strong>
+              </div>
+              <div class="usage-summary__cell">
+                <span class="usage-summary__label">Total tokens</span>
+                <strong class="usage-summary__value">{{ formatTokens(usageTotalTokens) }}</strong>
+              </div>
+            </div>
+
+            <!-- Empty state — when no llm.invoke rows exist yet -->
+            <div
+              v-if="usageTotalCalls === 0"
+              class="usage-empty"
+            >
+              <BarChart3 :size="22" />
+              <p>{{ usage.note || 'No usage data yet — try the AI Suggest AC button on an issue.' }}</p>
+            </div>
+
+            <!-- Bar chart — pure CSS, no chart library -->
+            <div v-else class="usage-chart">
+              <div class="usage-chart__title">Daily call volume</div>
+              <div class="usage-chart__bars">
+                <div
+                  v-for="day in usage.daily"
+                  :key="day.date"
+                  class="usage-chart__bar-col"
+                  :title="`${day.date}: ${day.calls} calls, ${day.tokensIn + day.tokensOut} tokens`"
+                >
+                  <div class="usage-chart__bar-track">
+                    <div
+                      class="usage-chart__bar usage-chart__bar--calls"
+                      :style="{ height: usageBarHeight(day.calls, usageMaxCalls) + '%' }"
+                    />
+                    <div
+                      v-if="day.tokensIn + day.tokensOut > 0"
+                      class="usage-chart__bar usage-chart__bar--tokens"
+                      :style="{ height: usageBarHeight(day.tokensIn + day.tokensOut, usageMaxTokens) + '%' }"
+                    />
+                  </div>
+                  <span class="usage-chart__bar-label">{{ usageDayLabel(day.date) }}</span>
+                </div>
+              </div>
+              <div class="usage-chart__legend">
+                <span class="usage-chart__legend-item">
+                  <span class="usage-chart__swatch usage-chart__swatch--calls" />
+                  Calls
+                </span>
+                <span class="usage-chart__legend-item">
+                  <span class="usage-chart__swatch usage-chart__swatch--tokens" />
+                  Tokens
+                </span>
+              </div>
+            </div>
+
+            <!-- Daily breakdown table -->
+            <details v-if="usage.daily.length" class="usage-table-wrap">
+              <summary>Daily breakdown</summary>
+              <table class="usage-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th class="num">Calls</th>
+                    <th class="num">Tokens in</th>
+                    <th class="num">Tokens out</th>
+                    <th class="num">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="day in usage.daily" :key="day.date">
+                    <td class="mono">{{ day.date }}</td>
+                    <td class="num">{{ day.calls }}</td>
+                    <td class="num">{{ formatTokens(day.tokensIn) }}</td>
+                    <td class="num">{{ formatTokens(day.tokensOut) }}</td>
+                    <td class="num">{{ formatTokens(day.tokensIn + day.tokensOut) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </details>
+
+            <p v-if="usage.lastInvocation" class="usage-foot">
+              Last invocation: {{ formatTime(usage.lastInvocation) }}
+            </p>
+          </template>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -875,4 +1094,223 @@ const backendStatusColor = computed(() => {
 /* Text muted helper */
 .text-muted { color: var(--muted); }
 
+/* ── Usage tab ─────────────────────────────────────────────────────── */
+
+.usage-range-toggle {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.usage-range-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 150ms;
+}
+.usage-range-btn--on {
+  background: var(--surface-card);
+  color: var(--ink);
+}
+
+.usage-loading,
+.usage-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.usage-error { color: var(--clay-red); }
+
+.usage-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.usage-summary__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.usage-summary__label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.usage-summary__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  line-height: 1.1;
+}
+.usage-summary__unit {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.usage-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  background: var(--surface-soft);
+  border: 1px dashed var(--hairline);
+  border-radius: 8px;
+}
+.usage-empty p { margin: 0; max-width: 360px; }
+
+/* Bar chart */
+.usage-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.usage-chart__title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.usage-chart__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 140px;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 4px;
+}
+.usage-chart__bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  gap: 4px;
+  min-width: 0;
+}
+.usage-chart__bar-track {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+}
+.usage-chart__bar {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  transition: height 200ms ease-out;
+}
+.usage-chart__bar--calls {
+  background: var(--accent);
+}
+.usage-chart__bar--tokens {
+  background: var(--sage);
+  opacity: 0.7;
+}
+.usage-chart__bar-label {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.usage-chart__legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.usage-chart__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.usage-chart__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.usage-chart__swatch--calls { background: var(--accent); }
+.usage-chart__swatch--tokens { background: var(--sage); opacity: 0.7; }
+
+/* Table */
+.usage-table-wrap {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.usage-table-wrap > summary {
+  padding: 0.6rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.usage-table-wrap > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  transition: transform 150ms;
+}
+.usage-table-wrap[open] > summary::before {
+  transform: rotate(90deg);
+}
+.usage-table-wrap > summary::-webkit-details-marker { display: none; }
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.usage-table th,
+.usage-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-top: 1px solid var(--hairline);
+}
+.usage-table th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--surface-card);
+}
+.usage-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-table .mono { font-family: var(--font-mono); }
+
+.usage-foot {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
 </style>
