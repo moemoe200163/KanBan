@@ -405,7 +405,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot, kanban_tools, github_api, agent_roles, artifacts, deliveries, cycle_reports
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot, kanban_tools, github_api, agent_roles, artifacts, deliveries, cycle_reports, suggestions
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
@@ -429,6 +429,7 @@ try:
     app.include_router(artifacts.router, prefix="/api/v1", tags=["Artifacts"])
     app.include_router(deliveries.router, prefix="/api/v1", tags=["Deliveries"])
     app.include_router(cycle_reports.router, prefix="/api/v1", tags=["Cycle Reports"])
+    app.include_router(suggestions.router, prefix="/api/v1", tags=["Suggestions"])
 
     # Dev management endpoints (stats + reset self-gate on dev mode; 404 in production)
     from api.v1.endpoints import dev

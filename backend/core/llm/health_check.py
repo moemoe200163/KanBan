@@ -1,16 +1,22 @@
 """
-LLM Provider Health Check Engine
+LLM Provider Health Check Engine + Chat Helper
 
 Makes real API calls to test provider connectivity and classify errors.
 Each provider shape (openai-chat, openai-responses, anthropic-messages,
 ollama) has its own test strategy with minimal token usage.
+
+Also exports ``chat_complete`` for non-health-check use: it makes the
+same shape of HTTP call but actually returns the model's text
+content instead of classifying the response. Used by features that
+need real LLM output (e.g. AC suggestion for issues).
 """
 
 import asyncio
+import json
 import logging
 import time
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -402,3 +408,146 @@ async def run_health_check(
             message=f"Unknown api_shape: {api_shape}",
             safe_error=HealthStatus.UNKNOWN_ERROR.value,
         )
+
+
+# ---------------------------------------------------------------------------
+# chat_complete — actually returns the model's text, not just health.
+#
+# Used by features that need a real LLM response (e.g. AC suggestion).
+# Mirrors the shape dispatch in ``run_health_check`` but extracts the
+# text content from the provider's response object. The parsing rules
+# are intentionally simple: each provider returns content at a
+# different path, and we trust the first non-empty string we find.
+# ---------------------------------------------------------------------------
+
+_CHAT_MAX_TOKENS = 1024
+_CHAT_TIMEOUT = 30.0
+
+
+class ChatError(Exception):
+    """Raised when a chat call fails. ``code`` is one of:
+    not_configured, network, http_<status>, parse_error.
+    """
+
+
+async def chat_complete(
+    api_shape: str,
+    base_url: str,
+    endpoint_path: str,
+    model: str,
+    api_key: Optional[str],
+    messages: list[dict],
+    *,
+    max_tokens: int = _CHAT_MAX_TOKENS,
+    temperature: float = 0.3,
+) -> str:
+    """Call the configured provider and return the model's text reply.
+
+    ``messages`` is a list of ``{"role": ..., "content": ...}`` dicts,
+    OpenAI-style. Anthropic and Ollama take the same shape and we map
+    it provider-side.
+
+    Returns the model's text reply as a string. Raises ``ChatError``
+    on any failure so the caller can decide whether to fall back to a
+    heuristic or surface an error to the user.
+    """
+    if not base_url:
+        raise ChatError("not_configured: base URL is empty")
+    if not model:
+        raise ChatError("not_configured: model is empty")
+
+    url = f"{base_url.rstrip('/')}{endpoint_path}"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    if api_shape == "anthropic-messages":
+        headers["anthropic-version"] = "2023-06-01"
+        headers["x-api-key"] = api_key or ""
+        # Anthropic separates the system prompt from the conversation
+        # turn. Pull the system out so callers can pass it via the
+        # standard messages list.
+        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+        conv = [m for m in messages if m.get("role") != "system"]
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": conv,
+        }
+        if system_parts:
+            body["system"] = "\n\n".join(system_parts)
+    elif api_shape == "ollama":
+        # Ollama's chat endpoint expects a flat list of messages.
+        body = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+    else:  # openai-chat and openai-responses
+        body = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
+            resp = await client.post(url, headers=headers, json=body)
+    except (asyncio.TimeoutError, httpx.TimeoutException, httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise ChatError(f"network: {exc}") from exc
+    except Exception as exc:
+        raise ChatError(f"network: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise ChatError(f"http_{resp.status_code}: {resp.text[:200]}")
+
+    try:
+        data: Any = resp.json()
+    except json.JSONDecodeError as exc:
+        raise ChatError(f"parse_error: {exc}") from exc
+
+    text = _extract_text(api_shape, data)
+    if not text:
+        raise ChatError("parse_error: no text content in response")
+    logger.info(
+        "chat_complete shape=%s model=%s ms=%d chars=%d",
+        api_shape, model, int((time.monotonic() - start) * 1000), len(text),
+    )
+    return text
+
+
+def _extract_text(api_shape: str, data: Any) -> str:
+    """Pull the model's text from a provider response.
+
+    Each shape puts the assistant content at a different path:
+
+    - openai-chat: ``choices[0].message.content``
+    - openai-responses: ``output[].content[].text`` (newer Responses API)
+    - anthropic-messages: ``content[].text``
+    - ollama: ``message.content``
+
+    Returns an empty string if no text is found; the caller raises
+    ChatError("parse_error: ...") in that case.
+    """
+    try:
+        if api_shape in ("openai-chat",):
+            return data["choices"][0]["message"]["content"] or ""
+        if api_shape == "openai-responses":
+            for block in data.get("output", []):
+                for c in block.get("content", []):
+                    if c.get("type") in ("output_text", "text"):
+                        return c.get("text", "") or ""
+            return ""
+        if api_shape == "anthropic-messages":
+            for c in data.get("content", []):
+                if c.get("type") == "text":
+                    return c.get("text", "") or ""
+            return ""
+        if api_shape == "ollama":
+            return (data.get("message") or {}).get("content", "") or ""
+    except (KeyError, TypeError, IndexError):
+        return ""
+    return ""

@@ -377,6 +377,106 @@ watch(
 onUnmounted(() => {
   stopActivePolling()
 })
+
+// ---------------------------------------------------------------------------
+// Acceptance Criteria — operator-driven AC management.
+// The "Suggest AC" button calls the backend endpoint, which uses the
+// active LLM provider if configured and falls back to a deterministic
+// heuristic otherwise. The result is presented inline as a
+// preview, and the operator commits it via "Apply all" (PATCH
+// /acceptance-criteria). Until the operator commits, the existing
+// AC on the issue is untouched.
+// ---------------------------------------------------------------------------
+interface AcItem { id: string; text: string; done: boolean }
+interface SuggestResponse {
+  source: 'llm' | 'cache' | 'heuristic'
+  provider: string | null
+  model: string | null
+  criteria: AcItem[]
+}
+
+const acSuggestion = ref<SuggestResponse | null>(null)
+const acSuggesting = ref(false)
+const acApplying = ref(false)
+
+const suggestAcceptanceCriteria = async () => {
+  if (!issue.value) return
+  acSuggesting.value = true
+  try {
+    const config = useRuntimeConfig()
+    const res = await $fetch<SuggestResponse>(
+      `${config.public.apiBase}/issues/${issue.value.id}/suggest-ac`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: {},
+      },
+    )
+    acSuggestion.value = res
+  } catch (err) {
+    console.error('[AC] suggest failed:', err)
+  } finally {
+    acSuggesting.value = false
+  }
+}
+
+const applySuggestion = async () => {
+  if (!issue.value || !acSuggestion.value) return
+  acApplying.value = true
+  try {
+    // Merge: append the suggested criteria to whatever's already
+    // on the issue. The operator can re-edit / drop dupes after.
+    // We don't dedupe on text here because re-suggesting the same
+    // issue with a tweaked description is a legit workflow.
+    const existing: AcItem[] = issue.value.acceptanceCriteria ?? []
+    const merged: AcItem[] = [...existing, ...acSuggestion.value.criteria]
+    const config = useRuntimeConfig()
+    await $fetch(
+      `${config.public.apiBase}/issues/${issue.value.id}/acceptance-criteria`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { criteria: merged },
+      },
+    )
+    // Patch the local issue copy so the rendered list reflects the
+    // new AC without waiting for a board re-fetch. The board store
+    // would re-fetch on the next drag/status change; for a quiet
+    // edit like this we just mutate the selectedIssue in place.
+    if (issue.value) {
+      issue.value.acceptanceCriteria = merged
+    }
+    acSuggestion.value = null
+  } catch (err) {
+    console.error('[AC] apply failed:', err)
+  } finally {
+    acApplying.value = false
+  }
+}
+
+const toggleAcceptanceCriterion = async (ac: AcItem) => {
+  if (!issue.value) return
+  const existing: AcItem[] = issue.value.acceptanceCriteria ?? []
+  const updated: AcItem[] = existing.map(c =>
+    c.id === ac.id ? { ...c, done: !c.done } : c
+  )
+  try {
+    const config = useRuntimeConfig()
+    await $fetch(
+      `${config.public.apiBase}/issues/${issue.value.id}/acceptance-criteria`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: { criteria: updated },
+      },
+    )
+    if (issue.value) {
+      issue.value.acceptanceCriteria = updated
+    }
+  } catch (err) {
+    console.error('[AC] toggle failed:', err)
+  }
+}
 </script>
 
 <template>
@@ -551,6 +651,92 @@ onUnmounted(() => {
               <div v-if="issue.description" class="issue-detail__section">
                 <h3 class="issue-detail__section-title">Description</h3>
                 <p class="issue-detail__description">{{ issue.description }}</p>
+              </div>
+
+              <!-- Acceptance Criteria (Mavis collab) — rendered as a
+                   checklist so the operator can flip items as they
+                   pass. The "Suggest AC" button calls the backend
+                   endpoint, which falls back to a heuristic when no
+                   LLM provider is configured; either way the
+                   result is the same shape and committed via the
+                   existing PATCH /acceptance-criteria endpoint. -->
+              <div class="issue-detail__section">
+                <div class="issue-detail__ac-header">
+                  <h3 class="issue-detail__section-title">
+                    Acceptance Criteria
+                    <span
+                      v-if="(issue.acceptanceCriteria?.length ?? 0) > 0"
+                      class="issue-detail__ac-count"
+                    >
+                      {{ issue.acceptanceCriteria?.filter(ac => ac.done).length ?? 0 }} / {{ issue.acceptanceCriteria?.length ?? 0 }}
+                    </span>
+                  </h3>
+                  <div class="issue-detail__ac-actions">
+                    <button
+                      class="issue-detail__suggest-btn"
+                      :disabled="acSuggesting"
+                      @click="suggestAcceptanceCriteria"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        width="14"
+                        height="14"
+                      >
+                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2" />
+                        <path d="M14 4.5a2.5 2.5 0 0 0-2.5 2.5v.5" />
+                      </svg>
+                      {{ acSuggesting ? 'Thinking…' : 'Suggest AC' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-if="acSuggestion" class="issue-detail__ac-suggestion">
+                  <div class="issue-detail__ac-suggestion-meta">
+                    <span :class="['issue-detail__ac-source', `issue-detail__ac-source--${acSuggestion.source}`]">
+                      {{ acSuggestion.source === 'llm' ? 'AI' : acSuggestion.source === 'cache' ? 'cached' : 'heuristic' }}
+                    </span>
+                    <span v-if="acSuggestion.provider" class="issue-detail__ac-provider">
+                      via {{ acSuggestion.provider }}
+                    </span>
+                    <button class="issue-detail__ac-discard" @click="acSuggestion = null">
+                      Discard
+                    </button>
+                    <button
+                      v-if="!acApplying"
+                      class="issue-detail__ac-apply"
+                      @click="applySuggestion"
+                    >
+                      Apply all
+                    </button>
+                  </div>
+                  <ul class="issue-detail__ac-suggestion-list">
+                    <li
+                      v-for="(c, idx) in acSuggestion.criteria"
+                      :key="c.id || idx"
+                    >
+                      {{ c.text }}
+                    </li>
+                  </ul>
+                </div>
+                <ul v-if="(issue.acceptanceCriteria?.length ?? 0) > 0" class="issue-detail__ac-list">
+                  <li
+                    v-for="ac in issue.acceptanceCriteria"
+                    :key="ac.id"
+                    :class="['issue-detail__ac-item', ac.done && 'issue-detail__ac-item--done']"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="ac.done"
+                      @change="toggleAcceptanceCriterion(ac)"
+                    />
+                    <span>{{ ac.text }}</span>
+                  </li>
+                </ul>
+                <p v-else class="issue-detail__ac-empty">
+                  No acceptance criteria yet. Click <strong>Suggest AC</strong> to generate a starter list, or add your own.
+                </p>
               </div>
 
               <!-- Labels -->
@@ -1465,6 +1651,133 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   color: var(--body);
   line-height: 1.6;
+}
+
+/* Acceptance Criteria (Mavis collab) */
+.issue-detail__ac-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.issue-detail__ac-count {
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--canvas-subtle, rgba(0,0,0,0.04));
+  color: var(--ink-muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-left: var(--space-2);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.issue-detail__ac-actions { display: flex; gap: var(--space-2); }
+.issue-detail__suggest-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--canvas-elevated);
+  cursor: pointer;
+  color: var(--ink);
+  transition: background var(--duration-fast), opacity var(--duration-fast);
+}
+.issue-detail__suggest-btn:hover:not(:disabled) {
+  background: rgba(125, 158, 125, 0.12);
+  color: #4F6F4F;
+}
+.issue-detail__suggest-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.issue-detail__ac-suggestion {
+  border: 1px solid rgba(125, 158, 125, 0.4);
+  background: rgba(125, 158, 125, 0.06);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.issue-detail__ac-suggestion-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  margin-bottom: var(--space-2);
+}
+.issue-detail__ac-source {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.issue-detail__ac-source--llm       { background: rgba(125, 158, 125, 0.18); color: #4F6F4F; }
+.issue-detail__ac-source--cache    { background: rgba(140, 130, 121, 0.18); color: #6B6660; }
+.issue-detail__ac-source--heuristic{ background: rgba(107, 139, 164, 0.18); color: #4A6680; }
+.issue-detail__ac-provider { color: var(--ink-faint); }
+.issue-detail__ac-discard {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--ink-muted);
+}
+.issue-detail__ac-apply {
+  font-size: var(--text-xs);
+  background: rgba(125, 158, 125, 0.18);
+  color: #4F6F4F;
+  border: 1px solid rgba(125, 158, 125, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.issue-detail__ac-suggestion-list {
+  list-style: decimal;
+  margin: 0 0 0 var(--space-4);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.issue-detail__ac-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.issue-detail__ac-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.issue-detail__ac-item--done span {
+  text-decoration: line-through;
+  color: var(--ink-muted);
+}
+.issue-detail__ac-item input { margin: 0; }
+
+.issue-detail__ac-empty {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-style: italic;
+  margin: 0;
 }
 
 /* Labels */
