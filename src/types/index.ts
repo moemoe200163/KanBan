@@ -19,6 +19,48 @@ export type MoveStatus = 'idle' | 'pending' | 'confirmed' | 'failed'
 // ECC Job Status — backend control-plane lifecycle
 export type ECCJobStatus = 'queued' | 'running' | 'paused' | 'failed' | 'review_required' | 'completed' | 'cancelled'
 
+// ---------------------------------------------------------------------------
+// Cycle reports
+// ---------------------------------------------------------------------------
+// A Mavis-style handoff captured after a worker pass on an issue. The
+// ``verdict`` column is the auto-promote / leader-override accept/reject
+// of the work product; ``decision`` is the leader's review of the
+// report itself (approve the report, or send the worker back with
+// feedback). Both can coexist on the same row.
+
+export type CycleReportVerdict = 'pending' | 'pass' | 'fail' | 'blocked' | 'auto_passed'
+export type CycleReportDecision = 'approved' | 'changes_requested'
+
+export interface CycleReport {
+  id: string
+  issueId: string
+  jobId: string | null
+  authorId: string | null
+  authorName: string | null
+  plan: string
+  progressLog: Array<{ ts: string; status: string; message: string }>
+  deliverableSummary: string | null
+  verdict: CycleReportVerdict
+  verdictReason: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  // Review fields — populated by POST /cycle-reports/{id}/review
+  decision: CycleReportDecision | null
+  reviewComment: string | null
+  reviewedAt: string | null
+  reviewedBy: string | null
+  reviewedById: string | null
+}
+
+// Subset used by the /reviews queue — adds the parent issue
+// fields that the list endpoint joins in for inline display.
+export interface PendingCycleReport extends CycleReport {
+  issueKey: string
+  issueTitle: string
+  issueStatus: string
+  issuePriority?: string
+}
+
 export interface ECCJobEvent {
   timestamp: string
   status: ECCJobStatus
