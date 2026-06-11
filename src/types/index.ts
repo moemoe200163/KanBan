@@ -177,6 +177,13 @@ export interface IssueArtifact {
   createdAt: string
 }
 
+// Acceptance Criteria
+export interface AcceptanceCriterion {
+  id: string
+  text: string
+  done: boolean
+}
+
 // Issue Interface
 export interface Issue {
   id: string
@@ -207,6 +214,8 @@ export interface Issue {
   moveStatus: MoveStatus
   moveError: string | null
   handoffs: Handoff[]
+  parentId: string | null
+  acceptanceCriteria: AcceptanceCriterion[]
   createdAt: string
   updatedAt: string
 }
@@ -225,10 +234,11 @@ export interface BoardState {
   isLoading: boolean
   selectedIssue: Issue | null
   isDetailOpen: boolean
-  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs'
+  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles'
   jobs: ECCDispatchJob[]
   selectedJob: ECCDispatchJob | null
   isLoadingJobs: boolean
+  fetchError: string | null
   isNewIssueModalOpen: boolean
   createIssueError: string | null
   isCreatingIssue: boolean

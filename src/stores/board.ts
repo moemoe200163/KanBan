@@ -58,6 +58,8 @@ const _normalizeIssue = (issue: Issue): Issue => ({
   prDetails: issue.prDetails ?? null,
   moveStatus: issue.moveStatus ?? 'idle',
   moveError: issue.moveError ?? null,
+  parentId: issue.parentId ?? null,
+  acceptanceCriteria: issue.acceptanceCriteria ?? [],
   createdAt: issue.createdAt ?? (issue as unknown as { created_at?: string }).created_at ?? new Date().toISOString(),
   updatedAt: issue.updatedAt ?? (issue as unknown as { updated_at?: string }).updated_at ?? new Date().toISOString()
 })
@@ -1017,6 +1019,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           moveStatus: 'idle',
           moveError: null,
           handoffs: [],
+          parentId: null,
+          acceptanceCriteria: [],
           createdAt: job.created_at,
           updatedAt: job.updated_at
         })
@@ -1106,6 +1110,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
           moveStatus: 'idle',
           moveError: null,
           handoffs: [],
+          parentId: null,
+          acceptanceCriteria: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }
@@ -1284,6 +1290,8 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
         moveStatus: 'idle',
         moveError: null,
         handoffs: [],
+        parentId: null,
+        acceptanceCriteria: [],
         createdAt: job.created_at,
         updatedAt: job.updated_at
       }

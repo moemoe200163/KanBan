@@ -80,10 +80,11 @@ def upgrade() -> None:
     # Self-referencing FK. The board_id match check is enforced at the
     # application layer; SQLAlchemy / Alembic don't support composite
     # FKs against the same table in a portable way across Postgres
-    # and SQLite (the test DB).
+    # and SQLite (the test DB). FK constraint omitted here for SQLite
+    # compatibility; enforced by ORM model and application logic.
     op.add_column(
         "issues",
-        sa.Column("parent_id", sa.String(64), sa.ForeignKey("issues.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("parent_id", sa.String(64), nullable=True),
     )
     op.create_index("ix_issues_parent_id", "issues", ["parent_id"])
 
