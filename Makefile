@@ -64,6 +64,10 @@ audit-unused: ## Endpoints defined in the backend but never called from the fron
 audit: audit-drift audit-unused ## Run all audit gates
 	@echo "all audit gates OK"
 
+.PHONY: audit-trail-e2e
+audit-trail-e2e: ## Live e2e: review a cycle report and assert the audit row lands
+	./scripts/e2e-audit-trail.sh
+
 # ---------------------------------------------------------------------------
 # Backend
 # ---------------------------------------------------------------------------
