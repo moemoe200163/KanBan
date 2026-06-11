@@ -97,6 +97,32 @@ onUnmounted(() => {
   stopRecentJobs()
 })
 
+// "Show archived" toggle. Persisted to localStorage so the operator
+// doesn't have to flip it every page load. The store's fetchBoard
+// reads the same localStorage key, so the two stay in sync.
+const SHOW_ARCHIVED_KEY = 'devflow:showArchived'
+const showArchived = ref(false)
+try {
+  if (typeof window !== 'undefined') {
+    showArchived.value = localStorage.getItem(SHOW_ARCHIVED_KEY) === '1'
+  }
+} catch {
+  // localStorage unavailable (SSR, sandboxed) — default to off.
+}
+watch(showArchived, (val) => {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SHOW_ARCHIVED_KEY, val ? '1' : '0')
+      // Tell the board store to re-fetch so the toggle takes
+      // effect without a full page reload.
+      const store = useBoardStore()
+      void store.fetchBoard()
+    }
+  } catch {
+    // ignore
+  }
+})
+
 // Cycle-review pending count. Polled separately from the board
 // store so the sidebar can keep its number fresh even when the
 // operator is on a page that doesn't otherwise watch the board.
@@ -276,6 +302,13 @@ const toggleCollapse = () => {
             <span v-show="!isCollapsed">Blocked</span>
             <strong>{{ blockedCount }}</strong>
           </div>
+          <label class="control-status__toggle" v-show="!isCollapsed">
+            <input
+              type="checkbox"
+              v-model="showArchived"
+            />
+            <span>Show archived</span>
+          </label>
         </div>
       </section>
 
@@ -613,6 +646,24 @@ const toggleCollapse = () => {
   font-size: 0.75rem;
   font-weight: 600;
 }
+
+.control-status__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sidebar-border);
+  color: var(--sidebar-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  user-select: none;
+}
+.control-status__toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+.control-status__toggle:hover { color: var(--sidebar-text); }
 
 /* Board Stats */
 .board-stats {

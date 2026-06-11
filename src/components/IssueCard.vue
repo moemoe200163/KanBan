@@ -13,6 +13,8 @@ const emit = defineEmits<{
   select: [issue: Issue]
   retry: [issueId: string]
   start: [issueId: string]
+  archive: [issueId: string]
+  unarchive: [issueId: string]
 }>()
 
 const priorityConfig = computed(() => PRIORITY_CONFIG[props.issue.priority])
@@ -108,6 +110,24 @@ const handleStart = (event: Event) => {
       <span class="issue-card__priority" :title="priorityConfig.label">
         {{ priorityConfig.label }}
       </span>
+      <span
+        v-if="issue.isArchived"
+        class="issue-card__archived-pill"
+        title="Archived — hidden from default board view"
+      >
+        ARCHIVED
+      </span>
+      <button
+        class="issue-card__archive-btn"
+        :title="issue.isArchived ? 'Unarchive' : 'Archive'"
+        @click.stop="emit(issue.isArchived ? 'unarchive' : 'archive', issue.id)"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+          <path d="M21 8v13H3V8" />
+          <path d="M1 3h22v5H1z" />
+          <line x1="10" y1="12" x2="14" y2="12" />
+        </svg>
+      </button>
     </div>
 
     <h3 class="issue-card__title">{{ issue.title }}</h3>
@@ -263,6 +283,38 @@ const handleStart = (event: Event) => {
   width: 11px;
   height: 11px;
   display: inline-block;
+}
+
+.issue-card__archive-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast), border-color var(--duration-fast);
+}
+.issue-card__archive-btn:hover {
+  color: #B85C4D;
+  background: rgba(184, 92, 77, 0.10);
+  border-color: rgba(184, 92, 77, 0.3);
+}
+
+.issue-card__archived-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(140, 130, 121, 0.20);
+  color: #6B6660;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .issue-card__priority {

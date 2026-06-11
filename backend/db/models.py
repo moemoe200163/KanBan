@@ -63,6 +63,10 @@ class Issue(Base):
     # it as a completion gate.
     parent_id = Column(String(64), ForeignKey("issues.id", ondelete="SET NULL"), nullable=True, index=True)
     acceptance_criteria = Column(JSON, nullable=True, default=list)
+    # Soft-delete columns. ``is_archived`` is the fast filter the
+    # board endpoint hits; ``archived_at`` is the audit trail.
+    is_archived = Column(Boolean, nullable=False, default=False, index=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -91,6 +95,8 @@ class Issue(Base):
             "ciStatus": self.ci_status,
             "parentId": self.parent_id,
             "acceptanceCriteria": self.acceptance_criteria or [],
+            "isArchived": bool(self.is_archived),
+            "archivedAt": self.archived_at.isoformat() if self.archived_at else None,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

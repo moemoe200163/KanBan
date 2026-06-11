@@ -63,6 +63,8 @@ class Issue(BaseModel):
     # acceptance-criteria checklist in the detail drawer.
     parentId: Optional[str] = None
     acceptanceCriteria: List[dict] = []
+    isArchived: bool = False
+    archivedAt: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
     createdAt: Optional[str] = None
@@ -85,12 +87,15 @@ class BoardStateResponse(BaseModel):
 @router.get("/board", response_model=BoardStateResponse)
 async def get_board(
     board_id: str = Query(DEFAULT_BOARD_ID, description="Board to retrieve"),
+    include_archived: bool = Query(default=False, description="When true, include archived issues (operator opt-in via the sidebar toggle)"),
 ):
     """
     Get board state with columns and issues.
 
     The board is built fresh from the repository on every request so a
-    fresh process sees the persisted state immediately.
+    fresh process sees the persisted state immediately. Archived
+    issues are filtered out by default; pass ``include_archived=1``
+    to surface them so the operator can review and unarchive.
     """
     try:
         assert_board_id_allowed(board_id)
@@ -98,7 +103,7 @@ async def get_board(
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(exc))
 
-    issues = await repo.list_issues(board_id=board_id)
+    issues = await repo.list_issues(board_id=board_id, include_archived=include_archived)
     issues_by_status: dict[str, list[Issue]] = {s: [] for s in VALID_STATUSES}
     for issue_dict in issues:
         status = issue_dict.get("status", "backlog")
@@ -116,6 +121,8 @@ async def get_board(
             ciStatus=issue_dict.get("ciStatus"),
             parentId=issue_dict.get("parentId"),
             acceptanceCriteria=issue_dict.get("acceptanceCriteria") or [],
+            isArchived=bool(issue_dict.get("isArchived", False)),
+            archivedAt=issue_dict.get("archivedAt"),
             created_at=issue_dict.get("createdAt", ""),
             updated_at=issue_dict.get("updatedAt", ""),
             createdAt=issue_dict.get("createdAt"),

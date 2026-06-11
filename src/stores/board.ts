@@ -60,6 +60,8 @@ const _normalizeIssue = (issue: Issue): Issue => ({
   moveError: issue.moveError ?? null,
   parentId: issue.parentId ?? null,
   acceptanceCriteria: issue.acceptanceCriteria ?? [],
+  isArchived: issue.isArchived ?? false,
+  archivedAt: issue.archivedAt ?? null,
   createdAt: issue.createdAt ?? (issue as unknown as { created_at?: string }).created_at ?? new Date().toISOString(),
   updatedAt: issue.updatedAt ?? (issue as unknown as { updated_at?: string }).updated_at ?? new Date().toISOString()
 })
@@ -194,7 +196,18 @@ export const useBoardStore = defineStore('board', {
 
       try {
         const config = useRuntimeConfig()
-        const boardData = await $fetch<{ columns: Array<{ id: IssueStatus; title: string; color: string; issues: Issue[] }> }>(`${config.public.apiBase}/board`)
+        // The sidebar's "Show archived" toggle persists its
+        // choice to localStorage; the store reads the same key so
+        // the two stay in sync without prop-drilling.
+        let includeArchived = ''
+        if (typeof window !== 'undefined') {
+          try {
+            if (localStorage.getItem('devflow:showArchived') === '1') {
+              includeArchived = '?include_archived=1'
+            }
+          } catch { /* localStorage unavailable */ }
+        }
+        const boardData = await $fetch<{ columns: Array<{ id: IssueStatus; title: string; color: string; issues: Issue[] }> }>(`${config.public.apiBase}/board${includeArchived}`)
         this.columns = boardData.columns.map(column => ({
           ...column,
           issues: column.issues.map(_normalizeIssue)

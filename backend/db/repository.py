@@ -210,11 +210,18 @@ async def seed_if_empty() -> int:
         return 0
 
 
-async def list_issues(board_id: Optional[str] = None) -> List[dict]:
+async def list_issues(
+    board_id: Optional[str] = None,
+    include_archived: bool = False,
+) -> List[dict]:
     """Return issues as frontend-shaped dicts (sorted by id for stability).
 
     Args:
         board_id: If provided, only return issues belonging to this board.
+        include_archived: When ``False`` (default) the soft-deleted rows are
+            filtered out so the main board view doesn't show them. The
+            /reviews page and the cycle-report audit path still see
+            archived rows via the per-issue endpoints.
     """
     try:
         await _ensure_init()()
@@ -222,6 +229,8 @@ async def list_issues(board_id: Optional[str] = None) -> List[dict]:
             stmt = select(IssueModel).order_by(IssueModel.id)
             if board_id is not None:
                 stmt = stmt.where(IssueModel.board_id == board_id)
+            if not include_archived:
+                stmt = stmt.where(IssueModel.is_archived.is_(False))
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [_issue_model_to_dict(r) for r in rows]
@@ -285,6 +294,88 @@ async def get_epic_chain(issue_id: str, max_depth: int = 10) -> List[dict]:
     except Exception as e:
         logger.warning(f"get_epic_chain({issue_id}) failed: {e}")
         return []
+
+
+async def archive_issue(issue_id: str) -> Optional[dict]:
+    """Mark an issue as archived. Idempotent.
+
+    The board endpoint filters by ``is_archived = false`` so the
+    row disappears from the main view immediately. We set both
+    ``is_archived`` and ``archived_at`` together so audit queries
+    have an answer to "when was this archived?".
+    """
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                return None
+            row.is_archived = True
+            # Only stamp ``archived_at`` the first time so we
+            # preserve the original archive time across idempotent
+            # re-archive calls.
+            if row.archived_at is None:
+                row.archived_at = now
+            row.updated_at = now
+            await session.commit()
+            return _issue_model_to_dict(row)
+    except Exception as e:
+        logger.warning(f"archive_issue({issue_id}) failed: {e}")
+        return None
+
+
+async def unarchive_issue(issue_id: str) -> Optional[dict]:
+    """Reverse archive. Idempotent.
+
+    Clears both columns. ``archived_at`` is not preserved on
+    purpose — once unarchived, the issue is back to the same
+    state as a never-archived one, and a future re-archive
+    should get a fresh timestamp.
+    """
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                return None
+            row.is_archived = False
+            row.archived_at = None
+            row.updated_at = now
+            await session.commit()
+            return _issue_model_to_dict(row)
+    except Exception as e:
+        logger.warning(f"unarchive_issue({issue_id}) failed: {e}")
+        return None
+
+
+async def delete_issue(issue_id: str) -> bool:
+    """Hard delete. Cascades to all FKs (cycle_reports, handoffs,
+    artifacts, etc.) — only call this when the operator really
+    wants the row gone.
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(IssueModel).where(IssueModel.id == issue_id)
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                return False
+            await session.delete(row)
+            await session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"delete_issue({issue_id}) failed: {e}")
+        return False
 
 
 async def get_issue(issue_id: str) -> Optional[dict]:

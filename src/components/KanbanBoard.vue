@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useBoardStore } from '~/stores/board'
 import { useToast } from '~/composables/useToast'
+import { authHeaders } from '~/utils/authHeaders'
 import type { Issue, IssueStatus } from '~/types'
 import { COLUMN_CONFIG } from '~/types'
 import { Bot, Filter, Plus, Search, SlidersHorizontal, Wifi } from 'lucide-vue-next'
@@ -70,6 +71,46 @@ const handleStartIssue = (issueId: string) => {
     },
     'Undo'
   )
+}
+
+// Card-level archive / unarchive: optimistic, then call the
+// backend. The board will re-fetch on its own once the next
+// board query lands; we just kick it explicitly here so the
+// archived card disappears without a polling delay.
+const handleArchiveIssue = async (issueId: string) => {
+  const issue = boardStore.getIssueById(issueId)
+  if (!issue) return
+  const key = issue.key
+  try {
+    const config = useRuntimeConfig()
+    await $fetch(`${config.public.apiBase}/issues/${issueId}/archive`, {
+      method: 'POST',
+      headers: authHeaders(),
+    })
+    toast.add(`${key} archived`, undefined, 'OK')
+    await boardStore.fetchBoard()
+  } catch (err) {
+    console.error('[archive] failed:', err)
+    toast.add(`Failed to archive ${key}`, undefined, 'Dismiss')
+  }
+}
+
+const handleUnarchiveIssue = async (issueId: string) => {
+  const issue = boardStore.getIssueById(issueId)
+  if (!issue) return
+  const key = issue.key
+  try {
+    const config = useRuntimeConfig()
+    await $fetch(`${config.public.apiBase}/issues/${issueId}/unarchive`, {
+      method: 'POST',
+      headers: authHeaders(),
+    })
+    toast.add(`${key} unarchived`, undefined, 'OK')
+    await boardStore.fetchBoard()
+  } catch (err) {
+    console.error('[unarchive] failed:', err)
+    toast.add(`Failed to unarchive ${key}`, undefined, 'Dismiss')
+  }
 }
 </script>
 
@@ -143,6 +184,8 @@ const handleStartIssue = (issueId: string) => {
         @drop="handleColumnDrop(column.id)"
         @retry="boardStore.retryMove"
         @start="handleStartIssue"
+        @archive="handleArchiveIssue"
+        @unarchive="handleUnarchiveIssue"
         @create="boardStore.createIssue($event, column.id)"
       />
     </div>

@@ -4,7 +4,7 @@ import { COLUMN_CONFIG, PRIORITY_CONFIG, PROFILE_CONFIG } from '~/types'
 import type { ECCLogEntry } from '~/types'
 import { useRuntime } from '~/composables/useRuntime'
 import { authHeaders } from '~/utils/authHeaders'
-import { Bot, FileText, X } from 'lucide-vue-next'
+import { Bot, FileText, X, Archive, RotateCcw } from 'lucide-vue-next'
 import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
 
@@ -477,6 +477,61 @@ const toggleAcceptanceCriterion = async (ac: AcItem) => {
     console.error('[AC] toggle failed:', err)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Archive / unarchive (soft delete).
+//
+// The board endpoint filters archived issues out by default, so as
+// soon as the archive call lands the issue disappears from the
+// main view. We close the drawer after archiving so the operator
+// doesn't have to stare at an empty drawer; unarchive keeps it
+// open since the issue is now back in the live set.
+// ---------------------------------------------------------------------------
+const archiving = ref(false)
+
+const archiveIssue = async () => {
+  if (!issue.value) return
+  if (!confirm(`Archive ${issue.value.key}? It will be hidden from the board view but kept in the database.`)) {
+    return
+  }
+  archiving.value = true
+  try {
+    const config = useRuntimeConfig()
+    await $fetch(
+      `${config.public.apiBase}/issues/${issue.value.id}/archive`,
+      { method: 'POST', headers: authHeaders() },
+    )
+    if (issue.value) {
+      issue.value.isArchived = true
+    }
+    // Close the drawer so the operator doesn't see a "ghost" card;
+    // the board re-fetch is the source of truth for what's visible.
+    close()
+  } catch (err) {
+    console.error('[archive] failed:', err)
+  } finally {
+    archiving.value = false
+  }
+}
+
+const unarchiveIssue = async () => {
+  if (!issue.value) return
+  archiving.value = true
+  try {
+    const config = useRuntimeConfig()
+    await $fetch(
+      `${config.public.apiBase}/issues/${issue.value.id}/unarchive`,
+      { method: 'POST', headers: authHeaders() },
+    )
+    if (issue.value) {
+      issue.value.isArchived = false
+    }
+  } catch (err) {
+    console.error('[unarchive] failed:', err)
+  } finally {
+    archiving.value = false
+  }
+}
 </script>
 
 <template>
@@ -501,10 +556,35 @@ const toggleAcceptanceCriterion = async (ac: AcItem) => {
               >
                 {{ statusConfig?.title }}
               </span>
+              <span
+                v-if="issue.isArchived"
+                class="issue-detail__archived-pill"
+                title="This issue is archived and hidden from the main board"
+              >
+                <Archive :size="13" /> Archived
+              </span>
             </div>
-            <button class="issue-detail__close" @click="close">
-              <X :size="18" />
-            </button>
+            <div class="issue-detail__header-actions">
+              <button
+                v-if="!issue.isArchived"
+                class="issue-detail__archive-btn"
+                :disabled="archiving"
+                @click="archiveIssue"
+              >
+                <Archive :size="14" /> {{ archiving ? 'Archiving…' : 'Archive' }}
+              </button>
+              <button
+                v-else
+                class="issue-detail__unarchive-btn"
+                :disabled="archiving"
+                @click="unarchiveIssue"
+              >
+                <RotateCcw :size="14" /> {{ archiving ? 'Restoring…' : 'Unarchive' }}
+              </button>
+              <button class="issue-detail__close" @click="close">
+                <X :size="18" />
+              </button>
+            </div>
           </div>
 
           <!-- Tabs -->
@@ -2353,6 +2433,55 @@ const toggleAcceptanceCriterion = async (ac: AcItem) => {
   display: flex;
   gap: 12px;
   color: var(--muted);
+}
+
+/* Archive / unarchive controls in the drawer header */
+.issue-detail__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.issue-detail__archive-btn,
+.issue-detail__unarchive-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--canvas-elevated);
+  cursor: pointer;
+  color: var(--ink-muted);
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+.issue-detail__archive-btn:hover:not(:disabled) {
+  background: rgba(184, 92, 77, 0.12);
+  color: #B85C4D;
+  border-color: rgba(184, 92, 77, 0.4);
+}
+.issue-detail__unarchive-btn:hover:not(:disabled) {
+  background: rgba(125, 158, 125, 0.12);
+  color: #4F6F4F;
+  border-color: rgba(125, 158, 125, 0.4);
+}
+.issue-detail__archive-btn:disabled,
+.issue-detail__unarchive-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.issue-detail__archived-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(140, 130, 121, 0.18);
+  color: #6B6660;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* Mobile: full-width panel, no border, adjusted padding */

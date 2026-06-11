@@ -119,6 +119,8 @@ const handleCreateKeydown = (e: KeyboardEvent) => {
         @select="emit('cardClick', issue)"
         @retry="emit('retry', $event)"
         @start="emit('start', $event)"
+        @archive="emit('archive', $event)"
+        @unarchive="emit('unarchive', $event)"
         @dragover.prevent
         @drop="handleIssueCardDrop($event, index)"
       />

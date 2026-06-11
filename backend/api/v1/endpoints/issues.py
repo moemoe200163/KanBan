@@ -8,7 +8,7 @@ import uuid
 from db import repository as repo
 from sqlalchemy.exc import IntegrityError
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
-from api.v1.auth_deps import require_auth
+from api.v1.auth_deps import require_auth, require_admin
 
 # Parallel createIssue calls race on DEV-NNN key generation
 # (next_issue_key reads max-then-increments). The unique constraint
@@ -244,3 +244,53 @@ async def get_epic_chain(issue_id: str, current_user: dict = Depends(require_aut
     if not chain:
         raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
     return {"chain": chain}
+
+
+# ---------------------------------------------------------------------------
+# Archive / unarchive / delete
+# ---------------------------------------------------------------------------
+# Soft-delete by default. The Mavis collab flow depends on
+# cycle_reports, handoffs, and artifacts all staying around for
+# audit; a hard DELETE would cascade and break the /reviews page
+# plus the audit trail. ``is_archived`` hides the issue from the
+# main board while keeping every downstream FK intact.
+#
+# The hard DELETE endpoint is admin-only and exists for the
+# "this issue was created by accident, it never had any work
+# logged against it" case. Any non-trivial issue with cycles,
+# handoffs, or artifacts should be archived, not deleted.
+
+@router.post("/issues/{issue_id}/archive")
+async def archive_issue(issue_id: str, current_user: dict = Depends(require_auth)):
+    """Mark an issue as archived. Idempotent."""
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    updated = await repo.archive_issue(issue_id)
+    return updated
+
+
+@router.post("/issues/{issue_id}/unarchive")
+async def unarchive_issue(issue_id: str, current_user: dict = Depends(require_auth)):
+    """Reverse archive. Idempotent."""
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    updated = await repo.unarchive_issue(issue_id)
+    return updated
+
+
+@router.delete("/issues/{issue_id}")
+async def delete_issue(issue_id: str, current_user: dict = Depends(require_admin)):
+    """Hard delete. Admin only. Cascades to all FKs.
+
+    Reserved for the "this was created by accident, no work
+    was ever logged" case. Regular operators should archive
+    via the dedicated endpoint so the audit trail stays
+    intact.
+    """
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    await repo.delete_issue(issue_id)
+    return {"id": issue_id, "deleted": True}
