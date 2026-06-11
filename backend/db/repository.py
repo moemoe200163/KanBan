@@ -535,6 +535,15 @@ def _cycle_report_to_dict(row) -> dict:
         "boardId": row.board_id,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
         "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+        # Review fields — populated by ``POST /cycle-reports/{id}/review``.
+        # ``None`` on all four means the report has not been reviewed
+        # yet (the dashboard distinguishes the two with a single
+        # ``decision IS NULL`` check).
+        "decision": getattr(row, "decision", None),
+        "reviewComment": getattr(row, "review_comment", None),
+        "reviewedAt": row.reviewed_at.isoformat() if getattr(row, "reviewed_at", None) else None,
+        "reviewedBy": getattr(row, "reviewed_by", None),
+        "reviewedById": getattr(row, "reviewed_by_id", None),
     }
 
 
@@ -742,6 +751,103 @@ async def update_cycle_report(report_id: str, updates: dict) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"update_cycle_report({report_id}) failed: {e}")
         return None
+
+
+async def set_cycle_report_review(
+    report_id: str,
+    *,
+    decision: str,
+    review_comment: Optional[str],
+    reviewed_by: str,
+    reviewed_by_id: str,
+) -> Optional[dict]:
+    """Record a review decision on a cycle report.
+
+    Distinct from ``update_cycle_report``: the verdict-side write
+    (pass/fail/blocked) is a leader override of the work
+    product; this function is the *review* of the report itself
+    (approve, or send the worker back with feedback). Both can
+    coexist on the same report.
+
+    Returns the updated row as a dict, or ``None`` if the report
+    does not exist. Does **not** validate the decision string
+    — the endpoint is responsible for that (HTTP 422 is the
+    right shape for a body-validation failure).
+    """
+    from db.models import CycleReport as CycleReportModel
+
+    try:
+        await _ensure_init()()
+        now = datetime.now(timezone.utc)
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(CycleReportModel).where(CycleReportModel.id == report_id)
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                return None
+            row.decision = decision
+            row.review_comment = review_comment
+            row.reviewed_at = now
+            row.reviewed_by = reviewed_by
+            row.reviewed_by_id = reviewed_by_id
+            row.updated_at = now
+            await session.commit()
+            return _cycle_report_to_dict(row)
+    except Exception as e:
+        logger.warning(f"set_cycle_report_review({report_id}) failed: {e}")
+        return None
+
+
+async def list_cycle_reports_with_status(
+    board_id: Optional[str],
+    *,
+    status: str = "pending",  # pending | reviewed | all
+    limit: int = 100,
+) -> List[dict]:
+    """List cycle reports filtered by review status.
+
+    ``status='pending'`` is reports where ``decision IS NULL``
+    (no leader has touched the report yet). ``status='reviewed'``
+    is reports with ``decision`` set — the leader UI splits
+    these into Approved / Changes-requested sections. ``all'``
+    skips the filter.
+
+    The query joins the issue table so the leader queue can
+    show key/title inline without a follow-up fetch, matching
+    the existing ``list_pending_cycle_reports`` contract.
+    """
+    from db.models import CycleReport as CycleReportModel, Issue as IssueModel
+
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            stmt = (
+                select(CycleReportModel, IssueModel)
+                .join(IssueModel, CycleReportModel.issue_id == IssueModel.id)
+                .order_by(CycleReportModel.updated_at.desc())
+                .limit(limit)
+            )
+            if board_id is not None:
+                stmt = stmt.where(CycleReportModel.board_id == board_id)
+            if status == "pending":
+                stmt = stmt.where(CycleReportModel.decision.is_(None))
+            elif status == "reviewed":
+                stmt = stmt.where(CycleReportModel.decision.is_not(None))
+            # ``all`` skips the decision filter.
+            result = await session.execute(stmt)
+            out: list[dict] = []
+            for cr, issue in result.all():
+                d = _cycle_report_to_dict(cr)
+                d["issueKey"] = issue.key
+                d["issueTitle"] = issue.title
+                d["issueStatus"] = issue.status
+                d["issuePriority"] = issue.priority
+                out.append(d)
+            return out
+    except Exception as e:
+        logger.warning(f"list_cycle_reports_with_status failed: {e}")
+        return []
 
 
 async def update_issue_ci_status(issue_id: str, ci_status: str) -> Optional[dict]:

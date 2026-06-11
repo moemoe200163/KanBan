@@ -550,8 +550,23 @@ class CycleReport(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
+    # Review gate fields — populated by ``POST /cycle-reports/{id}/review``
+    # (see migration 0020). Distinct from the ``verdict`` column:
+    # ``verdict`` is the leader's binary accept/reject of the work
+    # product, ``decision`` is the leader's *review* of the report
+    # itself (approve the report, or send the worker back). A report
+    # can carry both — e.g. ``verdict=pass, decision=approved`` after
+    # the leader accepts, or ``verdict=pending, decision=changes_requested``
+    # when the leader wants the worker to revise.
+    decision = Column(String(32), nullable=True)  # 'approved' | 'changes_requested'
+    review_comment = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
+    reviewed_by_id = Column(String(64), nullable=True)
+
     __table_args__ = (
         Index("ix_cycle_reports_issue_created", "issue_id", "created_at"),
+        Index("ix_cycle_reports_board_decision", "board_id", "decision"),
     )
 
     def to_dict(self) -> dict:
@@ -569,6 +584,11 @@ class CycleReport(Base):
             "boardId": self.board_id,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "decision": self.decision,
+            "reviewComment": self.review_comment,
+            "reviewedAt": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "reviewedBy": self.reviewed_by,
+            "reviewedById": self.reviewed_by_id,
         }
 
 
