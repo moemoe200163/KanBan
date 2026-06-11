@@ -188,7 +188,13 @@ async def _resolve_active_provider() -> Optional[Dict[str, Any]]:
     info = await get_active_provider()
     if not info:
         return None
-    provider_id = info.get("provider")
+    # ``get_active_provider`` returns the merged provider descriptor
+    # from /api/v1/llm/active, which uses ``providerId`` (and also
+    # exposes ``id`` as an alias). The earlier ``provider`` key was
+    # a typo from when this file was first written; the new
+    # endpoint never returned it, so the resolve silently fell
+    # back to the heuristic path even when an LLM was selected.
+    provider_id = info.get("providerId") or info.get("id")
     if not provider_id:
         return None
     full = await get_llm_provider_config_with_key(provider_id)
@@ -205,7 +211,14 @@ async def _resolve_active_provider() -> Optional[Dict[str, Any]]:
         "base_url": base_url,
         "endpoint_path": endpoint_path,
         "model": model,
-        "api_key": full.get("apiKey") or "",
+        # ``get_llm_provider_config_with_key`` exposes the stored
+        # secret under ``api_key_encrypted`` (not ``apiKey`` —
+        # that's the prefix/last4 form used by the public endpoint).
+        # Pulling from the wrong key here silently sent the LLM
+        # call with an empty bearer, which the provider rejected
+        # as a 401 and the endpoint reported as a generic
+        # ChatError → fell back to the heuristic path.
+        "api_key": full.get("api_key_encrypted") or "",
     }
 
 
@@ -302,6 +315,11 @@ async def suggest_acceptance_criteria(
     provider = await _resolve_active_provider()
     if provider is not None:
         try:
+            import logging
+            logging.getLogger(__name__).info(
+                "[suggest-ac] calling LLM (provider=%s model=%s shape=%s)",
+                provider["provider"], provider["model"], provider["api_shape"],
+            )
             text = await chat_complete(
                 api_shape=provider["api_shape"],
                 base_url=provider["base_url"],
@@ -326,9 +344,14 @@ async def suggest_acceptance_criteria(
                 )
             # LLM returned something we can't parse — fall through to
             # heuristic so the operator still gets a usable list.
-        except ChatError:
+        except ChatError as exc:
             # Provider call failed (network, auth, parse, etc.) —
             # don't block the operator on this. Fall back.
+            import logging
+            logging.getLogger(__name__).warning(
+                "[suggest-ac] LLM call failed (provider=%s model=%s): %s",
+                provider.get("provider"), provider.get("model"), exc,
+            )
             pass
 
     # Heuristic fallback
