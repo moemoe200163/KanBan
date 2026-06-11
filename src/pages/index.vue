@@ -3,7 +3,6 @@ import { useBoardStore } from '~/stores/board'
 
 const boardStore = useBoardStore()
 
-// Fetch on mount (client-side)
 onMounted(() => {
   boardStore.fetchBoard()
 })
