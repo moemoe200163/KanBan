@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import type { IssueEvent, IssueComment, IssueArtifact } from '~/types'
+import { authHeaders } from '~/utils/authHeaders'
 
 interface TeamMember {
   id: string
@@ -197,7 +198,8 @@ export const useCollaborationStore = defineStore('collaboration', {
           `${config.public.apiBase}/issues/${issueId}/comments`,
           {
             method: 'POST',
-            body: { body, authorName }
+            body: { body, authorName },
+            headers: authHeaders(),
           }
         )
         // Add to local state
@@ -246,7 +248,8 @@ export const useCollaborationStore = defineStore('collaboration', {
           `${config.public.apiBase}/issues/${issueId}/artifacts`,
           {
             method: 'POST',
-            body: artifact
+            body: artifact,
+            headers: authHeaders(),
           }
         )
         // Add to local state

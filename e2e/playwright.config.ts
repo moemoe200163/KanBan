@@ -29,7 +29,8 @@ export default defineConfig({
     // dependency-graph spec can drive store actions that have no UI
     // affordance yet. See src/plugins/e2e-store-hook.client.ts.
     env: {
-      NUXT_PUBLIC_E2E: '1'
+      NUXT_PUBLIC_E2E: '1',
+      NUXT_PUBLIC_API_BASE: 'http://127.0.0.1:8000/api/v1'
     }
   },
   projects: [

@@ -1,8 +1,12 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { loginAsAdmin } from './auth'
+
+const BACKEND = 'http://127.0.0.1:8000'
 
 // Create an issue via the issues API. Returns the issue JSON.
-const createIssue = async (request: APIRequestContext, title: string) => {
-  const response = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+const createIssue = async (request: APIRequestContext, token: string, title: string) => {
+  const response = await request.post(`${BACKEND}/api/v1/issues`, {
+    headers: { Authorization: `Bearer ${token}` },
     data: {
       description: 'Created by Playwright E2E for artifact tests.',
       status: 'backlog',
@@ -18,8 +22,9 @@ const createIssue = async (request: APIRequestContext, title: string) => {
 test.describe('Manual artifact creation', () => {
   test('clicking "+ Add Artifact" opens modal, filling form creates artifact', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'desktop-only artifact creation flow')
+    const token = await loginAsAdmin(request, page)
 
-    const issue = await createIssue(request, 'Artifact E2E Test')
+    const issue = await createIssue(request, token, 'Artifact E2E Test')
     const issueId = issue.id as string
 
     // Navigate to board, wait for the issue card to appear.
@@ -65,28 +70,30 @@ test.describe('Manual artifact creation', () => {
 
   test('completing a handoff auto-creates artifacts visible in Collaboration tab', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'desktop-only artifact creation flow')
+    const token = await loginAsAdmin(request, page)
 
-    const issue = await createIssue(request, 'Handoff Artifact E2E')
+    const issue = await createIssue(request, token, 'Handoff Artifact E2E')
     const issueId = issue.id as string
 
     // Create and accept a handoff via API.
     const createResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs`,
-      { data: { toLane: 'frontend', createdBy: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { toLane: 'frontend', createdBy: 'e2e' } }
     )
     expect(createResp.ok()).toBeTruthy()
     const handoff = await createResp.json()
 
     const acceptResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
-      { data: { actor: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { actor: 'e2e' } }
     )
     expect(acceptResp.ok()).toBeTruthy()
 
     // Complete with payload containing screenshots and diff_summary.
     const completeResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
       {
+        headers: { Authorization: `Bearer ${token}` },
         data: {
           actor: 'e2e',
           payload: {
@@ -100,7 +107,8 @@ test.describe('Manual artifact creation', () => {
 
     // Verify artifacts were created via API before checking UI.
     const artifactsResp = await request.get(
-      `http://127.0.0.1:8000/api/v1/issues/${issueId}/artifacts`
+      `${BACKEND}/api/v1/issues/${issueId}/artifacts`,
+      { headers: { Authorization: `Bearer ${token}` } }
     )
     expect(artifactsResp.ok()).toBeTruthy()
     const artifactsData = await artifactsResp.json()

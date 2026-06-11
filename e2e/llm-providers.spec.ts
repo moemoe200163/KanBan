@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { loginAsAdmin, clearAuth } from './auth'
 
 const BACKEND = 'http://127.0.0.1:8000'
 
@@ -6,35 +7,7 @@ const BACKEND = 'http://127.0.0.1:8000'
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Register a user; tolerates 409 (already exists). */
-async function registerUser(
-  request: APIRequestContext,
-  username: string,
-  password = 'testpass123',
-): Promise<void> {
-  const res = await request.post(`${BACKEND}/api/v1/auth/register`, {
-    data: { username, password },
-    failOnStatusCode: false,
-  })
-  // 201 = created, 409 = already exists — both are fine
-  expect([201, 409]).toContain(res.status())
-}
-
-/** Login and return the JWT access token. */
-async function login(
-  request: APIRequestContext,
-  username: string,
-  password = 'testpass123',
-): Promise<string> {
-  const res = await request.post(`${BACKEND}/api/v1/auth/token`, {
-    data: { username, password },
-  })
-  expect(res.ok(), `login failed: ${res.status()} ${await res.text()}`).toBeTruthy()
-  const body = await res.json()
-  return body.access_token
-}
-
-/** Configure a provider via the API. */
+/** Configure a provider via the API (admin only). */
 async function configureProvider(
   request: APIRequestContext,
   token: string,
@@ -64,7 +37,12 @@ async function openLLMProvidersTab(page: import('@playwright/test').Page) {
 // ---------------------------------------------------------------------------
 
 test.describe('LLM Providers settings', () => {
+  // ---------------------------------------------------------------------------
+  // Read-only tests (no auth required)
+  // ---------------------------------------------------------------------------
+
   test('provider cards render on settings page', async ({ page }) => {
+    await clearAuth(page)
     await openLLMProvidersTab(page)
 
     // The providers grid should load (may show loading spinner briefly)
@@ -87,6 +65,7 @@ test.describe('LLM Providers settings', () => {
   })
 
   test('provider card expands to show config fields', async ({ page }) => {
+    await clearAuth(page)
     await openLLMProvidersTab(page)
 
     // Wait for providers to load
@@ -101,36 +80,66 @@ test.describe('LLM Providers settings', () => {
     const details = minimaxCard.locator('.provider-card__details')
     await expect(details).toBeVisible()
 
-    // Verify Base URL, Model, and API Key fields exist
+    // Verify key fields in the details section
+    // Base URL and Auth are in Zone 3 (Model Routing)
     await expect(details.getByText('Base URL:')).toBeVisible()
-    await expect(details.getByText('Model:')).toBeVisible()
-    await expect(details.getByText('API Key:')).toBeVisible()
+    await expect(details.getByText('Auth:')).toBeVisible()
 
-    // Test button should be visible
-    await expect(details.locator('.action-btn--test')).toBeVisible()
+    // Model label is in Zone 1b (Provider Summary), not details
+    const summary = minimaxCard.locator('.provider-card__summary')
+    await expect(summary.getByText('Model:')).toBeVisible()
+
+    // Credentials status is in Zone 2
+    await expect(details.getByText('Credentials:')).toBeVisible()
+
+    })
+
+  test('no 401 errors when visiting settings without auth', async ({ page }) => {
+    await clearAuth(page)
+
+    // Collect all failed requests (status 401/403)
+    const protectedFailures: string[] = []
+    page.on('response', (res) => {
+      if (res.status() === 401 || res.status() === 403) {
+        protectedFailures.push(`${res.status()} ${res.url()}`)
+      }
+    })
+
+    await page.goto('/settings')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+
+    // Click LLM Providers tab
+    await page.locator('.settings-tab', { hasText: 'LLM Providers' }).click()
+    await expect(page.locator('.providers-grid')).toBeVisible({ timeout: 10_000 })
+
+    // Wait for provider cards to render
+    await expect(page.locator('.provider-card__name').first()).toBeVisible()
+
+    // No protected endpoints should have been hit
+    expect(protectedFailures).toEqual([])
+
+    // "Login to configure providers" notice should be visible
+    await expect(page.locator('.auth-notice')).toBeVisible()
   })
 
-  test('test button triggers health check and shows result', async ({ page, request }) => {
-    // --- API setup: register, login, configure MiniMax ---
-    const ts = Date.now()
-    const username = `e2e-llm-${ts}`
-    await registerUser(request, username)
-    const token = await login(request, username)
+  // ---------------------------------------------------------------------------
+  // Auth-gated tests (admin required)
+  // ---------------------------------------------------------------------------
 
-    await configureProvider(request, token, 'minimax', {
+  test('test button triggers health check and shows result', async ({ page, request }) => {
+    // Login as admin and configure MiniMax with a test key
+    await loginAsAdmin(request, page)
+
+    // Get token from cookie for API call
+    const cookies = await page.context().cookies()
+    const token = cookies.find(c => c.name === 'auth_token')?.value
+    expect(token).toBeDefined()
+
+    await configureProvider(request, token!, 'minimax', {
       baseUrl: 'https://api.minimax.io/v1',
       model: 'MiniMax-M3',
       apiKey: 'test-key-for-e2e',
     })
-
-    // Set the auth token cookie so the UI's testHealth call can authenticate.
-    // The store reads `useCookie('auth_token').value` for the Bearer header.
-    await page.context().addCookies([{
-      name: 'auth_token',
-      value: token,
-      domain: '127.0.0.1',
-      path: '/',
-    }])
 
     // --- UI: navigate to providers, expand MiniMax, click Test ---
     await openLLMProvidersTab(page)
@@ -163,34 +172,5 @@ test.describe('LLM Providers settings', () => {
       'rate_limited', 'endpoint_error', 'timeout', 'unhealthy', 'unknown',
     ]
     expect(knownStatuses).toContain(badgeText)
-  })
-
-  test('no 401 errors when visiting settings without auth', async ({ page }) => {
-    // Clear any auth cookie
-    await page.context().clearCookies()
-
-    // Collect all failed requests (status 401/403)
-    const protectedFailures: string[] = []
-    page.on('response', (res) => {
-      if (res.status() === 401 || res.status() === 403) {
-        protectedFailures.push(`${res.status()} ${res.url()}`)
-      }
-    })
-
-    await page.goto('/settings')
-    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
-
-    // Click LLM Providers tab
-    await page.locator('.settings-tab', { hasText: 'LLM Providers' }).click()
-    await expect(page.locator('.providers-grid')).toBeVisible({ timeout: 10_000 })
-
-    // Wait for provider cards to render
-    await expect(page.locator('.provider-card__name').first()).toBeVisible()
-
-    // No protected endpoints should have been hit
-    expect(protectedFailures).toEqual([])
-
-    // "Login to configure providers" notice should be visible
-    await expect(page.locator('.auth-notice')).toBeVisible()
   })
 })

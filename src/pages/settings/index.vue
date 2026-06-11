@@ -16,7 +16,7 @@ const boardStore = useBoardStore()
 const llmStore = useLLMStore()
 const { isDark, toggleDark } = useDarkMode()
 const config = useRuntimeConfig()
-const { isAdmin, fetchRole } = useAuth()
+const { isAdmin, isAuthenticated, authChecked, fetchRole } = useAuth()
 
 // Provider edit draft (only sent on Save)
 const providerDraft = ref<{
@@ -292,9 +292,10 @@ const backendStatusColor = computed(() => {
       </div>
 
       <div v-else class="providers-grid">
-        <div v-if="!isAdmin" class="auth-notice">
+        <div v-if="authChecked && !isAdmin" class="auth-notice">
           <Shield :size="14" />
-          <span>Login to configure providers.</span>
+          <span v-if="!isAuthenticated">Login to configure providers.</span>
+          <span v-else>Admin access required to configure providers.</span>
         </div>
 
         <div

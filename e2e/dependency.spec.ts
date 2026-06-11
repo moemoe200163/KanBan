@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { loginAsAdmin } from './auth'
 
 // E2E for the dependency-graph auto-unlock path
 // (src/stores/board.ts::processDependencyUnlock).
@@ -20,13 +21,16 @@ import { expect, test, type APIRequestContext } from '@playwright/test'
 //     store to `window.__DEVFLOW_E2E__.store`. Without the flag the
 //     plugin is a no-op, so production bundles are unaffected.
 
-const createIssue = async (request: APIRequestContext, data: {
+const BACKEND = 'http://127.0.0.1:8000'
+
+const createIssue = async (request: APIRequestContext, token: string, data: {
   title: string
   status?: string
   priority?: string
   profile?: string
 }) => {
-  const response = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+  const response = await request.post(`${BACKEND}/api/v1/issues`, {
+    headers: { Authorization: `Bearer ${token}` },
     data: {
       description: 'Created by Playwright E2E (dependency spec).',
       status: data.status ?? 'backlog',
@@ -46,14 +50,15 @@ test.describe('Dependency graph auto-unlock', () => {
     isMobile
   }) => {
     test.skip(isMobile, 'store-hook flow runs in the desktop project')
+    const token = await loginAsAdmin(request, page)
 
     const ts = Date.now()
-    const blocker = await createIssue(request, {
+    const blocker = await createIssue(request, token, {
       title: `E2E blocker ${ts}`,
       status: 'in_progress',
       profile: 'frontend'
     })
-    const dependent = await createIssue(request, {
+    const dependent = await createIssue(request, token, {
       title: `E2E dependent ${ts}`,
       status: 'blocked',
       profile: 'frontend'
@@ -121,19 +126,20 @@ test.describe('Dependency graph auto-unlock', () => {
     isMobile
   }) => {
     test.skip(isMobile, 'store-hook flow runs in the desktop project')
+    const token = await loginAsAdmin(request, page)
 
     const ts = Date.now()
-    const blocker1 = await createIssue(request, {
+    const blocker1 = await createIssue(request, token, {
       title: `E2E partial-blocker-1 ${ts}`,
       status: 'in_progress',
       profile: 'frontend'
     })
-    const blocker2 = await createIssue(request, {
+    const blocker2 = await createIssue(request, token, {
       title: `E2E partial-blocker-2 ${ts}`,
       status: 'in_progress',
       profile: 'frontend'
     })
-    const dependent = await createIssue(request, {
+    const dependent = await createIssue(request, token, {
       title: `E2E partial-dependent ${ts}`,
       status: 'blocked',
       profile: 'frontend'

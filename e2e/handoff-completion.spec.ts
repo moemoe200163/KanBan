@@ -1,12 +1,16 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { loginAsAdmin, login } from './auth'
+
+const BACKEND = 'http://127.0.0.1:8000'
 
 // Create an issue via the issues endpoint. Returns the issue JSON.
-const createIssue = async (request: APIRequestContext, data: {
+const createIssue = async (request: APIRequestContext, token: string, data: {
   title: string
   status?: string
   profile?: string
 }) => {
-  const response = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+  const response = await request.post(`${BACKEND}/api/v1/issues`, {
+    headers: { Authorization: `Bearer ${token}` },
     data: {
       description: 'Created by Playwright E2E for handoff completion flow.',
       status: data.status ?? 'backlog',
@@ -25,19 +29,20 @@ const createIssue = async (request: APIRequestContext, data: {
 // flow rather than re-exercising the create/accept UI paths.
 const createAcceptedHandoff = async (
   request: APIRequestContext,
+  token: string,
   issueId: string,
   toLane: string
 ) => {
   const create = await request.post(
-    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs`,
-    { data: { toLane, createdBy: 'e2e' } }
+    `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs`,
+    { headers: { Authorization: `Bearer ${token}` }, data: { toLane, createdBy: 'e2e' } }
   )
   expect(create.ok(), `create handoff: ${create.status()} ${await create.text()}`).toBeTruthy()
   const handoff = await create.json()
 
   const accept = await request.post(
-    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
-    { data: { actor: 'e2e' } }
+    `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
+    { headers: { Authorization: `Bearer ${token}` }, data: { actor: 'e2e' } }
   )
   expect(accept.ok(), `accept handoff: ${accept.status()} ${await accept.text()}`).toBeTruthy()
   return await accept.json()
@@ -78,10 +83,11 @@ const openIssueAndSwitchToHandoffsTab = async (
 test.describe('Handoff completion with required fields', () => {
   test('Frontend lane completion shows form for diff_summary + screenshots', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+    const token = await loginAsAdmin(request, page)
 
     const title = `E2E handoff complete ${Date.now()}`
-    const issue = await createIssue(request, { title, status: 'backlog', profile: 'frontend' })
-    await createAcceptedHandoff(request, issue.id, 'frontend')
+    const issue = await createIssue(request, token, { title, status: 'backlog', profile: 'frontend' })
+    await createAcceptedHandoff(request, token, issue.id, 'frontend')
 
     await page.goto('/')
 
@@ -149,10 +155,11 @@ test.describe('Handoff completion with required fields', () => {
 
   test('Cancel button on the completion form dismisses without submitting', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+    const token = await loginAsAdmin(request, page)
 
     const title = `E2E handoff cancel ${Date.now()}`
-    const issue = await createIssue(request, { title, status: 'backlog', profile: 'frontend' })
-    await createAcceptedHandoff(request, issue.id, 'frontend')
+    const issue = await createIssue(request, token, { title, status: 'backlog', profile: 'frontend' })
+    await createAcceptedHandoff(request, token, issue.id, 'frontend')
 
     await page.goto('/')
 
@@ -195,16 +202,17 @@ test.describe('Handoff completion with required fields', () => {
 
 test('Backend rejects bad coverage_pct with structured 422 (P1.5 regression)', async ({ request, isMobile }) => {
   test.skip(isMobile, 'desktop-only API regression')
+  const token = await login(request, "e2e_admin")
 
   const title = `E2E qa bad coverage ${Date.now()}`
-  const issue = await createIssue(request, { title, status: 'backlog', profile: 'general' })
-  const handoff = await createAcceptedHandoff(request, issue.id, 'qa')
+  const issue = await createIssue(request, token, { title, status: 'backlog', profile: 'general' })
+  const handoff = await createAcceptedHandoff(request, token, issue.id, 'qa')
 
   // The lane requires test_results + coverage_pct. Sending coverage_pct
   // out of range exercises the typed contract end-to-end.
   const response = await request.post(
-    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
-    { data: { actor: 'e2e', payload: { test_results: 'ok', coverage_pct: 150 } } }
+    `${BACKEND}/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
+    { headers: { Authorization: `Bearer ${token}` }, data: { actor: 'e2e', payload: { test_results: 'ok', coverage_pct: 150 } } }
   )
   expect(response.status()).toBe(422)
   const body = await response.json()
@@ -220,15 +228,17 @@ test('completed handoff shows View evidence toggle and expands', async ({
   page, request, isMobile
 }) => {
   test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+  const token = await loginAsAdmin(request, page)
 
   // Seed: issue + handoff + accept + complete with a typed payload that
   // exercises both string and list[str] field rendering.
   const title = `E2E handoff evidence ${Date.now()}`
-  const issue = await createIssue(request, { title, profile: 'frontend' })
-  const handoff = await createAcceptedHandoff(request, issue.id, 'frontend')
+  const issue = await createIssue(request, token, { title, profile: 'frontend' })
+  const handoff = await createAcceptedHandoff(request, token, issue.id, 'frontend')
   await request.post(
-    `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
+    `${BACKEND}/api/v1/boards/board-default/issues/${issue.id}/handoffs/${handoff.id}/complete`,
     {
+      headers: { Authorization: `Bearer ${token}` },
       data: {
         actor: 'e2e',
         payload: {
@@ -268,11 +278,12 @@ test('non-completed handoff hides evidence toggle', async ({
   page, request, isMobile
 }) => {
   test.skip(isMobile, 'handoff detail flow is covered in the desktop project')
+  const token = await loginAsAdmin(request, page)
 
   // Seed: issue + handoff + accept, do NOT complete.
   const title = `E2E handoff no evidence ${Date.now()}`
-  const issue = await createIssue(request, { title, profile: 'frontend' })
-  await createAcceptedHandoff(request, issue.id, 'frontend')
+  const issue = await createIssue(request, token, { title, profile: 'frontend' })
+  await createAcceptedHandoff(request, token, issue.id, 'frontend')
 
   await page.goto('/')
   await openIssueAndSwitchToHandoffsTab(page, issue.id)

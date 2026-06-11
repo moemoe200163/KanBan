@@ -1,7 +1,11 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { loginAsAdmin } from './auth'
 
-const createIssue = async (request: APIRequestContext, title: string) => {
-  const response = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+const BACKEND = 'http://127.0.0.1:8000'
+
+const createIssue = async (request: APIRequestContext, token: string, title: string) => {
+  const response = await request.post(`${BACKEND}/api/v1/issues`, {
+    headers: { Authorization: `Bearer ${token}` },
     data: {
       description: 'Created by Playwright E2E for review gate tests.',
       status: 'backlog',
@@ -17,29 +21,31 @@ const createIssue = async (request: APIRequestContext, title: string) => {
 test.describe('Review Gate', () => {
   test('approving a completed review handoff shows decision badge and hides review buttons', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'desktop-only review flow')
+    const token = await loginAsAdmin(request, page)
 
-    const issue = await createIssue(request, 'Review Gate E2E')
+    const issue = await createIssue(request, token, 'Review Gate E2E')
     const issueId = issue.id as string
 
     // Create handoff to the review lane.
     const createResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs`,
-      { data: { fromLane: 'frontend', toLane: 'review', createdBy: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { fromLane: 'frontend', toLane: 'review', createdBy: 'e2e' } }
     )
     expect(createResp.ok()).toBeTruthy()
     const handoff = await createResp.json()
 
     // Accept the handoff.
     const acceptResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
-      { data: { actor: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { actor: 'e2e' } }
     )
     expect(acceptResp.ok()).toBeTruthy()
 
     // Complete with review-lane payload (reviewer, decision, approver required).
     const completeResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
       {
+        headers: { Authorization: `Bearer ${token}` },
         data: {
           actor: 'e2e',
           payload: {
@@ -54,7 +60,8 @@ test.describe('Review Gate', () => {
 
     // Verify handoff is completed and has no decision yet.
     const getResp = await request.get(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
     )
     expect(getResp.ok()).toBeTruthy()
     const handoffData = await getResp.json()
@@ -98,7 +105,8 @@ test.describe('Review Gate', () => {
 
     // Verify via API that the decision was persisted.
     const finalResp = await request.get(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
     )
     expect(finalResp.ok()).toBeTruthy()
     const finalData = await finalResp.json()
@@ -107,26 +115,28 @@ test.describe('Review Gate', () => {
 
   test('requesting rework sets decision and shows rework badge', async ({ page, request, isMobile }) => {
     test.skip(isMobile, 'desktop-only review flow')
+    const token = await loginAsAdmin(request, page)
 
-    const issue = await createIssue(request, 'Rework Gate E2E')
+    const issue = await createIssue(request, token, 'Rework Gate E2E')
     const issueId = issue.id as string
 
     // Create, accept, and complete a handoff to the review lane.
     const createResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs`,
-      { data: { fromLane: 'backend', toLane: 'review', createdBy: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { fromLane: 'backend', toLane: 'review', createdBy: 'e2e' } }
     )
     expect(createResp.ok()).toBeTruthy()
     const handoff = await createResp.json()
 
     await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
-      { data: { actor: 'e2e' } }
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/accept`,
+      { headers: { Authorization: `Bearer ${token}` }, data: { actor: 'e2e' } }
     )
 
     const completeResp = await request.post(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}/complete`,
       {
+        headers: { Authorization: `Bearer ${token}` },
         data: {
           actor: 'e2e',
           payload: {
@@ -170,7 +180,8 @@ test.describe('Review Gate', () => {
 
     // Verify via API.
     const finalResp = await request.get(
-      `http://127.0.0.1:8000/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`
+      `${BACKEND}/api/v1/boards/board-default/issues/${issueId}/handoffs/${handoff.id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
     )
     expect(finalResp.ok()).toBeTruthy()
     const finalData = await finalResp.json()
