@@ -33,11 +33,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Drop the orphan column. ``IF EXISTS`` makes this safe to
-    # re-run on environments where the column was already removed
-    # out of band.
-    op.execute("ALTER TABLE issue_artifacts DROP COLUMN IF EXISTS metadata")
-    op.execute("ALTER TABLE issue_comments  DROP COLUMN IF EXISTS metadata")
+    # Drop the orphan column. Cross-dialect safe: ``IF EXISTS`` is
+    # Postgres-only and SQLite would error on it, so we check the
+    # inspector first. ``op.batch_alter_table`` handles SQLite's
+    # 3.35+ ``DROP COLUMN`` automatically.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for table in ("issue_artifacts", "issue_comments"):
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        if "metadata" in existing:
+            with op.batch_alter_table(table) as batch_op:
+                batch_op.drop_column("metadata")
 
 
 def downgrade() -> None:
