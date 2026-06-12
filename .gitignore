@@ -38,3 +38,6 @@ backend/scripts/snake_game.py
 .verify-*.mjs
 .probe-cc.mjs
 .mavis/
+# Plan D: ignore build artifacts but keep .gitkeep
+deliveries/*
+!deliveries/.gitkeep

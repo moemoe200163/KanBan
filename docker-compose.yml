@@ -100,6 +100,11 @@ services:
       - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Plan D: host bind so Mavis CLI can `cp` artifacts straight
+      # from the kanban repo's deliverables/ dir to nginx-served
+      # path without dealing with Docker cp / docker exec gymnastics.
+      # The host directory is created on first mount if missing.
+      - ./deliveries:/var/www/devflow-deliveries:rw
     depends_on:
       - frontend
       - backend
