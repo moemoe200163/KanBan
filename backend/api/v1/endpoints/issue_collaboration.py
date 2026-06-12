@@ -228,4 +228,17 @@ async def create_issue_artifact(
         details={"artifactId": artifact["id"], "artifactType": request.artifactType},
     )
 
+    # Plan F: notify live-board subscribers so the Deliverables
+    # section + status pill refresh without a manual reload.
+    # Best-effort — if WS is down the next manual refetch catches up.
+    try:
+        from api.v1.endpoints.ws import broadcast_issue_updated
+        await broadcast_issue_updated(issue_id, "artifact")
+    except Exception as ws_exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "Plan F: artifact broadcast failed for %s: %s",
+            issue_id, ws_exc,
+        )
+
     return artifact

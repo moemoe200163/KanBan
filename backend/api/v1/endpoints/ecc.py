@@ -719,6 +719,21 @@ async def push_mavis_event(
         event_message = body.message
 
     updated = await _transition_and_persist(job, body.status, event_message)
+
+    # Plan F: notify live-board subscribers. The per-job WS channel
+    # already covers clients tracking this specific job; the
+    # per-issue channel is what the IssueDetail panel listens on
+    # so it can refetch events / artifacts / cycle-reports in one
+    # place. Best-effort — a broken WS doesn't fail the push.
+    try:
+        from api.v1.endpoints.ws import broadcast_issue_updated
+        await broadcast_issue_updated(job.issue_id, "event")
+    except Exception as ws_exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "Plan F: mavis event broadcast failed for %s: %s",
+            job.issue_id, ws_exc,
+        )
     return updated
 
 

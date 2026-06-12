@@ -293,6 +293,19 @@ async def update_cycle_report(
                 created_by_name=current_user.get("username"),
                 board_id=updated.get("board_id", "board-default"),
             )
+            # Plan F: notify live-board subscribers so the
+            # Deliverables section + status pill refresh without
+            # a manual reload. Best-effort — if the WS is down
+            # the next manual refetch will catch the new state.
+            try:
+                from api.v1.endpoints.ws import broadcast_issue_updated
+                await broadcast_issue_updated(issue_id, "cycle_report_pass")
+            except Exception as ws_exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Plan F: cycle_report_pass broadcast failed for %s: %s",
+                    issue_id, ws_exc,
+                )
         except Exception as exc:  # noqa: BLE001
             # The lane transition is the user-visible contract; the
             # artifact is bookkeeping. Log but don't fail the request.
