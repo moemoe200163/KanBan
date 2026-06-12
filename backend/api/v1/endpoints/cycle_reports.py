@@ -264,6 +264,43 @@ async def update_cycle_report(
     if body.verdict == "pass" and existing.get("verdict") != "pass":
         from db import repository as _repo
         await _repo.update_issue_status(issue_id, "done")
+
+        # Plan D: also drop a deliverable artifact on the issue so
+        # the /deliveries view + IssueDetail Worker tab surface
+        # something concrete. The artifact's summary comes from the
+        # cycle report's deliverable_summary (or the report id if
+        # the leader didn't write one). ``source=cycle_report_pass``
+        # makes it filterable in the front-end.
+        try:
+            deliverable = (
+                body.deliverable_summary
+                or existing.get("deliverable_summary")
+                or f"Cycle report {report_id} approved by {current_user.get('username', 'leader')}"
+            )
+            await _repo.create_issue_artifact(
+                issue_id=issue_id,
+                title=f"Cycle report approved: {deliverable[:120]}",
+                artifact_type="cycle_report",
+                source="cycle_report_pass",
+                summary=deliverable,
+                sensitivity="public",
+                metadata={
+                    "reportId": report_id,
+                    "jobId": existing.get("jobId"),
+                    "verdict": body.verdict,
+                },
+                created_by_id=current_user.get("user_id"),
+                created_by_name=current_user.get("username"),
+                board_id=updated.get("board_id", "board-default"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The lane transition is the user-visible contract; the
+            # artifact is bookkeeping. Log but don't fail the request.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to create cycle_report_pass artifact for %s: %s",
+                issue_id, exc,
+            )
         try:
             from main import manager
             import datetime as _dt
