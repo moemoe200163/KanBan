@@ -622,6 +622,7 @@ def _cycle_report_to_dict(row) -> dict:
         "deliverableSummary": row.deliverable_summary,
         "verdict": row.verdict,
         "verdictReason": row.verdict_reason,
+        "source": getattr(row, "source", None),
         "boardId": row.board_id,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
         "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
@@ -656,6 +657,7 @@ async def upsert_cycle_report(report: dict) -> dict:
                 deliverable_summary=report.get("deliverable_summary"),
                 verdict=report.get("verdict", "pending"),
                 verdict_reason=report.get("verdict_reason"),
+                source=report.get("source"),
                 board_id=report.get("board_id", DEFAULT_BOARD_ID),
                 created_at=now,
                 updated_at=now,
@@ -684,6 +686,29 @@ async def list_cycle_reports(issue_id: str, limit: int = 50) -> List[dict]:
             return [_cycle_report_to_dict(r) for r in rows]
     except Exception as e:
         logger.warning(f"list_cycle_reports({issue_id}) failed: {e}")
+        return []
+
+
+async def list_cycle_reports_for_job(job_id: str) -> List[dict]:
+    """Return all cycle reports linked to a specific ECC job.
+
+    Plan G uses this from push_mavis_event to make the auto-report
+    idempotent — if a mavis_auto report already exists we skip
+    the second create. The list is unsorted (callers don't care
+    about order here, just membership / count).
+    """
+    from db.models import CycleReport as CycleReportModel
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            result = await session.execute(
+                select(CycleReportModel)
+                .where(CycleReportModel.job_id == job_id)
+            )
+            rows = result.scalars().all()
+            return [_cycle_report_to_dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"list_cycle_reports_for_job({job_id}) failed: {e}")
         return []
 
 

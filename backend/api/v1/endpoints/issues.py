@@ -280,6 +280,69 @@ async def unarchive_issue(issue_id: str, current_user: dict = Depends(require_au
     return updated
 
 
+@router.post("/issues/{issue_id}/unblock")
+async def unblock_issue(issue_id: str, current_user: dict = Depends(require_auth)):
+    """Plan G: pull an issue out of Blocked back into In Progress.
+
+    Triggered by a leader after they've finished reviewing the
+    worker's output (e.g. Request-changes on a cycle report, or
+    a manual unblock after a paused safe-runner gate clears). The
+    lane update is best-effort: if the issue was already in a
+    different lane we still write the change (this is a forced
+    transition, not a guard).
+
+    Side effects:
+    - Write an ``issue_event`` so the timeline shows the unblock.
+    - Notify live-board subscribers via Plan F's broadcast
+      so the card moves on the board in real time.
+    """
+    issue = await repo.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(
+            status_code=404, detail=f"Issue '{issue_id}' not found"
+        )
+
+    from core.kanban_protocol.board_scope import assert_board_id_allowed
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    updated = await repo.update_issue_status(issue_id, "in_progress")
+    if not updated:
+        raise HTTPException(
+            status_code=500, detail="Failed to update issue status"
+        )
+
+    # Timeline event for audit
+    try:
+        await repo.create_issue_event(
+            issue_id=issue_id,
+            event_type="unblocked",
+            summary=f"Issue unblocked by {current_user.get('username', 'leader')}",
+            actor_id=current_user.get("user_id"),
+            actor_name=current_user.get("username"),
+            board_id=issue.get("board_id", "board-default"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to write unblock event for %s: %s", issue_id, exc
+        )
+
+    # Live-board nudge (Plan F)
+    try:
+        from api.v1.endpoints.ws import broadcast_issue_updated
+        await broadcast_issue_updated(issue_id, "event")
+    except Exception as ws_exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "Plan G: unblock broadcast failed for %s: %s", issue_id, ws_exc
+        )
+
+    return updated
+
+
 @router.delete("/issues/{issue_id}")
 async def delete_issue(issue_id: str, current_user: dict = Depends(require_admin)):
     """Hard delete. Admin only. Cascades to all FKs.

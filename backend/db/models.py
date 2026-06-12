@@ -546,6 +546,12 @@ class CycleReport(Base):
     # can later flip it to ``pass`` (with their own reason) or ``fail``.
     verdict = Column(String(32), nullable=False, default="pending", index=True)
     verdict_reason = Column(Text, nullable=True)
+    # Plan G: identifies the writer of this report.
+    #   ``auto``     — written by the safe-runner auto-promote hook
+    #   ``mavis_auto`` — written by Mavis pushing review_required
+    #   ``leader``   — written by a leader override
+    #   ``None``     — legacy rows from before Plan G
+    source = Column(String(32), nullable=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)

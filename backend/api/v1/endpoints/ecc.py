@@ -133,21 +133,32 @@ def _transition_job(job: ECCDispatchJob, status: ECCJobStatus, message: str) -> 
     return job
 
 
-# Map of ECC terminal status -> next issue status. Failure / cancel
-# intentionally has no entry: the issue stays where it is so a human can
-# decide whether to retry, block, or re-prioritise.
+# Map of ECC status -> next issue status. Plan G widens this from
+# only the terminal review_required / completed pair to the full
+# lifecycle so a paused safe-runner syncs the issue into Blocked and
+# a resumed job pulls it back to In Progress automatically.
+#
+# `failed` / `cancelled` intentionally have no entry: the issue
+# stays where it is so a human can decide whether to retry, block,
+# or re-prioritise.
 _ECC_ISSUE_PROMOTION: dict[str, str] = {
+    "queued":          "in_progress",
+    "running":         "in_progress",
+    "paused":          "blocked",
     "review_required": "human_review",
-    "completed": "done",
+    "completed":       "done",
 }
 
 
 async def _auto_promote_issue(job) -> None:
     """Push the issue linked to a finished job to the next lane.
 
-    - `review_required` -> `human_review`  (PR / output ready for inspection)
-    - `completed`       -> `done`          (agent finished and self-validated)
-    - `failed` / `cancelled` / `running` / `paused` / `queued` -> no-op
+    - `queued` / `running` -> `in_progress`  (worker engaged)
+    - `paused`              -> `blocked`      (worker paused at gate; awaiting
+                                                 leader action via unblock)
+    - `review_required`    -> `human_review` (PR / output ready for inspection)
+    - `completed`          -> `done`         (agent finished and self-validated)
+    - `failed` / `cancelled` -> no-op        (human decides next step)
 
     The issue update is best-effort: if it fails (e.g. issue was deleted)
     we log and move on so the job update itself isn't blocked.
@@ -176,17 +187,21 @@ async def _auto_promote_issue(job) -> None:
             job.id, job.status, issue_id, next_status,
         )
 
-        # Write a Mavis-style cycle report alongside the auto-promote so
-        # the leader has the plan / progress log / deliverable on the
-        # review surface. Only fire once per job — for ``completed`` we
-        # get the full event list, for ``review_required`` we record
-        # the partial result and let the leader decide.
-        try:
-            await _write_auto_cycle_report(job, next_status)
-        except Exception as cr_exc:
-            logging.getLogger(__name__).warning(
-                "[ECC] auto-cycle-report failed for job %s: %s", job.id, cr_exc,
-            )
+        # Plan G: only write a cycle report on terminal transitions
+        # (``review_required`` / ``completed``). Earlier the report
+        # fired for in_progress / blocked lane sync, which spammed
+        # the leader's review surface with no-action reports every
+        # time the safe-runner started a job. The leader-facing
+        # review surface should only carry reports the leader
+        # actually has to look at.
+        if next_status in ("human_review", "done"):
+            try:
+                await _write_auto_cycle_report(job, next_status)
+            except Exception as cr_exc:
+                logging.getLogger(__name__).warning(
+                    "[ECC] auto-cycle-report failed for job %s: %s",
+                    job.id, cr_exc,
+                )
 
         # Broadcast the change so the front-end can move the card live.
         try:
@@ -224,9 +239,18 @@ async def _write_auto_cycle_report(job, next_status: str) -> None:
     runner did. The verdict is ``auto_passed`` for ``completed`` and
     ``pending`` for ``review_required`` (the leader is expected to
     flip it to ``pass`` or ``fail`` after looking at the report).
+
+    Plan G: skip the safe-runner auto-report for harness=mavis —
+    the Mavis branch in ``push_mavis_event`` writes its own
+    mavis_auto report for the same transition, and double-writing
+    just clutters the leader's review surface. Mavis is the
+    only harness that ships its own auto-report today.
     """
     import logging
     import uuid as _uuid
+
+    if getattr(job, "harness", "safe-runner") == "mavis":
+        return
 
     issue_id = getattr(job, "issue_id", None)
     if not issue_id:
@@ -258,6 +282,8 @@ async def _write_auto_cycle_report(job, next_status: str) -> None:
             if verdict == "pending"
             else "auto-promoted; safe-runner reported completed"
         ),
+        "source": "auto",  # Plan G: distinguishes safe-runner auto-report
+                            # from Mavis mavis_auto and leader overrides.
         "board_id": getattr(job, "board_id", "board-default"),
     }
     from db import repository as repo
@@ -719,6 +745,58 @@ async def push_mavis_event(
         event_message = body.message
 
     updated = await _transition_and_persist(job, body.status, event_message)
+
+    # Plan G: when Mavis pushes a 'review_required' event, also
+    # auto-create a cycle_report row so the leader has something to
+    # see on the Cycles tab. Idempotent: if a mavis_auto report
+    # already exists for this job we skip (a leader verdict can
+    # then be applied to that single report). This mirrors the
+    # existing auto-report that fires from the safe-runner for
+    # review_required.
+    if body.status == "review_required" and job.harness == "mavis":
+        try:
+            from db import repository as _repo
+            existing = await _repo.list_cycle_reports_for_job(job.id)
+            if not any(r.get("source") == "mavis_auto" for r in existing):
+                plan = (
+                    f"Mavis shadow execution finished: {body.message}. "
+                    f"Job {job.id} transitioned to review_required; "
+                    f"leader review needed."
+                )
+                progress_log = [
+                    {"timestamp": e.timestamp, "status": e.status, "message": e.message}
+                    for e in (job.events or [])
+                ]
+                await _repo.upsert_cycle_report({
+                    "id": f"cr_mavis_{job.id[:20]}",
+                    "issue_id": job.issue_id,
+                    "job_id": job.id,
+                    "author_id": None,
+                    "author_name": "mavis",
+                    "plan": plan,
+                    "progress_log": progress_log,
+                    "deliverable_summary": body.message,
+                    "source": "mavis_auto",  # Plan G: distinguishes from safe-runner 'auto'.
+                    "verdict": "pending",
+                    "verdict_reason": (
+                        "Mavis marked this job as ready for review. "
+                        "Awaiting leader decision."
+                    ),
+                    "board_id": job.board_id or "board-default",
+                })
+                import logging
+                logging.getLogger(__name__).info(
+                    "Plan G: auto-created mavis cycle_report for job %s",
+                    job.id,
+                )
+        except Exception as cr_exc:  # noqa: BLE001
+            # Best-effort: a missing cycle report row doesn't fail
+            # the underlying status transition. Log and move on.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Plan G: failed to auto-create cycle_report for job %s: %s",
+                job.id, cr_exc,
+            )
 
     # Plan F: notify live-board subscribers. The per-job WS channel
     # already covers clients tracking this specific job; the
