@@ -175,9 +175,9 @@ class TestGitHubPRWebhook:
         assert resp.json()["status"] == "accepted"
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-001")
-        assert issue["pr_url"] is not None
-        assert "pull/42" in issue["pr_url"]
-        assert issue["ci_status"] == "pending"
+        assert issue["prUrl"] is not None
+        assert "pull/42" in issue["prUrl"]
+        assert issue["ciStatus"] == "pending"
 
     async def test_pr_merged_moves_issue_to_done(self, seeded_db):
         """PR closed + merged=true → issue status=done."""
@@ -232,7 +232,7 @@ class TestGitHubPRWebhook:
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-004")
         assert issue is not None
-        assert issue["pr_url"] is not None
+        assert issue["prUrl"] is not None
 
     async def test_pr_issue_key_from_body(self, seeded_db):
         """Issue key extracted from PR body when branch and title have no key."""
@@ -292,7 +292,7 @@ class TestGitHubWorkflowRunWebhook:
         assert resp.status_code == 200
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-001")
-        assert issue["ci_status"] == "passed"
+        assert issue["ciStatus"] == "passed"
 
     async def test_workflow_failure_sets_ci_failed(self, seeded_db):
         """workflow_run completed + failure → ci_status=failed."""
@@ -306,7 +306,7 @@ class TestGitHubWorkflowRunWebhook:
         assert resp.status_code == 200
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-002")
-        assert issue["ci_status"] == "failed"
+        assert issue["ciStatus"] == "failed"
 
     async def test_workflow_cancelled_sets_ci_failed(self, seeded_db):
         """workflow_run completed + cancelled → ci_status=failed."""
@@ -320,7 +320,7 @@ class TestGitHubWorkflowRunWebhook:
         assert resp.status_code == 200
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-003")
-        assert issue["ci_status"] == "failed"
+        assert issue["ciStatus"] == "failed"
 
     async def test_workflow_timed_out_sets_ci_failed(self, seeded_db):
         """workflow_run completed + timed_out → ci_status=failed."""
@@ -334,7 +334,7 @@ class TestGitHubWorkflowRunWebhook:
         assert resp.status_code == 200
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-004")
-        assert issue["ci_status"] == "failed"
+        assert issue["ciStatus"] == "failed"
 
     async def test_workflow_non_completed_action_noop(self, seeded_db):
         """workflow_run action=queued → no ci_status change."""
@@ -349,7 +349,7 @@ class TestGitHubWorkflowRunWebhook:
         assert resp.status_code == 200
         from db import repository as repo
         issue = await repo.find_issue_by_key("DEV-005")
-        assert issue["ci_status"] is None
+        assert issue["ciStatus"] is None
 
     async def test_workflow_no_issue_key_returns_200(self, seeded_db):
         """workflow_run with branch that has no DEV-NNN → 200."""

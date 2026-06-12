@@ -158,7 +158,7 @@ def test_ci_webhook_updates_issue_ci_status(fresh_db):
 
     issue = asyncio.run(repo.get_issue("issue-wh-1"))
     assert issue is not None
-    assert issue["ci_status"] == "passed"
+    assert issue["ciStatus"] == "passed"
 
 
 def test_ci_webhook_failure_sets_failed_status(fresh_db):
@@ -174,7 +174,7 @@ def test_ci_webhook_failure_sets_failed_status(fresh_db):
     from db import repository as repo
 
     issue = asyncio.run(repo.get_issue("issue-wh-1"))
-    assert issue["ci_status"] == "failed"
+    assert issue["ciStatus"] == "failed"
 
 
 def test_ci_webhook_unknown_job(fresh_db):
@@ -239,8 +239,8 @@ def test_pr_webhook_updates_issue_pr_url(fresh_db):
 
     issue = asyncio.run(repo.get_issue("issue-wh-1"))
     assert issue is not None
-    assert issue["pr_url"] is not None
-    assert "pull/42" in issue["pr_url"]
+    assert issue["prUrl"] is not None
+    assert "pull/42" in issue["prUrl"]
 
 
 def test_pr_webhook_merged_does_not_set_pr_url(fresh_db):
@@ -258,7 +258,7 @@ def test_pr_webhook_merged_does_not_set_pr_url(fresh_db):
     from db import repository as repo
 
     issue = asyncio.run(repo.get_issue("issue-wh-1"))
-    assert issue["pr_url"] is None
+    assert issue["prUrl"] is None
 
 
 def test_pr_webhook_unknown_job(fresh_db):
