@@ -15,9 +15,8 @@
 #   3. Find one pending cycle report (or create + dispatch one if
 #      none). Record audit_logs count for that report.
 #   4. POST /cycle-reports/{id}/review with decision=approved.
-#   5. GET /audit-logs?resource=cycle_report&resource_id={id} and
-#      assert the row exists with the expected action + decision
-#      captured in `details`.
+#   5. GET /audit-logs?resource_id={id} and assert the row exists
+#      with the expected action + decision captured in `details`.
 #   6. GET /audit-logs?action=cycle_report.review — assert at least
 #      one row exists across the board (sanity that the action
 #      label is searchable).
@@ -147,11 +146,11 @@ fi
 
 # --- 5. assert audit_logs row landed ----------------------------------------
 step "5. verifying audit_logs row for the review"
-# /audit-logs accepts action / resource / date range / q (keyword).
-# We don't have a dedicated resource_id filter; q matches against
-# resource_id column via ILIKE, which is enough for a unique id.
+# /audit-logs accepts action / resource / resource_id / date range / q (keyword).
+# We use the dedicated resource_id filter for an exact match on the cycle
+# report id.
 AUDIT_JSON="$(curl -fsS -H "Authorization: Bearer $LEADER_TOKEN" \
-  "$BACKEND_URL/api/v1/audit-logs?action=cycle_report.review&q=$REPORT_ID&limit=5")" \
+  "$BACKEND_URL/api/v1/audit-logs?action=cycle_report.review&resource_id=$REPORT_ID&limit=5")" \
   || fail "fetch audit-logs"
 
 # The response shape is {"entries": [...], "total": N} or similar;

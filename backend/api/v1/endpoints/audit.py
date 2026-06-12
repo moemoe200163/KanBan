@@ -104,6 +104,7 @@ def _audit_to_dict(entry: AuditLog) -> dict:
 async def list_audit_logs(
     action: Optional[str] = Query(None, description="Filter by action type"),
     resource: Optional[str] = Query(None, description="Filter by resource type"),
+    resource_id: Optional[str] = Query(None, description="Exact match on resource_id column"),
     date_from: Optional[str] = Query(None, description="ISO 8601 start time (inclusive)"),
     date_to: Optional[str] = Query(None, description="ISO 8601 end time (inclusive)"),
     q: Optional[str] = Query(None, description="Keyword search across action, resource, resource_id, agent_name"),
@@ -124,6 +125,8 @@ async def list_audit_logs(
                 stmt = stmt.where(AuditLog.action == action)
             if resource:
                 stmt = stmt.where(AuditLog.resource == resource)
+            if resource_id:
+                stmt = stmt.where(AuditLog.resource_id == resource_id)
             if parsed_from:
                 stmt = stmt.where(AuditLog.timestamp >= parsed_from)
             if parsed_to:
@@ -148,6 +151,8 @@ async def list_audit_logs(
                 count_stmt = count_stmt.where(AuditLog.action == action)
             if resource:
                 count_stmt = count_stmt.where(AuditLog.resource == resource)
+            if resource_id:
+                count_stmt = count_stmt.where(AuditLog.resource_id == resource_id)
             if parsed_from:
                 count_stmt = count_stmt.where(AuditLog.timestamp >= parsed_from)
             if parsed_to:
