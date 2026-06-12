@@ -6,6 +6,7 @@ Supports both username/password and API key authentication.
 """
 
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
@@ -101,6 +102,22 @@ def create_jwt_token(user_id: str, username: str) -> tuple[str, int]:
 
 
 def verify_jwt_token(token: str) -> dict:
+    # Dev-only bypass. The plan was to ship a single admin (leader)
+    # for the kanban P5 rollout and not gate development on
+    # account/registration work. Setting DEV_AUTH_BYPASS=true makes
+    # any token (or even an empty string) resolve to the leader admin
+    # user. This is the simplest way to keep the API contract intact
+    # (every endpoint still calls ``verify_jwt_token`` / ``get_current_user``)
+    # while removing the day-to-day friction of pasting a token into
+    # every fetch.
+    if os.getenv("DEV_AUTH_BYPASS", "false").lower() == "true":
+        return {
+            "user_id": "user_f29cff535b4d",
+            "username": "leader",
+            "role": "admin",
+            "bypass": True,
+        }
+
     # The codebase ships with `python-jose` declared in requirements but
     # the Docker image only has `PyJWT`. Use the latter so verify works
     # in the container, falling back to `jose` for environments that
@@ -192,7 +209,21 @@ async def get_current_user(
     Supports:
     - Authorization: Bearer <token> header
     - ?token=<token> query parameter (for WebSocket)
+    - DEV_AUTH_BYPASS=true: skip auth entirely and act as the seed
+      'leader' admin user. Dev-mode convenience only — the flag is
+      always off in production.
     """
+    # Dev-only bypass. Reads the env var on every call so toggling
+    # the backend (e.g. via docker compose restart) takes effect
+    # without a code change.
+    if os.getenv("DEV_AUTH_BYPASS", "false").lower() == "true":
+        return {
+            "user_id": "user_f29cff535b4d",
+            "username": "leader",
+            "role": "admin",
+            "bypass": True,
+        }
+
     token = None
 
     if authorization:

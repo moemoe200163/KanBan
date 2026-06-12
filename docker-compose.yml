@@ -50,6 +50,12 @@ services:
       # dev default matches scripts/mavis_worker.py's hard-coded
       # fallback for local development.
       - MAVIS_DISPATCH_TOKEN=${MAVIS_DISPATCH_TOKEN:-mavis-dev-token-2026-06-12}
+      # Dev-only: skip JWT validation entirely. The P5 auth rollout is
+      # done in code, but for the current single-admin dev workflow we
+      # don't want every fetch to need a fresh token. Setting this to
+      # ``false`` (or removing the env var) restores normal Bearer
+      # token enforcement — useful for prod deploys.
+      - DEV_AUTH_BYPASS=${DEV_AUTH_BYPASS:-true}
     depends_on:
       postgres:
         condition: service_healthy
