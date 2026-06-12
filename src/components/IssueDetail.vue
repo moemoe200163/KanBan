@@ -12,12 +12,26 @@ import {
 import draggable from 'vuedraggable'
 import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
+import DeliveryStageBar from './DeliveryStageBar.vue'
+import NextCommandHint from './NextCommandHint.vue'
 
 const boardStore = useBoardStore()
 const { fetchRunsByJobId, fetchRunLogs } = useRuntime()
 
 const issue = computed(() => boardStore.selectedIssue)
 const activeTab = computed(() => boardStore.activeDetailTab)
+
+// All ECC jobs for the currently selected issue — used by the
+// Delivery Orchestrator visual overlay (DeliveryStageBar +
+// NextCommandHint) so the 6-stage progress bar reflects the
+// full job history, not just the latest one.
+const issueJobs = computed(() => {
+  if (!issue.value) return []
+  return boardStore.jobs
+    .filter(job => job.issue_id === issue.value?.id)
+    .slice()
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+})
 const currentJob = computed(() => {
   if (!issue.value) return null
   if (boardStore.selectedJob?.issue_id === issue.value.id) return boardStore.selectedJob
@@ -994,6 +1008,23 @@ const unarchiveIssue = async () => {
             </div>
           </div>
 
+          <!-- Delivery Orchestrator visual overlay (roadmap §16) -->
+          <div class="issue-detail__delivery" data-testid="issue-delivery-overlay">
+            <div class="issue-detail__delivery-head">
+              <span class="issue-detail__delivery-title">Delivery pipeline</span>
+              <span class="issue-detail__delivery-sub">Visual overlay — backend status unchanged</span>
+            </div>
+            <DeliveryStageBar
+              :jobs="issueJobs"
+              :issue-status="issue?.status ?? null"
+              variant="full"
+            />
+            <NextCommandHint
+              :jobs="issueJobs"
+              :issue-status="issue?.status ?? null"
+            />
+          </div>
+
           <!-- Tabs -->
           <div class="issue-detail__tabs">
             <button
@@ -1943,6 +1974,39 @@ const unarchiveIssue = async () => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+
+/* Delivery Orchestrator visual overlay (roadmap §16).
+   Sits between the header and the tab strip so the user sees
+   the 6-stage progress as soon as they open an issue, before
+   clicking into ECC Logs. */
+.issue-detail__delivery {
+  padding: var(--space-3) var(--space-5);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--hairline-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.issue-detail__delivery-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.issue-detail__delivery-title {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--body-strong);
+}
+.issue-detail__delivery-sub {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--muted-soft);
+  font-style: italic;
 }
 
 .issue-detail__key {
