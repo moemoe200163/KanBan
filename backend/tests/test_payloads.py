@@ -314,10 +314,10 @@ class TestDeliveryPayload:
 # ---- Registry integrity ----------------------------------------------------
 
 class TestLanePayloadsRegistry:
-    def test_all_eight_lanes_registered(self):
+    def test_all_nine_lanes_registered(self):
         assert set(LANE_PAYLOADS.keys()) == {
             "triage", "product", "architect", "frontend",
-            "backend", "qa", "review", "delivery",
+            "backend", "qa", "review", "delivery", "mavis",
         }
 
     def test_all_schemas_inherit_base(self):

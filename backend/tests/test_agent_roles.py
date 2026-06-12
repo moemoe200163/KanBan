@@ -458,21 +458,21 @@ def empty_db(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 1. Seed creates 8 system roles when DB empty
+# 1. Seed creates 9 system roles when DB empty
 # ---------------------------------------------------------------------------
 
 class TestSeedDefaultRoles:
-    def test_seed_creates_eight_roles(self, empty_db):
-        """seed_default_roles() creates 8 system roles in an empty DB."""
+    def test_seed_creates_nine_roles(self, empty_db):
+        """seed_default_roles() creates 9 system roles in an empty DB (Plan C added mavis)."""
         count = asyncio.run(repo.seed_default_roles())
-        assert count == 8
+        assert count == 9
 
-        # Verify all 8 keys exist
+        # Verify all 9 keys exist
         roles = asyncio.run(repo.list_agent_roles())
         keys = {r["key"] for r in roles}
         assert keys == {
             "triage", "product", "architect", "frontend",
-            "backend", "qa", "review", "delivery",
+            "backend", "qa", "review", "delivery", "mavis", "mavis",
         }
         # All should be system roles
         for r in roles:
@@ -485,34 +485,34 @@ class TestSeedDefaultRoles:
 # ---------------------------------------------------------------------------
 
 class TestSeedIdempotent:
-    def test_seed_idempotent(self, fresh_db):
-        """Calling seed_default_roles() twice still results in 8 roles."""
+    def test_seed_idempotent_nine(self, fresh_db):
+        """Calling seed_default_roles() twice still results in 9 roles."""
         # fresh_db already seeded once
         count2 = asyncio.run(repo.seed_default_roles())
         assert count2 == 0  # no new rows inserted
 
         roles = asyncio.run(repo.list_agent_roles())
-        assert len(roles) == 8
+        assert len(roles) == 9
 
 
 # ---------------------------------------------------------------------------
-# 3. GET /api/v1/agent-roles returns 8 roles (auth required)
+# 3. GET /api/v1/agent-roles returns 9 roles (auth required)
 # ---------------------------------------------------------------------------
 
 class TestListAgentRoles:
-    def test_list_returns_eight_roles(self, fresh_db):
-        """GET /api/v1/agent-roles returns 8 default system roles."""
+    def test_list_returns_nine_roles(self, fresh_db):
+        """GET /api/v1/agent-roles returns 9 default system roles (Plan C added mavis)."""
         client = fresh_db["client"]
         headers = fresh_db["admin_headers"]
         resp = client.get("/api/v1/agent-roles", headers=headers)
         assert resp.status_code == 200
         body = resp.json()
         assert "roles" in body
-        assert len(body["roles"]) == 8
+        assert len(body["roles"]) == 9
         keys = {r["key"] for r in body["roles"]}
         assert keys == {
             "triage", "product", "architect", "frontend",
-            "backend", "qa", "review", "delivery",
+            "backend", "qa", "review", "delivery", "mavis", "mavis",
         }
 
     def test_list_requires_auth(self, fresh_db):
@@ -521,13 +521,13 @@ class TestListAgentRoles:
         resp = client.get("/api/v1/agent-roles")
         assert resp.status_code == 401
 
-    def test_member_can_list_roles(self, fresh_db):
+    def test_member_can_list_nine_roles(self, fresh_db):
         """GET /api/v1/agent-roles is accessible to non-admin members."""
         client = fresh_db["client"]
         headers = fresh_db["member_headers"]
         resp = client.get("/api/v1/agent-roles", headers=headers)
         assert resp.status_code == 200
-        assert len(resp.json()["roles"]) == 8
+        assert len(resp.json()["roles"]) == 9
 
 
 # ---------------------------------------------------------------------------
@@ -805,7 +805,7 @@ class TestLanesBackwardCompatible:
         assert resp.status_code == 200
         keys = {lane["key"] for lane in resp.json()["lanes"]}
         assert "delivery" not in keys
-        assert len(keys) == 7
+        assert len(keys) == 8
 
 
 # ---------------------------------------------------------------------------

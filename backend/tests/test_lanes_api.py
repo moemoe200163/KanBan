@@ -71,7 +71,7 @@ def fresh_db():
         pass
 
 
-def test_get_lanes_returns_eight_lanes(fresh_db):
+def test_get_lanes_returns_nine_lanes(fresh_db):
     response = fresh_db.get("/api/v1/lanes")
     assert response.status_code == 200
     body = response.json()
@@ -79,7 +79,7 @@ def test_get_lanes_returns_eight_lanes(fresh_db):
     keys = {lane["key"] for lane in body["lanes"]}
     assert keys == {
         "triage", "product", "architect", "frontend",
-        "backend", "qa", "review", "delivery",
+        "backend", "qa", "review", "delivery", "mavis",
     }
     # every lane exposes the fields the Lane Matrix needs
     for lane in body["lanes"]:

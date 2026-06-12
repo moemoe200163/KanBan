@@ -59,11 +59,11 @@ EXPECTED_LANES = {
     "backend",
     "qa",
     "review",
-    "delivery",
+    "delivery", "mavis",
 }
 
 
-def test_worker_lanes_registry_contains_eight_lanes():
+def test_worker_lanes_registry_contains_nine_lanes():
     assert set(WORKER_LANES.keys()) == EXPECTED_LANES
     for key, lane in WORKER_LANES.items():
         assert lane.key == key
