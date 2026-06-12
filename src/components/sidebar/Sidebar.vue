@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useBoardStore } from '~/stores/board'
+import { useBoardListStore } from '~/stores/boardList'
 import { useNotificationsStore } from '~/stores/notifications'
 import { useDarkMode } from '~/composables/useDarkMode'
 import { useRecentJobs } from '~/composables/useRecentJobs'
@@ -32,6 +33,7 @@ import {
 } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
+const boardListStore = useBoardListStore()
 const notificationsStore = useNotificationsStore()
 const { isDark, toggleDark } = useDarkMode()
 const router = useRouter()
@@ -41,6 +43,30 @@ const isCollapsed = ref(false)
 const emit = defineEmits<{ collapsed: [value: boolean]; navigate: [] }>()
 
 watch(isCollapsed, (val) => emit('collapsed', val), { immediate: true })
+
+// -------------------------------------------------------------------------
+// Board selector
+//
+// The list of boards comes from /api/v1/boards (Issue.distinct(board_id)
+// on the backend). We hydrate on mount and on every login change. The
+// selector only renders when we actually have something to choose from,
+// so logged-out visitors and single-board deployments keep the old,
+// single-board sidebar untouched.
+// -------------------------------------------------------------------------
+onMounted(() => {
+  void boardListStore.fetchBoards()
+})
+
+const onSelectBoard = (event: Event) => {
+  const target = event.target as HTMLSelectElement | null
+  if (!target) return
+  const nextId = boardListStore.setActive(target.value)
+  target.value = nextId
+  // Refetch the board so the columns refresh. The board store reads
+  // activeBoardId from boardListStore inside fetchBoard, so we don't
+  // have to thread the id through.
+  void boardStore.fetchBoard()
+}
 
 // Auto-collapse to icon rail on tablet widths
 onMounted(() => {
@@ -292,6 +318,45 @@ const toggleCollapse = () => {
     <button class="sidebar__collapse-btn" @click="toggleCollapse" aria-label="Toggle sidebar">
       <component :is="isCollapsed ? ChevronRight : ChevronDown" :size="16" />
     </button>
+
+    <!-- Board selector — hidden when there's nothing to pick. Single
+         boards, logged-out visitors, and a not-yet-hydrated list all
+         keep the old single-board sidebar. -->
+    <div
+      v-show="boardListStore.boards.length > 1"
+      class="sidebar__board-selector"
+      :class="{ 'sidebar__board-selector--collapsed': isCollapsed }"
+      data-testid="sidebar-board-selector"
+    >
+      <label
+        v-show="!isCollapsed"
+        class="sidebar__board-selector-label"
+        for="sidebar-board-select"
+      >
+        Board
+      </label>
+      <select
+        id="sidebar-board-select"
+        class="sidebar__board-select"
+        :class="{ 'sidebar__board-select--collapsed': isCollapsed }"
+        :value="boardListStore.activeBoardId"
+        :disabled="boardListStore.isLoading"
+        :title="isCollapsed
+          ? boardListStore.boards.find(b => b.id === boardListStore.activeBoardId)?.name ?? 'Board'
+          : undefined"
+        aria-label="Select board"
+        data-testid="sidebar-board-select"
+        @change="onSelectBoard"
+      >
+        <option
+          v-for="board in boardListStore.boards"
+          :key="board.id"
+          :value="board.id"
+        >
+          {{ board.name }} ({{ board.issueCount }})
+        </option>
+      </select>
+    </div>
 
     <div class="sidebar__content">
       <!-- Navigation -->
@@ -628,6 +693,87 @@ const toggleCollapse = () => {
 .sidebar__collapse-btn:hover {
   color: var(--sidebar-text);
   background: var(--sidebar-panel);
+}
+
+/* Board selector — sits between the brand and the navigation so it
+   reads as "which workspace am I in?" before the operator chooses
+   where to go. */
+.sidebar__board-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 8px 10px;
+  background: var(--sidebar-panel);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+}
+
+.sidebar__board-selector--collapsed {
+  gap: 0;
+  align-items: center;
+  padding: 6px;
+  margin-bottom: 12px;
+}
+
+.sidebar__board-selector-label {
+  color: var(--sidebar-muted);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sidebar__board-select {
+  appearance: none;
+  width: 100%;
+  padding: 6px 28px 6px 8px;
+  color: var(--sidebar-text);
+  background: var(--sidebar-surface);
+  background-image: linear-gradient(45deg, transparent 50%, var(--sidebar-muted) 50%),
+                    linear-gradient(135deg, var(--sidebar-muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              background-color var(--duration-fast) var(--ease-out);
+}
+
+.sidebar__board-select:hover {
+  border-color: var(--sidebar-muted);
+}
+
+.sidebar__board-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.sidebar__board-select:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+/* In collapsed (icon-rail) mode the select only needs the icon
+   affordance — strip the padding and let the background match the
+   surrounding rail. */
+.sidebar__board-select--collapsed {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  background-image: none;
+  text-indent: -9999px;
+  text-overflow: clip;
+}
+
+.sidebar__board-select option {
+  color: var(--sidebar-text);
+  background: var(--sidebar-bg);
 }
 
 /* Content */
