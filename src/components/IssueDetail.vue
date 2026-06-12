@@ -16,6 +16,7 @@ import DeliveryStageBar from './DeliveryStageBar.vue'
 import NextCommandHint from './NextCommandHint.vue'
 import WorkerIdentity from './WorkerIdentity.vue'
 import IssueDeliverables from './IssueDeliverables.vue'
+import { useIssueDetailLive } from '~/composables/useIssueDetailLive'
 
 const boardStore = useBoardStore()
 const { fetchRunsByJobId, fetchRunLogs } = useRuntime()
@@ -56,6 +57,40 @@ const runDetails = ref<Map<string, { status: string; worker: string }>>(new Map(
 // server-side, or when the operator clicks the "Refresh" button
 // on the section). Just a counter — no real state.
 const deliverablesRefreshKey = ref(0)
+
+// Plan F: a tiny "Updating…" chip that lights up for ~1.2s when
+// the live WS nudges us. Surfaces the "this is auto-refreshing"
+// behaviour without overlaying an annoying spinner on every
+// server push.
+const isLiveUpdating = ref(false)
+let liveUpdatingTimer: ReturnType<typeof setTimeout> | null = null
+function flashLiveUpdating() {
+  isLiveUpdating.value = true
+  if (liveUpdatingTimer) clearTimeout(liveUpdatingTimer)
+  liveUpdatingTimer = setTimeout(() => {
+    isLiveUpdating.value = false
+    liveUpdatingTimer = null
+  }, 1200)
+}
+
+// Plan F: subscribe to /ws/issues for the currently open issue.
+// On any "issue_updated" nudge we (a) bump the deliverables refresh
+// key so IssueDeliverables refetches, and (b) refetch jobs (which
+// the Worker tab / status pill / Delivery Stage bar all read).
+useIssueDetailLive({
+  issueId: () => issue.value?.id ?? null,
+  onUpdate: (change) => {
+    flashLiveUpdating()
+    deliverablesRefreshKey.value++
+    // Mavis event landed — the job.events list just grew. The
+    // board store keeps jobs in a flat array, so a fetchJobs()
+    // call updates both the IssueDetail's currentJob computed
+    // and any IssueCard on the board still showing the old status.
+    if (change === 'event' || change === 'cycle_report_pass') {
+      void boardStore.fetchJobs()
+    }
+  },
+})
 
 const timelineLogs = computed<ECCLogEntry[]>(() => {
   const jobLogs = currentJob.value
@@ -1021,6 +1056,11 @@ const unarchiveIssue = async () => {
             <div class="issue-detail__delivery-head">
               <span class="issue-detail__delivery-title">Delivery pipeline</span>
               <span class="issue-detail__delivery-sub">Visual overlay — backend status unchanged</span>
+              <span
+                v-if="isLiveUpdating"
+                class="issue-detail__delivery-pulse"
+                data-testid="live-updating-chip"
+              >Updating…</span>
             </div>
             <DeliveryStageBar
               :jobs="issueJobs"
@@ -2048,6 +2088,21 @@ const unarchiveIssue = async () => {
   font-size: 10px;
   color: var(--muted-soft);
   font-style: italic;
+}
+
+.issue-detail__delivery-pulse {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 10px;
+  color: var(--accent, #60a5fa);
+  animation: issue-detail-pulse 1.2s ease-in-out;
+  font-weight: 600;
+}
+@keyframes issue-detail-pulse {
+  0% { opacity: 0; transform: translateY(-2px); }
+  20% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .issue-detail__key {

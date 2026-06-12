@@ -2,12 +2,19 @@
 import { useBoardStore } from '~/stores/board'
 import { useToast } from '~/composables/useToast'
 import { authHeaders } from '~/utils/authHeaders'
+import { useBoardLive } from '~/composables/useBoardLive'
 import type { Issue, IssueStatus } from '~/types'
 import { COLUMN_CONFIG } from '~/types'
 import { Bot, Filter, Plus, Search, SlidersHorizontal, Wifi } from 'lucide-vue-next'
 
 const boardStore = useBoardStore()
 const toast = useToast()
+
+// Plan F: mount the board-wide live channel. Any issue_updated
+// nudge received over /ws/issues triggers a full board refetch.
+// The composable owns its own WS connection and re-syncs the
+// subscribe set whenever boardStore.columns changes.
+useBoardLive()
 
 const searchQuery = ref('')
 const selectedStatus = ref<IssueStatus | 'all'>('all')
