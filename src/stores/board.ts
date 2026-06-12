@@ -935,7 +935,7 @@ Please address each comment above. Focus on: ${[...new Set(focusAreas)].join(', 
       this.selectedJob = null
     },
 
-    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles') {
+    setDetailTab(tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles' | 'worker') {
       this.activeDetailTab = tab
     },
 

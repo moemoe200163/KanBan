@@ -14,6 +14,7 @@ import IssueCollaborationTab from './IssueCollaborationTab.vue'
 import HandoffSection from './lane/HandoffSection.vue'
 import DeliveryStageBar from './DeliveryStageBar.vue'
 import NextCommandHint from './NextCommandHint.vue'
+import WorkerIdentity from './WorkerIdentity.vue'
 
 const boardStore = useBoardStore()
 const { fetchRunsByJobId, fetchRunLogs } = useRuntime()
@@ -91,7 +92,7 @@ const close = () => {
   boardStore.closeDetail()
 }
 
-const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles') => {
+const setTab = (tab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles' | 'worker') => {
   boardStore.setDetailTab(tab)
 }
 
@@ -1077,6 +1078,20 @@ const unarchiveIssue = async () => {
                 {{ cycleReports.length }}
               </span>
             </button>
+            <button
+              :class="['issue-detail__tab', { 'issue-detail__tab--active': activeTab === 'worker' }]"
+              @click="setTab('worker')"
+              data-testid="tab-worker"
+            >
+              Worker
+              <span
+                v-if="currentJob && (currentJob.status === 'running' || currentJob.status === 'queued' || currentJob.status === 'paused')"
+                class="issue-detail__tab-badge issue-detail__tab-badge--live"
+                data-testid="tab-worker-live"
+              >
+                live
+              </span>
+            </button>
           </div>
 
           <!-- Tab Content -->
@@ -1844,11 +1859,19 @@ const unarchiveIssue = async () => {
                    </article>
                  </div>
                </div>
-             </div>
-           </div>
-         </div>
-       </div>
-     </Transition>
+              </div>
+            </div>
+            <!-- Worker Tab -->
+            <div v-if="activeTab === 'worker'" class="issue-detail__tab-pane" data-testid="tab-pane-worker">
+              <WorkerIdentity
+                :issue="issue"
+                :job="currentJob"
+                :role-timeout-seconds="1800"
+              />
+            </div>
+          </div>
+        </div>
+      </Transition>
 
      <!-- Link-to-epic picker (modal). Lists root epics on the
           same board, excludes the current issue and its
