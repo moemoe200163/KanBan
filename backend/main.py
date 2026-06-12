@@ -199,6 +199,14 @@ app.add_middleware(
         "http://127.0.0.1:3010",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        # Dev-only: when the frontend is served by the
+        # devflow-nginx container on port 80 (no explicit port in
+        # the URL), the browser origin is just ``http://127.0.0.1``.
+        # Without this entry every fetch from the nginx-served
+        # frontend is rejected. Port 80 only — production deploys
+        # behind a real domain should override the full list.
+        "http://127.0.0.1",
+        "http://localhost",
     ],
     allow_credentials=True,
     allow_methods=["*"],
