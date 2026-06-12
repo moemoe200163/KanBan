@@ -9,6 +9,7 @@
 FROM node:20-alpine AS frontend
 
 ARG NUXT_PUBLIC_API_BASE=http://backend:8000/api/v1
+ARG NUXT_PUBLIC_E2E=0
 
 WORKDIR /app
 
@@ -27,6 +28,7 @@ COPY . .
 
 # Set env for build (Nuxt evaluates this at build time)
 ENV NUXT_PUBLIC_API_BASE=${NUXT_PUBLIC_API_BASE}
+ENV NUXT_PUBLIC_E2E=${NUXT_PUBLIC_E2E}
 
 # Build the Nuxt application from a clean slate.
 RUN npm run build

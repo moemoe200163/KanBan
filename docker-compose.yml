@@ -12,12 +12,14 @@ services:
       target: frontend
       args:
         - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+        - NUXT_PUBLIC_E2E=1
     container_name: devflow-frontend
     ports:
       - "3010:3010"
     environment:
       - NODE_ENV=production
       - NUXT_PUBLIC_API_BASE=http://127.0.0.1:8000/api/v1
+      - NUXT_PUBLIC_E2E=1
       - NITRO_PORT=3010
     depends_on:
       - backend
