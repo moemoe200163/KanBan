@@ -72,7 +72,15 @@ def get_token_expiry_hours() -> int:
 
 
 def create_jwt_token(user_id: str, username: str) -> tuple[str, int]:
-    from jose import jwt
+    # Symmetric with verify_jwt_token: prefer PyJWT (the library actually
+    # installed in the Docker image) and fall back to python-jose for
+    # environments that have it. Without this fallback, the login endpoint
+    # crashes with ``ModuleNotFoundError: No module named 'jose'`` whenever
+    # the operator tries to obtain a fresh token from the UI.
+    try:
+        import jwt as _pyjwt  # type: ignore
+    except ImportError:  # pragma: no cover - jose fallback path
+        from jose import jwt as _pyjwt  # type: ignore
 
     secret = get_jwt_secret()
     algorithm = get_jwt_algorithm()
@@ -88,7 +96,7 @@ def create_jwt_token(user_id: str, username: str) -> tuple[str, int]:
         "type": "access"
     }
 
-    token = jwt.encode(payload, secret, algorithm=algorithm)
+    token = _pyjwt.encode(payload, secret, algorithm=algorithm)
     return token, expires_in
 
 
