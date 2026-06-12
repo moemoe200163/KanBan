@@ -4,6 +4,12 @@ const isCI = !!process.env.CI
 
 export default defineConfig({
   testDir: '.',
+  // Exclude the smoke suite — it has its own config (e2e/smoke.config.ts)
+  // and its own npm script (npm run e2e:smoke). Mixing them into the
+  // destructive full suite would mean smoke checks run against a
+  // pre-reset / devflow_e2e DB, which is not what the smoke gate is
+  // for.
+  testIgnore: ['**/smoke.spec.ts', '**/smoke.config.ts'],
   timeout: 30_000,
   expect: {
     timeout: 8_000
