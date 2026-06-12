@@ -35,3 +35,6 @@ file::memory:
 .agents/
 skills-lock.json
 backend/scripts/snake_game.py
+.verify-*.mjs
+.probe-cc.mjs
+.mavis/
