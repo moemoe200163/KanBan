@@ -25,16 +25,18 @@ export function useAuth() {
     authChecked.value = false
     // Re-read cookie each time to get the current token value (not a snapshot)
     const currentToken = useCookie('auth_token').value
-    if (!currentToken) {
-      authUser.value = null
-      authChecked.value = true
-      return
-    }
     isLoading.value = true
     try {
-      const res = await fetch(`${config.public.apiBase}/auth/me`, {
-        headers: { Authorization: `Bearer ${currentToken}` },
-      })
+      // Hit /me with the token if we have one. In dev mode the
+      // backend's anonymous-WS / dev-bypass path also accepts an
+      // unauthenticated /me and returns the seeded leader admin
+      // user, so calling without an Authorization header is fine
+      // and lets the dev flow light up admin-only UI without any
+      // login dance.
+      const headers: Record<string, string> = currentToken
+        ? { Authorization: `Bearer ${currentToken}` }
+        : {}
+      const res = await fetch(`${config.public.apiBase}/auth/me`, { headers })
       if (res.ok) {
         const data = await res.json()
         authUser.value = { id: data.id, username: data.username, role: data.role ?? null }
