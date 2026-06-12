@@ -6,6 +6,7 @@ import { useDependencyGraph } from '~/composables/useDependencyGraph'
 import { useFeedbackLoop } from '~/composables/useFeedbackLoop'
 import { useKanbanProtocol } from '~/composables/useKanbanProtocol'
 import { authHeaders } from '~/utils/authHeaders'
+import { DEFAULT_BOARD_ID, useBoardListStore } from '~/stores/boardList'
 
 // Helper to read cookie directly (works in Pinia actions where useCookie may not)
 function getCookie(name: string): string | null {
@@ -199,15 +200,27 @@ export const useBoardStore = defineStore('board', {
         // The sidebar's "Show archived" toggle persists its
         // choice to localStorage; the store reads the same key so
         // the two stay in sync without prop-drilling.
-        let includeArchived = ''
+        let archivedSuffix = ''
         if (typeof window !== 'undefined') {
           try {
             if (localStorage.getItem('devflow:showArchived') === '1') {
-              includeArchived = '?include_archived=1'
+              archivedSuffix = 'include_archived=1'
             }
           } catch { /* localStorage unavailable */ }
         }
-        const boardData = await $fetch<{ columns: Array<{ id: IssueStatus; title: string; color: string; issues: Issue[] }> }>(`${config.public.apiBase}/board${includeArchived}`)
+        // The board selector writes the active board id into the
+        // boardList store. We read it here so a single ``fetchBoard``
+        // call always hits the right board — no extra prop-drilling
+        // required from the sidebar, and the existing callers
+        // (pages, watcher on showArchived, the WS bootstrap path)
+        // keep working unchanged.
+        const boardList = useBoardListStore()
+        const activeId = boardList.activeBoardId || DEFAULT_BOARD_ID
+        const params = new URLSearchParams()
+        params.set('board_id', activeId)
+        if (archivedSuffix) params.set('include_archived', '1')
+        const query = params.toString() ? `?${params.toString()}` : ''
+        const boardData = await $fetch<{ columns: Array<{ id: IssueStatus; title: string; color: string; issues: Issue[] }> }>(`${config.public.apiBase}/board${query}`)
         if (!boardData || !Array.isArray(boardData.columns)) {
           console.error('[BoardStore] /board returned malformed payload:', boardData)
           this.columns = []
