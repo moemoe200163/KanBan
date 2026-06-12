@@ -239,6 +239,96 @@ async def list_issues(
         return []
 
 
+async def list_boards() -> List[dict]:
+    """Return every distinct board id present in the ``Issue`` table.
+
+    There is no dedicated ``boards`` registry — the sidebar selector
+    derives the available boards from whatever issues actually carry a
+    ``board_id``. Each entry includes a live issue count so the UI can
+    surface board size at a glance without a second round-trip.
+
+    The list always contains ``DEFAULT_BOARD_ID`` even if no issues
+    have been created yet, so a freshly seeded database still gives
+    the operator something to switch to.
+
+    Result shape: ``[{"id": str, "name": str, "issueCount": int}, ...]``
+    sorted by ``issueCount`` desc, then by id asc for stability.
+    """
+    try:
+        await _ensure_init()()
+        async with _get_sessionmaker()() as session:
+            # GROUP BY board_id with a count, so we get both fields in
+            # one query. Includes zero-count boards by unioning the
+            # default id in Python (cheaper than a separate SELECT
+            # against an empty table).
+            stmt = (
+                select(
+                    IssueModel.board_id,
+                    func.count(IssueModel.id),
+                )
+                .group_by(IssueModel.board_id)
+            )
+            result = await session.execute(stmt)
+            rows = result.all()
+
+            seen_ids: set[str] = set()
+            entries: List[dict] = []
+            for board_id, count in rows:
+                # Skip None / empty board ids defensively — the model
+                # default makes this a no-op in practice, but a
+                # half-migrated row shouldn't crash the selector.
+                if not board_id:
+                    continue
+                seen_ids.add(board_id)
+                entries.append({
+                    "id": board_id,
+                    "name": _board_display_name(board_id),
+                    "issueCount": int(count or 0),
+                })
+
+            # Make sure the default board is always selectable, even
+            # on a freshly created database that has no issues yet.
+            if DEFAULT_BOARD_ID not in seen_ids:
+                entries.append({
+                    "id": DEFAULT_BOARD_ID,
+                    "name": _board_display_name(DEFAULT_BOARD_ID),
+                    "issueCount": 0,
+                })
+
+            entries.sort(key=lambda e: (-e["issueCount"], e["id"]))
+            return entries
+    except Exception as e:
+        logger.warning(f"Failed to list boards: {e}")
+        return [{
+            "id": DEFAULT_BOARD_ID,
+            "name": _board_display_name(DEFAULT_BOARD_ID),
+            "issueCount": 0,
+        }]
+
+
+def _board_display_name(board_id: str) -> str:
+    """Render a human-readable label for a board id.
+
+    We do not have a dedicated ``display_name`` column, so we project
+    a stable, readable label from the id. Well-known ids get friendly
+    names; everything else falls back to the raw id. The mapping lives
+    here (not in the endpoint) so any future board-registry table can
+    override it without touching the API surface.
+    """
+    well_known = {
+        DEFAULT_BOARD_ID: "Default",
+        "board-dev": "Dev",
+        "board-staging": "Staging",
+        "board-demo": "Demo",
+    }
+    if board_id in well_known:
+        return well_known[board_id]
+    # Strip a leading "board-" prefix for readability if present.
+    if board_id.startswith("board-"):
+        return board_id[len("board-"):].replace("-", " ").title() or board_id
+    return board_id
+
+
 async def list_issue_children(parent_id: str) -> List[dict]:
     """All issues whose ``parent_id`` equals ``parent_id``.
 

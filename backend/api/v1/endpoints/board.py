@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from pydantic import BaseModel
 
@@ -6,6 +6,7 @@ from pydantic import BaseModel
 # import-time startup lightweight and resilient.
 from db import repository as repo
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 
@@ -84,6 +85,18 @@ class BoardStateResponse(BaseModel):
     columns: List[Column]
 
 
+class BoardSummary(BaseModel):
+    """One entry in the ``GET /api/v1/boards`` response.
+
+    Boards are derived from the issues table (no dedicated registry),
+    so the id, display name, and live issue count are the only fields
+    the UI needs to render the sidebar selector.
+    """
+    id: str
+    name: str
+    issueCount: int
+
+
 @router.get("/board", response_model=BoardStateResponse)
 async def get_board(
     board_id: str = Query(DEFAULT_BOARD_ID, description="Board to retrieve"),
@@ -100,7 +113,6 @@ async def get_board(
     try:
         assert_board_id_allowed(board_id)
     except LookupError as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(exc))
 
     issues = await repo.list_issues(board_id=board_id, include_archived=include_archived)
@@ -140,3 +152,22 @@ async def get_board(
     ]
 
     return BoardStateResponse(columns=columns)
+
+
+@router.get("/boards", response_model=List[BoardSummary])
+async def list_boards(
+    current_user: dict = Depends(require_auth),
+) -> List[BoardSummary]:
+    """List every board the operator can switch to.
+
+    Boards are inferred from ``Issue.distinct(board_id)`` — see
+    :func:`db.repository.list_boards` — so any board that has at least
+    one issue shows up. ``DEFAULT_BOARD_ID`` is always included even
+    on a fresh database so the selector has something to render.
+
+    Requires authentication: a future multi-tenant deployment will
+    need to filter this list per-user, so we lock it down now and
+    avoid an unannounced behaviour change later.
+    """
+    rows = await repo.list_boards()
+    return [BoardSummary(**row) for row in rows]

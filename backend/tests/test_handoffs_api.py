@@ -142,8 +142,13 @@ def test_get_one_handoff(fresh_db):
 
 
 def test_unknown_board_id_returns_404(fresh_db):
+    # After the multi-board relaxation, the board scope check rejects
+    # syntactically invalid ids (empty / whitespace / overlong) rather
+    # than a hard-coded allowlist. An empty path segment surfaces as
+    # a 404 from FastAPI's path matcher; whitespace and overlong ids
+    # come back as 404 from the _check_board guard.
     response = client.get(
-        "/api/v1/boards/some-other-board/issues/issue-api-1/handoffs"
+        "/api/v1/boards/" + "x" * 200 + "/issues/issue-api-1/handoffs"
     )
     assert response.status_code == 404
 
