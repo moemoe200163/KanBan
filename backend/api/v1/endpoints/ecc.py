@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 from uuid import uuid4
+import os
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
@@ -22,8 +23,8 @@ VALID_COMMANDS = {
     "/release-ready --merge",
 }
 VALID_PROFILES = {"frontend", "backend", "security", "refactor", "debug", "general"}
-VALID_HARNESSES = {"safe-runner", "claude-code", "codex", "cursor", "opencode", "gemini"}
-VALID_EXECUTION_MODES = {"safe-runner", "api-agent", "cli-agent"}
+VALID_HARNESSES = {"safe-runner", "claude-code", "codex", "cursor", "opencode", "gemini", "mavis"}
+VALID_EXECUTION_MODES = {"safe-runner", "api-agent", "cli-agent", "shadow"}
 
 
 class ECCDispatchRequest(BaseModel):
@@ -396,6 +397,23 @@ async def dispatch_ecc_command(
     if effective_execution_mode in ("api-agent", "cli-agent") and not allow_real_llm:
         effective_execution_mode = "safe-runner"
 
+    # Plan C: shadow mode is a Mavis-specific execution path. Mavis is
+    # event-driven (the CLI pushes events into the ecc_jobs.events
+    # stream), so we do NOT spawn a background task or push the job
+    # into the orchestrator queue. The job sits in ``queued`` until
+    # the Mavis CLI writes its first event via
+    # ``POST /api/v1/ecc/jobs/{job_id}/events``. The harness check
+    # makes sure only harness=mavis jobs are allowed to take this
+    # path — anything else is treated as a misconfigured dispatch.
+    if effective_execution_mode == "shadow" and request.harness != "mavis":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"execution_mode=shadow requires harness=mavis, got "
+                f"harness={request.harness}"
+            ),
+        )
+
     now = _utc_now()
 
     # Build initial message based on execution mode
@@ -403,6 +421,10 @@ async def dispatch_ecc_command(
         initial_message = "Queued for safe runner execution"
     elif effective_execution_mode == "api-agent":
         initial_message = f"Queued for API agent execution (provider={request.provider or 'default'}, model={request.model or 'default'})"
+    elif effective_execution_mode == "shadow":
+        initial_message = (
+            f"Queued for Mavis shadow execution — waiting for CLI to push events"
+        )
     else:
         initial_message = f"Queued for CLI agent execution (harness={request.harness})"
 
@@ -444,6 +466,17 @@ async def dispatch_ecc_command(
     # MVP 2: Use effective execution mode
     if effective_execution_mode == "safe-runner":
         background_tasks.add_task(_execute_safe_runner, job.id)
+    elif effective_execution_mode == "shadow":
+        # Plan C: Mavis shadow mode is purely event-driven. The CLI is
+        # responsible for pushing events via the dedicated endpoint
+        # below. We deliberately do not spawn a background task or
+        # push the job into the orchestrator queue — both would
+        # create a phantom "worker" competing with the real Mavis
+        # process (which is the user's terminal session, not a
+        # long-running daemon). The job sits in ``queued`` with the
+        # initial message set above until the CLI writes its first
+        # event.
+        pass
     else:
         # Create an AgentRun in the runtime queue for the orchestrator.
         # The run sits in "pending" until a worker claims it.
@@ -588,6 +621,105 @@ async def cancel_ecc_job(job_id: str, current_user: dict = Depends(require_auth)
         )
 
     return updated_job
+
+
+# Plan C: Mavis shadow-worker event push endpoint.
+# ---------------------------------------------------------------------------
+# The Mavis CLI (running in the user's terminal session) is responsible
+# for telling the board what it's doing. Instead of opening a websocket
+# or polling, the CLI calls this endpoint to append an event to the
+# job's events stream and (optionally) transition the job's status.
+#
+# Auth model: a shared secret in the ``X-Mavis-Token`` header. The
+# secret is read from the ``MAVIS_DISPATCH_TOKEN`` environment variable
+# on the backend. The CLI is configured with the same value. We also
+# require that the job's harness is ``mavis`` — even with a valid
+# shared secret, this endpoint refuses to write to a job owned by a
+# different harness (defence in depth: the secret alone is not enough).
+# ---------------------------------------------------------------------------
+
+
+class MavisEventRequest(BaseModel):
+    status: ECCJobStatus = Field(
+        ...,
+        description="New job status after this event is applied",
+    )
+    message: str = Field(..., min_length=1, max_length=512)
+    metadata: Optional[dict] = Field(
+        default=None,
+        description="Optional structured metadata for the Worker tab UI",
+    )
+
+
+@router.post("/ecc/jobs/{job_id}/events")
+async def push_mavis_event(
+    job_id: str,
+    body: MavisEventRequest,
+    request: Request,
+):
+    """Plan C: Mavis CLI pushes a progress event into the ecc_jobs
+    events stream and transitions the job's status.
+
+    Authenticated by ``X-Mavis-Token`` matching the ``MAVIS_DISPATCH_TOKEN``
+    environment variable. The job's harness must be ``mavis``.
+    """
+    # Read the auth header from the raw Request — FastAPI's automatic
+    # parameter-to-header binding via ``x_mavis_token: Optional[str] = None``
+    # is unreliable for dashes/underscores in the header name. Reading
+    # directly from request.headers sidesteps the whole binding layer.
+    x_mavis_token = request.headers.get("x-mavis-token") or request.headers.get("X-Mavis-Token")
+
+    expected_token = os.getenv("MAVIS_DISPATCH_TOKEN")
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "MAVIS_DISPATCH_TOKEN not configured on the backend; "
+                "shadow-worker event push is disabled"
+            ),
+        )
+    if not x_mavis_token or x_mavis_token != expected_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Mavis-Token",
+        )
+
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=404, detail=f"ECC job '{job_id}' not found"
+        )
+
+    if job.harness != "mavis":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Refusing to write to non-mavis job: harness={job.harness}. "
+                f"This endpoint is for harness=mavis jobs only."
+            ),
+        )
+
+    if job.status in {"completed", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot push events to job in '{job.status}' state"
+            ),
+        )
+
+    # Append the event. We do this BEFORE _transition_job so the
+    # transition message is also captured as a structured event
+    # (the transition itself emits one — see _transition_job).
+    if body.metadata is not None:
+        # We don't persist arbitrary metadata yet (the events column
+        # is just timestamp/status/message). Stash a marker so the
+        # Worker tab UI can render the payload later.
+        event_message = f"{body.message} [+meta keys={','.join(body.metadata.keys())}]"
+    else:
+        event_message = body.message
+
+    updated = await _transition_and_persist(job, body.status, event_message)
+    return updated
 
 
 RETRYABLE_TERMINAL_STATUSES = {"failed", "cancelled", "review_required"}

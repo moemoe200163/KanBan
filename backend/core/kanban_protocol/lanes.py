@@ -144,6 +144,29 @@ WORKER_LANES: dict[str, WorkerLane] = {
         next_lanes=[],
         human_approval_required=True,
     ),
+    # Mavis — Plan C worker lane. Mavis is the user's AI assistant
+    # operating as a shadow worker: jobs are dispatched with
+    # harness="mavis" + execution_mode="shadow" and Mavis pushes
+    # events to the board via the mavis event endpoint instead of
+    # a long-running runner process. retry_policy="none" mirrors
+    # the "manual" semantics from the plan (Mavis decides whether
+    # to retry, not the lane), and human_approval_required=True
+    # because every Mavis-written job needs leader review before
+    # the issue can move to done.
+    "mavis": WorkerLane(
+        key="mavis",
+        display_name="Mavis",
+        description="Mavis orchestrator worker — handles bug fixes, refactors, and cross-cutting investigation as a shadow worker (events pushed by the Mavis CLI rather than a long-running runner).",
+        allowed_profiles=["general", "backend", "frontend", "refactor", "debug"],
+        default_provider="minimax",
+        default_model="MiniMax-M3",
+        allowed_commands=["/loop-start", "/loop-reset", "/harness-pause"],
+        timeout_seconds=3600,
+        retry_policy="none",
+        retry_max=0,
+        next_lanes=["qa", "review"],
+        human_approval_required=True,
+    ),
 }
 
 

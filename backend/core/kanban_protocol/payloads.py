@@ -67,6 +67,22 @@ class DeliveryPayload(CompletionPayloadBase):
     approver: str = Field(..., min_length=1)
 
 
+class MavisPayload(CompletionPayloadBase):
+    """Plan C: Mavis shadow-worker completion payload.
+
+    Mavis is event-driven, so this payload represents the structured
+    summary of what the Mavis CLI wrote into the ecc_jobs.events
+    stream before transitioning the job to ``completed``. The
+    ``narrative`` field is the 1-2 sentence user-facing description
+    that surfaces on the IssueDetail Worker tab; ``diff_summary``
+    and ``test_results`` mirror BackendPayload so the leader review
+    UI can render them without a Mavis-specific code path.
+    """
+    narrative: str = Field(..., min_length=1, max_length=2000)
+    diff_summary: str = Field(..., min_length=1, max_length=4000)
+    test_results: str = Field(..., min_length=1, max_length=4000)
+
+
 LANE_PAYLOADS: dict[str, type[BaseModel]] = {
     "triage": TriagePayload,
     "product": ProductPayload,
@@ -76,6 +92,7 @@ LANE_PAYLOADS: dict[str, type[BaseModel]] = {
     "qa": QaPayload,
     "review": ReviewPayload,
     "delivery": DeliveryPayload,
+    "mavis": MavisPayload,
 }
 
 

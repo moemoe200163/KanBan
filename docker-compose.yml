@@ -45,6 +45,11 @@ services:
       - ALLOW_ANONYMOUS_DISPATCH=${ALLOW_ANONYMOUS_DISPATCH:-false}
       - DATABASE_URL=postgresql+asyncpg://devflow:devflow_secret@postgres:5432/devflow
       - SEED_DEV_DATA=${SEED_DEV_DATA:-false}
+      # Plan C: shared secret the Mavis CLI uses to push events.
+      # Override in production via .env or a secret manager; the
+      # dev default matches scripts/mavis_worker.py's hard-coded
+      # fallback for local development.
+      - MAVIS_DISPATCH_TOKEN=${MAVIS_DISPATCH_TOKEN:-mavis-dev-token-2026-06-12}
     depends_on:
       postgres:
         condition: service_healthy
