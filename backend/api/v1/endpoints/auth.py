@@ -312,9 +312,23 @@ async def get_current_user_info(
 
 @router.post("/auth/register", response_model=UserResponse, status_code=201, tags=["Authentication"])
 async def register(request: UserCreate):
-    """Register a new user account."""
+    """Register a new user account.
+
+    Plan J phase 1: every freshly-registered user is attached to
+    the seed tenant ``tnt_default`` so the multi-tenant invariant
+    ``users.tenant_id IS NOT NULL`` (introduced in migration 0021)
+    is satisfied without forcing the registration payload to
+    grow. Plan K will introduce an ``invite_code`` parameter
+    that lets an admin attach a new user to a different tenant;
+    for now every new account lives in the default tenant.
+    """
     from db.database import ensure_db_init
     import uuid
+
+    # Plan J: lazy import keeps the model import surface small
+    # and avoids a circular import between ``db.models`` and
+    # ``api.v1.endpoints.auth`` on first call.
+    from db.models import DEFAULT_TENANT_ID
 
     await ensure_db_init()
     async with get_db_session()() as session:
@@ -340,6 +354,13 @@ async def register(request: UserCreate):
             username=request.username,
             email=request.email,
             password_hash=password_hash,
+            # Plan J: attach to the seed tenant. The pre-J behaviour
+            # left ``tenant_id`` NULL which would now fail the
+            # implicit ``tenant_id IS NOT NULL`` contract enforced
+            # by J-2's event listener.
+            tenant_id=DEFAULT_TENANT_ID,
+            role="user",
+            is_super_admin=False,
             created_at=datetime.now(timezone.utc)
         )
 

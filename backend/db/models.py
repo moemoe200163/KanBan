@@ -20,10 +20,21 @@ from sqlalchemy import (
     LargeBinary,
     Index,
     ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
+
+
+# ---------------------------------------------------------------------------
+# Plan J: Multi-tenant defaults
+# ---------------------------------------------------------------------------
+# All tenant-scoped tables (boards/issues/agents/webhooks/...) carry a
+# nullable ``tenant_id`` FK during the J-1 transition. The seed tenant
+# ``tnt_default`` is the value migration 0021 backfills existing rows
+# with so the existing 727 tests still see their data.
+DEFAULT_TENANT_ID = "tnt_default"
 
 
 def _utcnow():
@@ -48,6 +59,11 @@ class Issue(Base):
     status = Column(String(32), nullable=False, default="backlog", index=True)
     priority = Column(String(16), nullable=True, index=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary. Existing rows backfill to ``tnt_default``
+    # via migration 0021. Nullable during the transition so legacy
+    # imports (e.g. dump/restore) can still land rows; a follow-up
+    # migration will tighten to NOT NULL after the data is clean.
+    tenant_id = Column(String(64), nullable=True, index=True)
     profile = Column(String(32), nullable=True, index=True)
     labels = Column(JSON, nullable=True, default=list)
     assignee_id = Column(String(64), nullable=True, index=True)
@@ -114,6 +130,8 @@ class Agent(Base):
     agent_type = Column(String(32), nullable=True, index=True)
     role = Column(String(32), nullable=True)
     status = Column(String(16), nullable=False, default="active", index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     is_available = Column(Boolean, nullable=False, default=True)
     capabilities = Column(JSON, nullable=True, default=list)
     agent_metadata = Column(JSON, nullable=True, default=dict)
@@ -159,6 +177,8 @@ class AuditLog(Base):
     changes = Column(JSON, nullable=True, default=dict)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(String(512), nullable=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (
@@ -201,6 +221,8 @@ class WebhookEvent(Base):
     attempts = Column(Integer, nullable=False, default=0)
     max_attempts = Column(Integer, nullable=False, default=3)
     next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     sent_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -251,6 +273,8 @@ class JobModel(Base):
     message = Column(String(512), nullable=True)
     events = Column(JSON, nullable=False, default=list)  # JSON array of ECCJobEvent
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         # Note: status already gets an auto-index from `Column(..., index=True)`.
@@ -348,7 +372,24 @@ class User(Base):
     # User profile
     avatar_url = Column(String(512), nullable=True)
     full_name = Column(String(256), nullable=True)
-    role = Column(String(32), nullable=True, default="member")
+    # Plan J: role enum-style (``super_admin`` / ``admin`` / ``ops`` / ``user``).
+    # The pre-J model had ``nullable=True, default="member"``. The migration
+    # backfills any NULL with ``"user"`` first, then tightens the column to
+    # NOT NULL — leaving the upgrade safe on a DB with legacy rows.
+    role = Column(String(32), nullable=False, default="user")
+
+    # Plan J: tenant boundary. Nullable so the migration can land
+    # before any seed user is created. ``super_admin`` users live with
+    # ``tenant_id=NULL``; everyone else belongs to a tenant.
+    tenant_id = Column(String(64), nullable=True, index=True)
+    # ``True`` only for the cross-tenant leader account. Used by
+    # ``require_super_admin`` and the SQLAlchemy event listener in
+    # J-2 to bypass per-tenant query rewriting.
+    is_super_admin = Column(Boolean, nullable=False, default=False)
+    # Reserved for Plan K's tenant switcher UI: a cross-tenant user
+    # can sit in many ``tenant_memberships`` rows. The ``last`` column
+    # lets us detect stale switches and force a re-pick.
+    last_tenant_switch_at = Column(DateTime(timezone=True), nullable=True)
 
     # Status
     is_active = Column(Boolean, nullable=False, default=True)
@@ -372,6 +413,8 @@ class User(Base):
             "avatarUrl": self.avatar_url,
             "fullName": self.full_name,
             "role": self.role,
+            "tenantId": self.tenant_id,
+            "isSuperAdmin": bool(self.is_super_admin),
             "isActive": self.is_active,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
@@ -402,6 +445,8 @@ class IssueEvent(Base):
     details = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_events_issue_created", "issue_id", "created_at"),
@@ -439,6 +484,8 @@ class IssueComment(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_comments_issue_created", "issue_id", "created_at"),
@@ -485,6 +532,8 @@ class IssueArtifact(Base):
     created_by_name = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_artifacts_issue_created", "issue_id", "created_at"),
@@ -553,6 +602,8 @@ class CycleReport(Base):
     #   ``None``     — legacy rows from before Plan G
     source = Column(String(32), nullable=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -610,6 +661,8 @@ class IssueHandoff(Base):
 
     id = Column(String(64), primary_key=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     issue_id = Column(String(64), ForeignKey("issues.id"), nullable=False, index=True)
     from_lane = Column(String(32), nullable=True)
     to_lane = Column(String(32), nullable=False)
@@ -682,6 +735,12 @@ class LLMProviderConfig(Base):
 
     id = Column(String(64), primary_key=True)  # e.g. "llm_minimax"
     provider_id = Column(String(32), unique=True, nullable=False)
+    # Plan J: tenant boundary. Existing ``llm_provider_configs`` rows are
+    # global (the unique constraint on ``provider_id`` already prevents
+    # per-tenant duplicates), so the migration drops the unique index
+    # and re-creates it as ``(tenant_id, provider_id)`` in J-2. For
+    # J-1 we keep the column nullable and backfill ``tnt_default``.
+    tenant_id = Column(String(64), nullable=True, index=True)
     display_name = Column(String(128), nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)
     base_url = Column(String(512), nullable=True)
@@ -749,6 +808,8 @@ class AgentWorker(Base):
 
     id = Column(String(64), primary_key=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     worker_type = Column(String(32), nullable=False, index=True)  # claude-code, codex, safe-runner, etc.
     harness = Column(String(32), nullable=True)  # claude-code, codex, cursor, etc.
     status = Column(String(32), nullable=False, default="idle", index=True)  # idle, claimed, starting, running, stopping, stopped, error
@@ -808,6 +869,8 @@ class AgentRun(Base):
     id = Column(String(64), primary_key=True)
     worker_id = Column(String(64), nullable=True, index=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     issue_id = Column(String(64), nullable=True, index=True)
     issue_key = Column(String(32), nullable=True)
     job_id = Column(String(64), nullable=True, index=True)  # links to ecc_jobs.id
@@ -921,6 +984,8 @@ class AgentSession(Base):
 
     id = Column(String(64), primary_key=True)
     board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     issue_id = Column(String(64), nullable=True, index=True)
     issue_key = Column(String(32), nullable=True)
 
@@ -1011,6 +1076,11 @@ class AgentRole(Base):
     system_prompt = Column(Text, default="")
     task_prompt_template = Column(Text, default="")
     review_prompt_template = Column(Text, default="")
+    # Plan J: tenant boundary. The unique constraint on ``key`` is global
+    # today, so the migration drops + recreates it as
+    # ``(tenant_id, key)`` in J-2. For J-1 we keep the column nullable
+    # and backfill existing rows with ``tnt_default``.
+    tenant_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -1080,4 +1150,161 @@ class Artifact(Base):
             "folderPath": self.folder_path or "/Uploads",
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Plan J: Multi-tenant tables
+# ---------------------------------------------------------------------------
+# Three new tables for the multi-tenant refactor:
+#
+# * ``tenants`` — the tenant itself, identified by an opaque ``tnt_xxx``
+#   id. ``slug`` is a human-readable handle (used in URLs, JWT claims
+#   in Plan K's switcher UI). One row per customer / org.
+# * ``tenant_memberships`` — join table for ``users`` ↔ ``tenants`` so a
+#   single user can belong to multiple tenants (Plan K feature, not
+#   used in J-1's 1-user-1-tenant workflow). The unique constraint on
+#   ``(tenant_id, user_id)`` keeps the join idempotent.
+# * ``tenant_audits`` — append-only log of tenant-scoped actions
+#   (invite, role change, tenant deletion, cross-tenant access
+#   attempts). Written from J-2's ``require_*`` deps and the event
+#   listener.
+#
+# All three are FK-targets for the new ``users.tenant_id`` column and
+# the ``*.tenant_id`` columns on the 9 main tables. The migration
+# creates them after the User table so the FK targets are valid.
+# ---------------------------------------------------------------------------
+
+
+class Tenant(Base):
+    """
+    Tenant — the top-level data-isolation boundary.
+
+    A tenant owns a set of users, boards, issues, agents, webhooks,
+    LLM provider configs, etc. The 9 main tables all gain a
+    ``tenant_id`` FK in migration 0021. The cross-tenant leader
+    (``super_admin``) lives with ``tenant_id=NULL`` on the ``users``
+    row but is still allowed to address any tenant by id when the
+    ``is_super_admin`` flag is set.
+    """
+    __tablename__ = "tenants"
+
+    id = Column(String(64), primary_key=True)  # e.g. "tnt_default"
+    slug = Column(String(64), unique=True, nullable=False, index=True)  # e.g. "default", "acme-co"
+    name = Column(String(128), nullable=False)
+    # Plan / billing tier. Free / pro / enterprise. The column is
+    # reserved for Plan K's billing flow; no enforcement yet.
+    plan = Column(String(32), nullable=False, default="free")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "name": self.name,
+            "plan": self.plan,
+            "isActive": bool(self.is_active),
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TenantMembership(Base):
+    """
+    TenantMembership — a (tenant, user, role) join row.
+
+    J-1 doesn't read from this table (a user has at most one tenant,
+    stored on ``users.tenant_id``). The table exists so the J-5
+    multi-tenant switcher UI doesn't need a schema migration to
+    start tracking memberships.
+    """
+    __tablename__ = "tenant_memberships"
+
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # The role this user holds *within this tenant*. Values: super_admin
+    # (cross-tenant) / admin / ops / user. ``super_admin`` is allowed
+    # here for completeness but a super_admin typically has
+    # ``tenant_id=NULL`` on the user row.
+    role = Column(String(32), nullable=False, default="user")
+    invited_by = Column(String(64), ForeignKey("users.id"), nullable=True)
+    joined_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", name="uq_tenant_memberships_tenant_user"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "userId": self.user_id,
+            "role": self.role,
+            "invitedBy": self.invited_by,
+            "joinedAt": self.joined_at.isoformat() if self.joined_at else None,
+        }
+
+
+class TenantAudit(Base):
+    """
+    TenantAudit — append-only log of tenant-scoped actions.
+
+    J-2 writes to this table from ``require_admin`` /
+    ``require_super_admin`` and the event listener. J-1 just
+    creates the schema so the writer-side commit can land in
+    the same chain.
+    """
+    __tablename__ = "tenant_audits"
+
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Actor can be ``None`` for system-initiated actions (e.g. the
+    # seed script or the alembic migration itself).
+    actor_id = Column(String(64), ForeignKey("users.id"), nullable=True)
+    # Snapshot the actor's username at write time so the audit row
+    # keeps a readable name even after the user is renamed.
+    actor_username = Column(String(128), nullable=True)
+    # Verb describing the action: ``invite``, ``remove_member``,
+    # ``change_role``, ``delete_tenant``, ``cross_tenant_denied``,
+    # ``create_tenant``. New verbs are added in J-2.
+    action = Column(String(64), nullable=False, index=True)
+    target_user_id = Column(String(64), ForeignKey("users.id"), nullable=True)
+    # Free-form payload — most audit rows carry a small JSON body
+    # with the old/new role, the invitee email, the denied request
+    # URL, etc. Schema is intentionally open.
+    details = Column(JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "actorId": self.actor_id,
+            "actorUsername": self.actor_username,
+            "action": self.action,
+            "targetUserId": self.target_user_id,
+            "details": self.details,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
         }
