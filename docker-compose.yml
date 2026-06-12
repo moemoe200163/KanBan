@@ -45,6 +45,12 @@ services:
       - ALLOW_ANONYMOUS_DISPATCH=${ALLOW_ANONYMOUS_DISPATCH:-false}
       - DATABASE_URL=postgresql+asyncpg://devflow:devflow_secret@postgres:5432/devflow
       - SEED_DEV_DATA=${SEED_DEV_DATA:-false}
+      # Plan J: seed the dev tenant + 4 dev accounts (superadmin /
+      # admin@default / ops@default / user@default, all password
+      # dev123!) on startup. Off in production. The seed is
+      # idempotent — re-runs on a DB that already has the rows
+      # are a no-op.
+      - SEED_DEV_TENANTS=${SEED_DEV_TENANTS:-true}
       # Plan C: shared secret the Mavis CLI uses to push events.
       # Override in production via .env or a secret manager; the
       # dev default matches scripts/mavis_worker.py's hard-coded

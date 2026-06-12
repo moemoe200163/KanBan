@@ -81,6 +81,28 @@ async def lifespan(app: FastAPI):
         roles_seeded = await repo.seed_default_roles()
         if roles_seeded:
             logger.info(f"Seeded {roles_seeded} default agent roles")
+
+        # Plan J phase 1 — seed dev tenant + 4 dev accounts so
+        # the operator can exercise every require_*() path in
+        # J-2's auth_deps without going through /register.
+        # Gated on a separate ``SEED_DEV_TENANTS`` env (defaults
+        # to off) so production deploys, which already set
+        # SEED_DEV_DATA=false, stay clean. Dev compose flips
+        # this on by default — fresh ``docker compose up -d
+        # backend`` lands the 4 accounts on a clean DB without
+        # the operator having to ``docker exec`` in.
+        # ``run_dev_seed`` is itself idempotent: the tenant row
+        # is created by migration 0021 on a fresh deploy, and
+        # the 4 users are inserted only if missing.
+        if os.getenv("SEED_DEV_TENANTS", "false").lower() in ("1", "true", "yes"):
+            from db.seed_dev_tenants import run as run_dev_seed
+            seed_report = await run_dev_seed()
+            logger.info(
+                "Dev tenant seed: tenants_inserted=%d users_inserted=%d users_refreshed=%d",
+                seed_report["tenants_inserted"],
+                seed_report["users_inserted"],
+                seed_report["users_refreshed"],
+            )
     except Exception:
         logger.exception("Database initialization failed during startup")
         raise
