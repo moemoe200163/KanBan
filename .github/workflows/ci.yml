@@ -128,3 +128,13 @@ jobs:
               assert c.get('issues') == [], f'column {c[\"id\"]} not empty on fresh DB: {c}'
           print('fresh board has 5 empty columns — no mock leak')
           "
+
+      - name: Install Playwright Chromium
+        run: npm run e2e:install
+
+      - name: Run Playwright smoke suite
+        # The stack is already up from "Bring the stack up". The smoke
+        # config is read-only — no DB reset, no destructive actions.
+        # 5-minute ceiling matches the worst-case first-run install.
+        timeout-minutes: 5
+        run: npm run e2e:smoke
