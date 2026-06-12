@@ -15,6 +15,7 @@ import HandoffSection from './lane/HandoffSection.vue'
 import DeliveryStageBar from './DeliveryStageBar.vue'
 import NextCommandHint from './NextCommandHint.vue'
 import WorkerIdentity from './WorkerIdentity.vue'
+import IssueDeliverables from './IssueDeliverables.vue'
 
 const boardStore = useBoardStore()
 const { fetchRunsByJobId, fetchRunLogs } = useRuntime()
@@ -49,6 +50,12 @@ const runEvents = ref<Array<ECCLogEntry>>([])
 
 const selectedRunId = ref<string | null>(null)
 const runDetails = ref<Map<string, { status: string; worker: string }>>(new Map())
+
+// Plan D: bump this to force IssueDeliverables to refetch (used
+// when a Mavis push event lands that may have produced artifacts
+// server-side, or when the operator clicks the "Refresh" button
+// on the section). Just a counter — no real state.
+const deliverablesRefreshKey = ref(0)
 
 const timelineLogs = computed<ECCLogEntry[]>(() => {
   const jobLogs = currentJob.value
@@ -1863,12 +1870,23 @@ const unarchiveIssue = async () => {
             </div>
             <!-- Worker Tab -->
             <div v-if="activeTab === 'worker'" class="issue-detail__tab-pane" data-testid="tab-pane-worker">
-              <WorkerIdentity
-                :issue="issue"
-                :job="currentJob"
-                :role-timeout-seconds="1800"
-              />
-            </div>
+               <WorkerIdentity
+                 :issue="issue"
+                 :job="currentJob"
+                 :role-timeout-seconds="1800"
+               />
+               <!-- Plan D: deliverables section. Lists every artifact
+                    on the issue (build outputs, cycle reports, etc.)
+                    as a link row so the operator can see at a glance
+                    what shipped on this issue. Fetched lazily on
+                    tab-open so navigating between issues doesn't
+                    pile up requests for the previous selection. -->
+               <IssueDeliverables
+                 v-if="issue"
+                 :issue-id="issue.id"
+                 :refresh-key="deliverablesRefreshKey"
+               />
+             </div>
           </div>
         </div>
       </Transition>
