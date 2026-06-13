@@ -135,31 +135,25 @@ def test_listener_backfills_tenant_id_null_row(fresh_sqlite_db, monkeypatch):
     asyncio.run(_insert_legacy_issue(engine, legacy_id))
 
     # 2) Run the J-1 backfill helper against the issues table.
-    #    The helper is a plain SQL UPDATE on NULL rows, so it
-    #    works without the listener context.
-    from backend.alembic.versions import _0021_backfill  # type: ignore
-    # The migration module re-defines the helper under the
-    # ``_backfill_tenant_id`` name; reach into it via the
-    # migration module's namespace.
-    from alembic.versions import _0021_backfill as _helper  # type: ignore
+    #    The migration 0021 module lives at
+    #    ``backend.alembic.versions.0021_add_tenants_and_tenant_id``;
+    #    the helper function name varies across migration drafts.
+    #    We don't depend on the import — the contract is the SQL
+    #    behaviour (NULL rows become tnt_default), and the
+    #    migration itself runs the same UPDATE in its upgrade().
+    #    We exercise the SQL directly so this test pins the
+    #    contract regardless of the helper's name.
+    import sqlalchemy as _sa
 
-    # If the helper can't be imported (Alembic versions module
-    # isn't on sys.path), fall back to inline SQL.
-    try:
-        asyncio.run(_helper._backfill_tenant_id(  # type: ignore[attr-defined]
-            "issues", "tenant_id"
-        ))
-    except (ImportError, AttributeError):
-        # Inline backfill — same SQL the migration runs.
-        async def _inline_backfill():
-            async with sessionmaker() as session:
-                await session.execute(
-                    __import__("sqlalchemy").text(
-                        "UPDATE issues SET tenant_id = :tid WHERE tenant_id IS NULL"
-                    ).bindparams(tid=DEFAULT_TENANT_ID)
-                )
-                await session.commit()
-        asyncio.run(_inline_backfill())
+    async def _inline_backfill():
+        async with sessionmaker() as session:
+            await session.execute(
+                _sa.text(
+                    "UPDATE issues SET tenant_id = :tid WHERE tenant_id IS NULL"
+                ).bindparams(tid=DEFAULT_TENANT_ID)
+            )
+            await session.commit()
+    asyncio.run(_inline_backfill())
 
     # 3) Now the row is tnt_default. Bind a request context and
     #    run a listener-filtered SELECT; the row should come back.
@@ -267,31 +261,41 @@ def test_register_attaches_default_tenant(fresh_sqlite_db, monkeypatch):
         is_super_admin=False,
     )
 
-    # The TestClient is created without raising on exceptions
-    # so the HTTPException raised by the listener for the
-    # legacy insert (test 1) doesn't pollute the next test's
-    # state. The client manages its own asyncio context, so
-    # the middleware's contextvar binding is per-request.
-    with TestClient(app) as client:
-        resp = client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["id"] == "user_j2_test_1"
-        assert body["username"] == "j2_test_user"
-        assert body["isSuperAdmin"] is False
-        assert body["tenant"] is not None
-        assert body["tenant"]["id"] == DEFAULT_TENANT_ID
-        assert body["tenant"]["slug"] == "default"
-        # Permission set for a non-admin role — ``user`` gets
-        # issue.create + agent.dispatch per the role matrix.
-        perms = body["permissions"]
-        assert "issue.create" in perms
-        assert "agent.dispatch" in perms
-        # And NOT admin-only perms.
-        assert "tenant.manage" not in perms
+    # Use ASGITransport with httpx 0.28+ AsyncClient (sync
+    # TestClient always runs the lifespan which fights the
+    # fresh fixture). The route handler + listener are wired
+    # at import time, so we don't need the lifespan to fire
+    # for this test to be meaningful.
+    import httpx
+    from httpx import ASGITransport
+    from main import app
+
+    async def _run():
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    resp = asyncio.run(_run())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "user_j2_test_1"
+    assert body["username"] == "j2_test_user"
+    # ``/auth/me`` returns snake_case (per MeResponse BaseModel)
+    assert body["is_super_admin"] is False
+    assert body["tenant"] is not None
+    assert body["tenant"]["id"] == DEFAULT_TENANT_ID
+    assert body["tenant"]["slug"] == "default"
+    # Permission set for a non-admin role — ``user`` gets
+    # issue.create + agent.dispatch per the role matrix.
+    perms = body["permissions"]
+    assert "issue.create" in perms
+    assert "agent.dispatch" in perms
+    # And NOT admin-only perms.
+    assert "tenant.manage" not in perms
 
 
 # ---------------------------------------------------------------------------
@@ -312,15 +316,23 @@ def test_register_creates_membership(fresh_sqlite_db):
 
     engine, sessionmaker = fresh_sqlite_db
 
-    with TestClient(app) as client:
-        resp = client.post("/api/v1/auth/register", json={
-            "username": "j2_registered_user",
-            "password": "j2pass1234",
-            "email": "j2_registered@example.com",
-        })
-        assert resp.status_code == 201, resp.text
-        body = resp.json()
-        user_id = body["id"]
+    import httpx
+    from httpx import ASGITransport
+
+    async def _run():
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await client.post("/api/v1/auth/register", json={
+                "username": "j2_registered_user",
+                "password": "j2pass1234",
+                "email": "j2_registered@example.com",
+            })
+    resp = asyncio.run(_run())
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    user_id = body["id"]
 
     # SELECT the membership row directly from the DB.
     async def _query():
@@ -436,19 +448,27 @@ def test_super_admin_listener_bypass(fresh_sqlite_db):
     that accidentally adds a WHERE clause for super_admins
     is caught here even if the integration test is
     disabled.
+
+    Implementation note: the listener short-circuits on
+    ``is_super_admin`` *before* touching the SQLAlchemy
+    session, so this test can be a pure unit test — no DB
+    session, no asyncio, no greenlet. We bind a request
+    context, snapshot the caller's statement, invoke
+    ``_enforce_tenant_scope`` on it, and assert (a) the
+    statement is byte-for-byte unchanged, (b) the bypass
+    branch did not raise.
     """
     from db.tenant_scope import (
         set_request_context,
         reset_request_context,
         _enforce_tenant_scope,
     )
-    from sqlalchemy.orm import Session
+    from db import tenant_scope as ts
 
-    engine, sessionmaker = fresh_sqlite_db
+    # Snapshot pre-listener shape.
+    stmt = select(Issue).where(Issue.id == "issue_any")
+    before = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
-    # Build a Select against Issue. We use the async session
-    # so the listener fires for the same statement the
-    # application code path uses.
     token = set_request_context({
         "user_id": "user_superadmin_0001",
         "username": "superadmin",
@@ -457,56 +477,26 @@ def test_super_admin_listener_bypass(fresh_sqlite_db):
         "is_super_admin": True,
     })
     try:
-        async def _build_and_check():
-            async with sessionmaker() as session:
-                # Snapshot the whereclause before execute; the
-                # listener mutates ``state.statement`` to inject
-                # the filter, so a side-by-side compare is the
-                # cleanest way to confirm "no mutation".
-                async with session.bind.connect() as _conn:  # type: ignore[attr-defined]
-                    pass  # noqa
-                stmt = select(Issue).where(Issue.id == "issue_any")
-                before = str(stmt.compile(
-                    compile_kwargs={"literal_binds": True},
-                ))
-
-                # Re-create the listener state object. SQLAlchemy
-                # builds it internally during execute(); we
-                # can't easily synthesize one here, so we
-                # exercise the helper that decides whether to
-                # bypass (``_is_super_admin_ctx``) and the
-                # statement-shape check.
-                from db import tenant_scope as ts
-                # 1) ``_is_super_admin_ctx`` is True for our context.
-                assert ts._is_super_admin_ctx(
-                    ts.get_request_context()
-                ) is True
-                # 2) ``_tenant_id_ctx`` returns None (super_admin
-                #    has no home tenant), so the would-be
-                #    ``WHERE tenant_id = ...`` predicate has no
-                #    value to inject even if the listener
-                #    didn't short-circuit.
-                assert ts._tenant_id_ctx(
-                    ts.get_request_context()
-                ) is None
-                return before
-        before = asyncio.run(_build_and_check())
+        # 1) The bypass predicates report True for super_admin.
+        assert ts._is_super_admin_ctx(ts.get_request_context()) is True
+        # 2) The would-be tenant predicate value is None (super_admin
+        #    has no home tenant), so even if the short-circuit
+        #    were removed, the listener would have nothing to
+        #    inject.
+        assert ts._tenant_id_ctx(ts.get_request_context()) is None
+        # 3) Direct call: the listener mutates the statement in
+        #    place via ``state.statement``. With the short-circuit
+        #    for super_admin, the statement is left untouched.
+        class _FakeState:
+            def __init__(self, statement):
+                self.statement = statement
+        _enforce_tenant_scope(_FakeState(stmt))  # must not raise
     finally:
         reset_request_context(token)
 
-    # The compile-without-mutation output is the contract: the
-    # statement has the caller's WHERE clause and no extra
-    # tenant_id predicate.
-    assert "tenant_id" not in before, (
-        f"Statement should be free of tenant_id predicate; got: {before}"
+    # Statement shape unchanged after the listener.
+    after = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert before == after, (
+        f"super_admin statement shape must be unchanged; "
+        f"before={before!r} after={after!r}"
     )
-
-    # And as a second sanity check, calling the listener
-    # helper directly with a super_admin context returns
-    # without raising — a regression in the bypass branch
-    # would raise HTTPException(403) and trip this assertion.
-    class _FakeState:
-        def __init__(self, statement):
-            self.statement = statement
-    stmt2 = select(Issue)
-    _enforce_tenant_scope(_FakeState(stmt2))  # must not raise
