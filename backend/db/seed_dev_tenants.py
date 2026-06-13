@@ -73,6 +73,25 @@ DEFAULT_TENANT_PLAN = "pro"
 DEV_PASSWORD = "dev123!"
 
 DEV_USERS = [
+    # NOTE: the ``superadmin`` row intentionally has NO
+    # ``tenant_memberships`` entry. A membership is a (tenant, user,
+    # role) join row that means "this user has the given role in the
+    # given tenant"; a super_admin has *no* home tenant, so writing
+    # a membership for them would mean picking a tenant arbitrarily
+    # (we'd choose ``tnt_default``) and that membership would
+    # misrepresent the model. The ``users.is_super_admin`` flag is
+    # the contract; the cross-tenant leader's role is read off that
+    # flag, not from any membership row.
+    #
+    # This is *by design*. A test or endpoint that wants to know
+    # "is this user a super admin?" reads ``User.is_super_admin``;
+    # a test that wants "is this user a member of tenant X?" reads
+    # ``TenantMembership``. The two questions are intentionally
+    # orthogonal. If a future Plan K feature wants to attach a
+    # super_admin to a specific tenant for "view-as" or
+    # impersonation flows, that membership should be written
+    # explicitly with ``invited_by=None`` and a meaningful
+    # ``joined_at``, not auto-derived from this seed.
     {
         "id": "user_superadmin_0001",
         "username": "superadmin",

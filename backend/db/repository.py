@@ -2923,3 +2923,98 @@ async def delete_artifact(session, artifact_id: str) -> bool:
     result = await session.execute(stmt)
     await session.commit()
     return (result.rowcount or 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Plan J phase 2 — TenantScopedRepository
+# ---------------------------------------------------------------------------
+# Application-layer helper that injects a ``tenant_id`` predicate
+# into every query it builds. The ``do_orm_execute`` event listener
+# in ``db/tenant_scope.py`` is the *guarantee* that no query leaks
+# across tenants; this class is the *convention* that keeps new
+# repository code small and obviously tenant-aware.
+#
+# Usage::
+#
+#     from db.repository import TenantScopedRepository
+#     from db.models import Issue
+#
+#     repo = TenantScopedRepository(Issue, tenant_id=current_user["tenant_id"])
+#     issues = await repo.list(session, status="backlog")
+#     one = await repo.get(session, issue_id)
+#
+# The ``tenant_id`` is captured in the constructor so the same
+# instance can be reused across statements without re-deriving
+# the value from the request context. The listener still kicks
+# in for raw ``session.execute(...)`` calls elsewhere in the
+# codebase, so this class is a convenience — not a bypass.
+# ---------------------------------------------------------------------------
+
+
+class TenantScopedRepository:
+    """Tenant-scoped read helpers for any model that carries a
+    ``tenant_id`` column.
+
+    Parameters
+    ----------
+    model:
+        The SQLAlchemy ORM model class. Must expose a
+        ``tenant_id`` column. The constructor does *not* verify
+        this — the migration 0021 column is the contract.
+    tenant_id:
+        The tenant the caller is allowed to see. ``None`` is
+        treated as "no tenant context" — ``.get`` / ``.list``
+        will return None / ``[]`` rather than raise, so this
+        helper stays a no-op when an endpoint forgets to
+        hydrate the request context. The event listener in
+        ``db/tenant_scope.py`` is the strict variant.
+    """
+
+    def __init__(self, model, tenant_id: Optional[str]):
+        self.model = model
+        self.tenant_id = tenant_id
+
+    async def get(self, session, id: str):
+        """Return one row by primary key, scoped to ``self.tenant_id``."""
+        if self.tenant_id is None:
+            return None
+        from sqlalchemy import select as _select
+        result = await session.execute(
+            _select(self.model).where(
+                self.model.id == id,
+                self.model.tenant_id == self.tenant_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list(self, session, **filters):
+        """Return every row in ``self.tenant_id``, optionally narrowed by ``filters``."""
+        from sqlalchemy import select as _select
+        if self.tenant_id is None:
+            return []
+        stmt = _select(self.model).where(self.model.tenant_id == self.tenant_id)
+        for k, v in filters.items():
+            if not hasattr(self.model, k):
+                # Filter key is not a column — skip silently. This
+                # keeps the call site tolerant of caller typos
+                # (``status="done"`` on a model without ``status``)
+                # rather than 500ing on the AttributeError.
+                continue
+            stmt = stmt.where(getattr(self.model, k) == v)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count(self, session, **filters) -> int:
+        """Count rows in ``self.tenant_id`` matching ``filters``."""
+        from sqlalchemy import select as _select, func as _func
+        if self.tenant_id is None:
+            return 0
+        stmt = _select(_func.count()).select_from(self.model).where(
+            self.model.tenant_id == self.tenant_id
+        )
+        for k, v in filters.items():
+            if not hasattr(self.model, k):
+                continue
+            stmt = stmt.where(getattr(self.model, k) == v)
+        result = await session.execute(stmt)
+        return int(result.scalar() or 0)

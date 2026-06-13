@@ -22,6 +22,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Plan J phase 2 — register the SQLAlchemy tenant-scope listener at
+# process start. The listener is idempotent so importing the module
+# twice (here + via the middleware) is safe; the goal is to make
+# sure the listener is bound *before* the first session.execute()
+# fires — both the lifespan's ``init_db`` and the auth dep paths
+# open sessions, and we want both to be covered.
+# ---------------------------------------------------------------------------
+try:
+    from db.tenant_scope import register_tenant_scope_listener
+    register_tenant_scope_listener()
+except Exception:  # pragma: no cover - non-fatal at boot
+    logger.exception("Failed to register tenant scope listener at startup")
+
+
 # ============================================================================
 # Lifespan Management - Startup/Shutdown Events
 # ============================================================================
@@ -235,6 +250,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 logger.info("CORS middleware configured")
+
+
+# ============================================================================
+# Plan J phase 2 — TenantContextMiddleware
+# ============================================================================
+# Wraps every request and binds the per-request tenant context into
+# the contextvar the SQLAlchemy listener reads. The middleware is
+# added *after* CORS so OPTIONS preflight requests skip the
+# context-binding code path (those don't carry a bearer token).
+# ============================================================================
+try:
+    from api.middleware.tenant_scope_middleware import TenantContextMiddleware
+    app.add_middleware(TenantContextMiddleware)
+    logger.info("TenantContextMiddleware registered (Plan J phase 2)")
+except Exception:  # pragma: no cover - non-fatal at boot
+    logger.exception("Failed to register TenantContextMiddleware")
 
 
 # ============================================================================
