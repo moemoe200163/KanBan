@@ -8,7 +8,7 @@ and managing execution defaults. Secrets are never returned to the frontend.
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional, List, Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
