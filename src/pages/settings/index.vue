@@ -3,6 +3,8 @@ import { useBoardStore } from '~/stores/board'
 import { useLLMStore } from '~/stores/llm'
 import { useDarkMode } from '~/composables/useDarkMode'
 import { useAuth } from '~/composables/useAuth'
+import { usePermissions } from '~/composables/usePermissions'
+import { useTenant } from '~/composables/useTenant'
 import { HARNESS_CONFIGS } from '~/types'
 import type { LLMProvider, HarnessType } from '~/types'
 import {
@@ -16,7 +18,26 @@ const boardStore = useBoardStore()
 const llmStore = useLLMStore()
 const { isDark, toggleDark } = useDarkMode()
 const config = useRuntimeConfig()
-const { isAdmin, isAuthenticated, authChecked, fetchRole } = useAuth()
+const { isAuthenticated, authChecked, fetchRole } = useAuth()
+// Plan J: 4-way permission gates backed by useAuth. The Settings
+// page uses `usePermissions` for every LLM / default form gate so
+// the UI matches the 4-role matrix (super_admin / admin / ops /
+// user) — ops is now the floor for configuring providers, and
+// admin / super_admin inherit that automatically. `canCreateBoard`
+// / `canDeleteIssue` / `canViewAudit` / `canEditAgentRole` /
+// `canManageTenant` are imported for the future Plan K sub-pages
+// (board create button, audit log tab, etc.) that will land on
+// this page; we reference them in the data layer so the bindings
+// stay live.
+const {
+  canConfigureLLM,
+  canCreateBoard,
+  canDeleteIssue,
+  canViewAudit,
+  canEditAgentRole,
+  canManageTenant,
+} = usePermissions()
+const { currentTenant, currentTenantSlug } = useTenant()
 
 // Provider edit draft (only sent on Save)
 const providerDraft = ref<{
@@ -42,7 +63,7 @@ const cancelEditProvider = () => {
 }
 
 const saveProviderDraft = async () => {
-  if (!providerDraft.value || !isAdmin.value) return
+  if (!providerDraft.value || !canConfigureLLM.value) return
   const d = providerDraft.value
   const config: Record<string, string> = {}
   if (d.baseUrl) config.baseUrl = d.baseUrl
@@ -187,7 +208,7 @@ const healthStatusColor = (status: string | null) => {
 
 
 const selectProviderAction = async (providerId: string) => {
-  if (!isAdmin.value) return
+  if (!canConfigureLLM.value) return
   await llmStore.selectProvider(providerId)
 }
 
@@ -223,7 +244,7 @@ const testConnection = async (providerId: string) => {
 }
 
 const toggleProviderEnabled = async (provider: LLMProvider) => {
-  if (!isAdmin.value) return
+  if (!canConfigureLLM.value) return
   await llmStore.updateProviderConfig(provider.id, { enabled: !provider.enabled })
 }
 
@@ -245,7 +266,7 @@ const loadDefaults = () => {
 }
 
 const saveDefaults = async () => {
-  if (!isAdmin.value) return
+  if (!canConfigureLLM.value) return
   savingDefaults.value = true
   await llmStore.updateDefaults({ ...defaultsForm })
   savingDefaults.value = false
@@ -292,6 +313,10 @@ const backendStatusColor = computed(() => {
         <span class="settings-page__kicker">Workspace / DevFlow</span>
         <h1>Settings</h1>
         <p>System configuration, LLM providers, and execution defaults</p>
+      </div>
+      <div v-if="currentTenant" class="settings-page__tenant" :title="`Tenant: ${currentTenant.id}`">
+        <Shield :size="14" />
+        <span class="settings-page__tenant-slug">{{ currentTenantSlug || currentTenant.id }}</span>
       </div>
     </header>
 
@@ -369,10 +394,10 @@ const backendStatusColor = computed(() => {
       </div>
 
       <div v-else class="providers-grid">
-        <div v-if="authChecked && !isAdmin" class="auth-notice">
+        <div v-if="authChecked && !canConfigureLLM" class="auth-notice">
           <Shield :size="14" />
           <span v-if="!isAuthenticated">Login to configure providers.</span>
-          <span v-else>Admin access required to configure providers.</span>
+          <span v-else>Ops or admin access required to configure providers.</span>
         </div>
 
         <div
@@ -446,7 +471,7 @@ const backendStatusColor = computed(() => {
             </div>
 
             <!-- Zone 4: Admin Configuration (draft-on-save) -->
-            <template v-if="isAdmin">
+            <template v-if="canConfigureLLM">
               <div v-if="providerDraft?.providerId === provider.id" class="provider-config-form">
                 <div class="provider-detail-row">
                   <span class="label">Base URL:</span>
@@ -623,7 +648,7 @@ const backendStatusColor = computed(() => {
             </button>
           </div>
 
-          <button class="settings-btn" :disabled="savingDefaults || !isAdmin" @click="saveDefaults">
+          <button class="settings-btn" :disabled="savingDefaults || !canConfigureLLM" @click="saveDefaults">
             <Loader2 v-if="savingDefaults" :size="14" class="spin" />
             Save Defaults
           </button>
@@ -799,6 +824,14 @@ const backendStatusColor = computed(() => {
   padding: 22px; gap: 18px; overflow-y: auto;
 }
 .settings-page__topbar { display: flex; align-items: flex-start; justify-content: space-between; }
+.settings-page__tenant {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  color: var(--muted); font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.settings-page__tenant-slug { color: var(--ink); font-weight: 600; }
 .settings-page__title { display: flex; flex-direction: column; gap: 6px; }
 .settings-page__kicker { color: var(--muted); font-family: var(--font-mono); font-size: 0.75rem; }
 .settings-page__title h1 { color: var(--ink); font-family: var(--font-display); font-size: 1.65rem; font-weight: 700; }
