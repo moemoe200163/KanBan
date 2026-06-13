@@ -6,7 +6,8 @@ from pydantic import BaseModel
 # import-time startup lightweight and resilient.
 from db import repository as repo
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
-from api.v1.auth_deps import require_auth
+from api.v1.auth_deps import require_auth, require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 
 router = APIRouter()
 
@@ -171,3 +172,35 @@ async def list_boards(
     """
     rows = await repo.list_boards()
     return [BoardSummary(**row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Plan J-3 stub: POST /board — create a new board
+# ---------------------------------------------------------------------------
+# Plan J-3 prompt §九 #15: this endpoint is reserved under the
+# require_ops gate. The codebase's boards are derived from the
+# issues table (no dedicated registry), so the "create" semantics
+# here are: validate the board_id, then add a 0-issue board to
+# the sidebar by writing a sentinel issue. We don't do that here;
+# the placeholder returns 501 so the gate is testable without
+# committing to a side-effect. A future iteration can land the
+# sentinel-issue logic alongside the multi-tenant board_id work.
+from typing import Annotated
+
+
+@router.post("/board", tags=["Board"], status_code=201)
+async def create_board(
+    body: dict,
+    _ops: Annotated[dict, Depends(require_role_ops)],
+):
+    """Plan J-3 stub: ops/admin can register a new board.
+
+    The handler is intentionally a placeholder; the real
+    implementation lands when the multi-tenant board_id
+    refactor ships (out of J-3 scope).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="POST /board is a J-3 reserved route; create_board "
+               "semantics land with the multi-tenant board_id refactor.",
+    )

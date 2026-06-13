@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Annotated
 import uuid
 
 # Lazy import: db.repository is touched only inside handlers to keep
@@ -8,7 +8,8 @@ import uuid
 from db import repository as repo
 from sqlalchemy.exc import IntegrityError
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID, assert_board_id_allowed
-from api.v1.auth_deps import require_auth, require_admin
+from api.v1.auth_deps import require_auth, require_admin, require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 
 # Parallel createIssue calls race on DEV-NNN key generation
 # (next_issue_key reads max-then-increments). The unique constraint
@@ -114,7 +115,7 @@ async def get_issue(issue_id: str, current_user: dict = Depends(require_auth)):
 @router.post("/issues")
 async def create_issue(
     request: IssueCreateRequest,
-    current_user: dict = Depends(require_auth),
+    current_user: Annotated[dict, Depends(require_auth)],  # J-3
 ):
     """
     Create a new issue.
@@ -344,8 +345,11 @@ async def unblock_issue(issue_id: str, current_user: dict = Depends(require_auth
 
 
 @router.delete("/issues/{issue_id}")
-async def delete_issue(issue_id: str, current_user: dict = Depends(require_admin)):
-    """Hard delete. Admin only. Cascades to all FKs.
+async def delete_issue(
+    issue_id: str,
+    _ops: Annotated[dict, Depends(require_role_ops)] = None,
+):
+    """Hard delete. Ops / admin only. Cascades to all FKs.
 
     Reserved for the "this was created by accident, no work
     was ever logged" case. Regular operators should archive

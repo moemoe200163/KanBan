@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from api.v1.auth_deps import require_admin, require_auth
+from api.v1.auth_deps import require_admin, require_auth, require_role
 from db import repository as repo
 
 logger = logging.getLogger(__name__)

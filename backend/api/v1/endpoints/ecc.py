@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Annotated
 from uuid import uuid4
 import os
 
@@ -385,7 +385,7 @@ async def _register_job_from_db(job_id: str) -> None:
 async def dispatch_ecc_command(
     request: ECCDispatchRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(require_auth),
+    current_user: Annotated[dict, Depends(require_auth)],  # J-3
 ):
     """
     Dispatch an ECC command to the control plane.
@@ -616,7 +616,10 @@ async def update_ecc_job(job_id: str, request: ECCJobStatusUpdate, current_user:
 
 
 @router.post("/ecc/jobs/{job_id}/cancel")
-async def cancel_ecc_job(job_id: str, current_user: dict = Depends(require_auth)):
+async def cancel_ecc_job(
+    job_id: str,
+    current_user: Annotated[dict, Depends(require_auth)],  # J-3
+):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"ECC job '{job_id}' not found")

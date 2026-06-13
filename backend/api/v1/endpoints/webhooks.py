@@ -13,7 +13,7 @@ audit log entry.
 """
 
 from datetime import datetime, timezone
-from typing import Optional, List, AsyncIterator
+from typing import Optional, List, AsyncIterator, Annotated
 from uuid import uuid4
 import hmac
 import hashlib
@@ -22,7 +22,14 @@ import os
 import re
 import logging
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header, Request
+
+# Plan J-3: require_role factory + Annotated signature for the
+# new ``/webhooks/{id}/toggle`` endpoint. ``require_role("ops",
+# "admin")`` lets both ops and admin flip the active flag; super
+# admin always passes through the factory's short-circuit.
+from api.v1.auth_deps import require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -918,3 +925,37 @@ async def _handle_github_workflow_run_event(payload: dict) -> None:
 
     await repo.update_issue_ci_status(issue["id"], ci_status)
     logger.info("Issue %s: ci_status=%s (workflow_run %s)", issue_key, ci_status, conclusion)
+
+# ---------------------------------------------------------------------------
+# Plan J-3 stub: POST /webhooks/{id}/toggle
+# ---------------------------------------------------------------------------
+# Plan J-3 prompt §九 #16: this endpoint flips the active/inactive
+# state of a configured outbound webhook. The codebase currently
+# only models inbound webhooks (CI / PR / GitHub), so ``Webhook``
+# is not a real model yet. This stub keeps the route reserved
+# under the require_ops gate so a future Plan K iteration can
+# flesh out the model without changing the URL.
+#
+# Storage: an in-process dict keyed by webhook id. This survives
+# the lifetime of the FastAPI process only — it's a placeholder
+# for the real persistence layer that ships in a later plan.
+from typing import Dict as _Dict
+_WEBHOOK_ACTIVE: _Dict[str, bool] = {}
+
+
+@router.post(
+    "/webhooks/{webhook_id}/toggle",
+    tags=["Webhooks"],
+    status_code=200,
+)
+async def toggle_webhook(
+    webhook_id: str,
+    _ops: Annotated[dict, Depends(require_role_ops)],
+):
+    """Plan J-3 stub: flip a webhook's active flag (in-process only)."""
+    current = _WEBHOOK_ACTIVE.get(webhook_id, True)
+    _WEBHOOK_ACTIVE[webhook_id] = not current
+    return {
+        "webhook_id": webhook_id,
+        "is_active": _WEBHOOK_ACTIVE[webhook_id],
+    }

@@ -7,9 +7,12 @@ quality_gate_results) without introducing new storage.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from api.v1.auth_deps import require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 from sqlalchemy import select, func
 
 from db import database as _db
@@ -56,6 +59,7 @@ def _validate_date_range(
 async def get_analytics_stats(
     date_from: Optional[str] = Query(None, description="ISO 8601 start time (inclusive)"),
     date_to: Optional[str] = Query(None, description="ISO 8601 end time (inclusive)"),
+    _ops: Annotated[dict, Depends(require_role_ops)] = None,
 ):
     """Return computed dashboard KPIs."""
     try:

@@ -7,11 +7,14 @@ ECC job dispatches, quality gate results, and review decisions.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, or_
+
+from api.v1.auth_deps import require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 
 from db import database as _db
 from db.models import AuditLog
@@ -110,6 +113,7 @@ async def list_audit_logs(
     q: Optional[str] = Query(None, description="Keyword search across action, resource, resource_id, agent_name"),
     limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    _ops: Annotated[dict, Depends(require_role_ops)] = None,
 ):
     """List audit log entries, newest first. Supports filtering by action, resource, date range, and keyword search."""
     try:

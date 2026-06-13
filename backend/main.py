@@ -496,6 +496,14 @@ try:
     from api.v1.endpoints import dev
     app.include_router(dev.router, prefix="/api/v1", tags=["Dev"])
 
+    # Plan J-3: 6 new tenant endpoints (invite / members CRUD / super-admin CRUD)
+    from api.v1.endpoints import tenants as tenants_router
+    app.include_router(tenants_router.router, prefix="/api/v1", tags=["Tenants"])
+
+    # Plan J-3: AI Studio conversations endpoints (require_auth; real impl in Plan I)
+    from api.v1.endpoints import ai_studio as ai_studio_router
+    app.include_router(ai_studio_router.router, prefix="/api/v1", tags=["AI Studio"])
+
     # Mount WebSocket router for ECC job updates at /ws/ecc/jobs
     app.include_router(ws.router, tags=["WebSocket"])
 
