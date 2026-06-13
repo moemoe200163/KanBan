@@ -150,23 +150,46 @@ async def init_db() -> None:
       they bypass lifespan management (see ``backend/tests/test_persistence.py``).
 
     Idempotent via the module-level ``_db_initialized`` flag.
+
+    Plan J bug C-1 fix (``j-bug-1``):
+    When ``SKIP_LIFESPAN_ALEMBIC=1`` is set (the docker entrypoint
+    already ran ``alembic upgrade head`` before exec-ing uvicorn),
+    the Postgres branch is a no-op. The original code used
+    ``await asyncio.to_thread(_run_alembic_upgrade_head)``, but
+    ``alembic.command.upgrade`` internally calls
+    ``asyncio.run(run_async_migrations())`` which opens a *new*
+    event loop in the worker thread. The async engine built in that
+    inner loop is then disposed when the loop closes, and the dispose
+    handshake can deadlock with the outer uvicorn loop's executor
+    -- leaving the lifespan stalled after the 0022→0023 stamp.
+    Moving the migration to the entrypoint avoids the cross-loop
+    race entirely. Local pytest still goes through the in-process
+    branch because pytest does not set the env var.
     """
     global _db_initialized
     if _db_initialized:
         return
 
     if is_postgres():
-        try:
-            # Run the sync alembic CLI in a worker thread so it can
-            # create its own event loop via env.py's asyncio.run(). Calling
-            # _run_alembic_upgrade_head() directly from the uvicorn loop
-            # raises "asyncio.run() cannot be called from a running event
-            # loop" -- the outer lifespan try/except in main.py would then
-            # swallow it and the schema would never be created on Postgres.
-            await asyncio.to_thread(_run_alembic_upgrade_head)
-        except Exception as e:
-            logger.error(f"Alembic upgrade failed: {e}")
-            raise
+        if os.getenv("SKIP_LIFESPAN_ALEMBIC", "").lower() in ("1", "true", "yes"):
+            # Entrypoint already ran ``alembic upgrade head``. Trust the
+            # stamp; only ``create_all`` would have been needed here for
+            # brand-new DBs, but the entrypoint path covers that case too.
+            logger.info(
+                "init_db: SKIP_LIFESPAN_ALEMBIC=1, alembic already applied by entrypoint"
+            )
+        else:
+            try:
+                # Run the sync alembic CLI in a worker thread so it can
+                # create its own event loop via env.py's asyncio.run(). Calling
+                # _run_alembic_upgrade_head() directly from the uvicorn loop
+                # raises "asyncio.run() cannot be called from a running event
+                # loop" -- the outer lifespan try/except in main.py would then
+                # swallow it and the schema would never be created on Postgres.
+                await asyncio.to_thread(_run_alembic_upgrade_head)
+            except Exception as e:
+                logger.error(f"Alembic upgrade failed: {e}")
+                raise
     else:
         from db.models import Base
 
