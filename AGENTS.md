@@ -31,6 +31,25 @@ which usually means an incomplete migration rename.
 - Alembic revisions live in `backend/alembic/versions/`. Current head: see `alembic heads`.
 - New migrations: extend the `0016_*` sequence; the chain is `0014_artifact_folder_path -> 0015_issue_artifact_extra_data -> (next)`.
 
+## Verifier trap: `DEV_AUTH_BYPASS` silent 200+JWT
+
+The dev backend container defaults to `DEV_AUTH_BYPASS=true`, which short-circuits
+`verify_jwt_token` and serves a hard-coded leader admin from any request. A 200+JWT
+curl against the live server does **not** prove the real `User.password_hash` /
+`create_jwt_token` / `verify_jwt_token` path works — the bypass shim can serve the
+credential. Always inspect the running container's env before treating login evidence
+as real:
+
+```bash
+docker inspect devflow-backend | python3 -c "import sys,json; d=json.load(sys.stdin); [print(e) for e in d[0]['Config']['Env'] if 'BYPASS' in e or 'SEED' in e or 'DATABASE_URL' in e]"
+```
+
+If `DEV_AUTH_BYPASS=true` and you need to verify real auth, restart the container
+with `DEV_AUTH_BYPASS=false docker compose up -d backend` — or, in a verification
+context where you can't restart it, treat any JWT round-trip evidence as bypass-
+shim evidence and look for separate producer-side proof (their `DEV_AUTH_BYPASS=false`
+test transcript, or unit tests that mock `verify_jwt_token`).
+
 ## Mavis collaboration mode (what it means here)
 
 - The Kanban board is the source of truth for work. Each `Issue` corresponds to a single unit of work. Status transitions (`backlog -> in_progress -> blocked | human_review | done`) are the contract.
