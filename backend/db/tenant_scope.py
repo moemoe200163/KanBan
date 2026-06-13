@@ -89,6 +89,7 @@ from db.models import (
     AgentRun,
     AgentSession,
     AgentRole,
+    User,
 )
 
 logger = logging.getLogger("db.tenant_scope")
@@ -96,10 +97,25 @@ logger = logging.getLogger("db.tenant_scope")
 # ---------------------------------------------------------------------------
 # The set of models that carry a ``tenant_id`` column and must be
 # filtered. Anything not in this set is treated as "global" (Tenant,
-# User, TenantMembership, TenantAudit, etc.) and the listener leaves
-# the query alone. Add a new model here if you add ``tenant_id`` to
-# it via a new migration.
+# TenantMembership, TenantAudit, etc.) and the listener leaves the
+# query alone. Add a new model here if you add ``tenant_id`` to it
+# via a new migration.
 # ---------------------------------------------------------------------------
+# Auth-identity models that DO have a ``tenant_id`` column (e.g.
+# ``User`` after Plan J-1 added the column) must NOT be filtered by
+# this listener. Their ``tenant_id`` is the *owning* tenant — used for
+# scoping sessions and audit rows — but the auth path needs to look
+# the user up by ``id`` regardless of which tenant the caller is
+# acting as. Filtering ``select(User)`` by the caller's tenant_id
+# would break login (super_admin's row is NULL anyway; regular users
+# would still resolve, but operators would lose the ability to look
+# up an out-of-tenant user row for support tooling). Keep this
+# denylist in sync with any new auth-identity model.
+# ---------------------------------------------------------------------------
+_AUTH_IDENTITY_MODELS: frozenset = frozenset({
+    User,
+})
+
 _TENANT_SCOPED_MODELS = frozenset(
     cls
     for cls in (
@@ -184,7 +200,19 @@ def _tenant_id_ctx(ctx: Optional[dict]) -> Optional[str]:
 
 
 def _statement_uses_tenant_scoped_entity(statement) -> bool:
-    """Return True if any entity in ``statement`` is in ``_TENANT_SCOPED_MODELS``."""
+    """Return True if any entity in ``statement`` is in
+    ``_TENANT_SCOPED_MODELS`` AND is not in the auth-identity denylist.
+
+    Auth-identity models (currently ``User``) carry a ``tenant_id``
+    column for ownership but must remain queryable across tenants
+    — login / ``/auth/me`` / operator support tooling all hit
+    ``select(User).where(User.id == ...)`` and need the row even
+    when the caller is in a different tenant. The denylist keeps
+    the listener from injecting a tenant predicate on those
+    statements; if a future model gains ``tenant_id`` and shouldn't
+    be filtered, add it to ``_AUTH_IDENTITY_MODELS`` rather than
+    re-introducing an auto-derivation rule.
+    """
     try:
         # ``column_descriptions`` exists on ORM statements (Select of
         # mapped classes). For core Update/Delete we walk ``table``.
@@ -193,6 +221,12 @@ def _statement_uses_tenant_scoped_entity(statement) -> bool:
             for desc in descriptions:
                 entity = desc.get("entity") if isinstance(desc, dict) else None
                 if entity is None:
+                    continue
+                if entity in _AUTH_IDENTITY_MODELS:
+                    # Plan J C-2 guard: skip auth-identity entities
+                    # even though they carry ``tenant_id``. Returning
+                    # False (not True) means the listener exits
+                    # before injecting a predicate.
                     continue
                 if entity in _TENANT_SCOPED_MODELS:
                     return True
@@ -204,8 +238,12 @@ def _statement_uses_tenant_scoped_entity(statement) -> bool:
     if table is not None:
         try:
             mapper = getattr(table, "mapper", None)
-            if mapper is not None and mapper.class_ in _TENANT_SCOPED_MODELS:
-                return True
+            if mapper is not None:
+                cls = mapper.class_
+                if cls in _AUTH_IDENTITY_MODELS:
+                    return False
+                if cls in _TENANT_SCOPED_MODELS:
+                    return True
         except Exception:  # pragma: no cover
             pass
 
@@ -374,6 +412,7 @@ def register_tenant_scope_listener() -> None:
     event.listen(Session, "do_orm_execute", _enforce_tenant_scope)
     _listener_registered = True
     logger.info(
-        "Registered tenant scope listener (%d models scoped)",
+        "Registered tenant scope listener (%d models scoped, %d auth-identity denylisted)",
         len(_TENANT_SCOPED_MODELS),
+        len(_AUTH_IDENTITY_MODELS),
     )
