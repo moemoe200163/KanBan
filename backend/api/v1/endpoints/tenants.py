@@ -323,7 +323,6 @@ async def patch_member_role(
 
 @router.delete(
     "/tenants/{tenant_id}/members/{user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     tags=["Tenants"],
 )
 async def delete_member(
@@ -331,7 +330,7 @@ async def delete_member(
     user_id: str,
     _admin: Annotated[dict, Depends(require_role("admin"))],
     current_user: Annotated[dict, Depends(require_auth)],
-) -> None:
+) -> dict:
     """Admin removes a member from a tenant (soft delete: row gone
     from tenant_memberships, user row remains)."""
     await _db.ensure_db_init()
@@ -368,6 +367,7 @@ async def delete_member(
             created_at=datetime.now(timezone.utc),
         ))
         await session.commit()
+    return {"deleted": True, "user_id": user_id}
 
 
 @router.get(

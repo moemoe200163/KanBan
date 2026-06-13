@@ -454,6 +454,7 @@ async def login(request: TokenRequest):
 
 @router.get("/auth/me", response_model=MeResponse, tags=["Authentication"])
 async def get_current_user_info(
+    current_user: dict = Depends(get_current_user),
 ):
     """Get information about the currently authenticated user.
 

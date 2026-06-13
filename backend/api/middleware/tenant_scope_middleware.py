@@ -24,6 +24,19 @@ The flow:
 4. The middleware, on the way out, calls ``reset_request_context`` so
    the next request starts clean.
 
+Why a pure ASGI middleware and not ``BaseHTTPMiddleware``
+=========================================================
+
+``BaseHTTPMiddleware`` (Starlette 0.20+) spawns an internal anyio
+task group for every request so it can run the inner app in the
+background. That works fine for sync code, but with asyncpg +
+SQLAlchemy async the connection pool is bound to the event loop of
+the outer task. The inner task runs on a *different* loop, so the
+session.execute() call resolves a Future "attached to a different
+loop" and raises ``RuntimeError``. Implementing the middleware as a
+plain ASGI callable (no task spawn) keeps everything on one event
+loop and the cross-loop error goes away.
+
 Why a middleware and not a FastAPI dependency
 =============================================
 
@@ -32,34 +45,20 @@ dependency is only visible inside the awaited coroutine that set it.
 The SQLAlchemy listener, however, fires from inside deeper stack
 frames (the repository, the session.execute call) that are not
 descendants of the dependency coroutine. A middleware wraps the
-*whole* request and uses the underlying ``asyncio`` context, which
-the listener *does* see.
-
-Why a BaseHTTPMiddleware and not the older ``@app.middleware``
-================================================================
-
-``BaseHTTPMiddleware`` (added in Starlette 0.20+) is the modern,
-supported API. The decorator form is deprecated. We use the class so
-the unit tests can instantiate it directly without going through the
-full app.
+*whole* request, so the contextvar is visible for the lifetime of
+the request.
 
 What this middleware does NOT do
 ================================
 
 * It does not enforce the role. ``require_*`` deps do that.
 * It does not write audit rows. ``db/tenant_scope.py`` is read-only
-  enforcement; writes happen in the endpoint that calls
-  ``repo.create_tenant_audit(...)`` (added in J-3).
+  for tenant scoping; the audit log has its own writer path.
 """
-from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger("api.middleware.tenant_scope")
 
@@ -71,13 +70,17 @@ logger = logging.getLogger("api.middleware.tenant_scope")
 USER_STATE_KEY = "user"
 
 
-class TenantContextMiddleware(BaseHTTPMiddleware):
+class TenantContextMiddleware:
     """Bind / clear the per-request tenant context.
+
+    Implemented as a pure ASGI3 middleware (no ``BaseHTTPMiddleware``)
+    so asyncpg stays on a single event loop. See the module docstring
+    for the long story.
 
     Parameters
     ----------
     app:
-        The Starlette / FastAPI application.
+        The ASGI application this middleware wraps.
     skip_paths:
         Path prefixes that should not get a context. The
         ``/health`` and ``/docs`` routes are included by default —
@@ -94,10 +97,13 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     )
 
     def __init__(self, app, *, skip_paths: Optional[tuple[str, ...]] = None):
-        super().__init__(app)
+        self.app = app
         self._skip_paths = tuple(skip_paths or self.DEFAULT_SKIP_PATHS)
 
-    def _resolve_user(self, request: Request) -> Optional[dict]:
+    # ------------------------------------------------------------------
+    # Token resolution (same as before; separated so the test can mock it)
+    # ------------------------------------------------------------------
+    def _resolve_user(self, path: str, headers: dict, query_string: bytes) -> Optional[dict]:
         """Decode the bearer / query token and return the user dict.
 
         Reuses ``verify_jwt_token`` so dev-bypass, JWT-decode, and
@@ -111,17 +117,23 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             return _dev_bypass_payload()
 
         # WebSocket path: token arrives as ?token=...
-        token = request.query_params.get("token")
+        from urllib.parse import parse_qs
+        token: Optional[str] = None
+        if query_string:
+            qs = parse_qs(query_string.decode("latin-1"))
+            if "token" in qs and qs["token"]:
+                token = qs["token"][0]
 
         if not token:
-            auth = request.headers.get("authorization") or request.headers.get(
-                "Authorization"
-            )
-            if auth:
-                if auth.startswith("Bearer "):
-                    token = auth[7:]
-                else:
-                    token = auth
+            for hk in (b"authorization", b"Authorization"):
+                hv = headers.get(hk)
+                if hv:
+                    hv = hv.decode("latin-1") if isinstance(hv, bytes) else hv
+                    if hv.startswith("Bearer "):
+                        token = hv[7:]
+                    else:
+                        token = hv
+                    break
 
         if not token:
             return None
@@ -133,10 +145,17 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             # just steps out of the way.
             return None
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        path = request.url.path
+    # ------------------------------------------------------------------
+    # Pure ASGI3 entrypoint
+    # ------------------------------------------------------------------
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            # Lifespan / websocket — let them pass through untouched.
+            return await self.app(scope, receive, send)
+
+        path: str = scope.get("path", "")
         if any(path.startswith(p) for p in self._skip_paths):
-            return await call_next(request)
+            return await self.app(scope, receive, send)
 
         # Lazy import: the middleware module is imported before
         # ``db.tenant_scope`` finishes its module-level setup, and
@@ -148,15 +167,12 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             register_tenant_scope_listener,
         )
 
-        # Make sure the listener is registered.
-        # ``register_tenant_scope_listener`` is idempotent so calling
-        # it on every request is fine.
+        # Make sure the listener is registered. Idempotent.
         register_tenant_scope_listener()
 
-        user = self._resolve_user(request)
-        # Stash on request.state too so J-3 endpoints (and tests)
-        # can read the resolved user without re-decoding.
-        setattr(request.state, USER_STATE_KEY, user)
+        headers = dict(scope.get("headers") or [])
+        query_string = scope.get("query_string", b"")
+        user = self._resolve_user(path, headers, query_string)
 
         ctx: Optional[dict] = None
         if user:
@@ -168,14 +184,17 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 "is_super_admin": bool(user.get("is_super_admin", False)),
             }
         token = set_request_context(ctx)
+
+        # Stash on the request.state-equivalent (we own the scope) so
+        # J-3 endpoints can read the resolved user without re-decoding
+        # the JWT. Starlette builds request.state out of scope["state"]
+        # so we have to seed that dict before the request lands.
+        scope_state = scope.setdefault("state", {})
+        scope_state[USER_STATE_KEY] = user
+
         try:
-            response = await call_next(request)
-            return response
+            await self.app(scope, receive, send)
         finally:
-            # Reset *after* the response is fully written so any
-            # late ORM calls in the response middleware still see
-            # the context. ContextVar.reset is a no-op once the
-            # token's binding is gone, but we keep the try/finally
-            # for clarity and to survive middleware-raised
-            # exceptions.
+            # Reset *after* the inner app returns so any late ORM
+            # calls in response middleware still see the context.
             reset_request_context(token)

@@ -68,3 +68,6 @@ cryptography>=41.0.0
 # Optional: Faster JSON parsing (uncomment if needed)
 # =============================================================================
 # ujson==5.10.0
+
+# Email validation (Pydantic EmailStr requires this)
+email-validator==2.2.0
