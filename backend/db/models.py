@@ -22,7 +22,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
 
@@ -1307,4 +1307,134 @@ class TenantAudit(Base):
             "targetUserId": self.target_user_id,
             "details": self.details,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Plan I: AI Studio — chat-style conversation + message history
+# ---------------------------------------------------------------------------
+# Plan I Phase 1 introduces a small subset of the AI Studio feature
+# (the multi-agent / tool / thinking parts land in Phase 2). The two
+# tables here are the bare persistence layer the SSE driver in
+# ``backend/core/execution/ai_studio_runner.py`` reads from and writes
+# to. Schema mirrors the Plan I §三 7 spec; tenant scope is nullable
+# so the migration can land before any seed user is created.
+# ---------------------------------------------------------------------------
+
+
+class AIStudioConversation(Base):
+    """
+    AI Studio — a single chat conversation owned by one user.
+
+    The Plan I MVP is single-agent (no handoff), single-model per
+    conversation, single-tenant. ``provider_id`` and ``model`` are
+    snapshots of the choice the user made at the moment they sent
+    the first message; flipping the dropdown mid-conversation
+    affects subsequent messages only (Phase 2 may thread a system
+    message to explain the switch).
+    """
+
+    __tablename__ = "ai_studio_conversations"
+
+    id = Column(String(64), primary_key=True)
+    title = Column(String(256), nullable=False, default="New chat")
+    user_id = Column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Plan J: tenant-scoped. Nullable so the migration can land
+    # before any seed user is created (the alembic migration
+    # backfills ``tnt_default`` for existing rows).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    provider_id = Column(String(64), nullable=False, default="minimax")
+    model = Column(String(128), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    messages = relationship(
+        "AIStudioMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="AIStudioMessage.timestamp",
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "userId": self.user_id,
+            "tenantId": self.tenant_id,
+            "providerId": self.provider_id,
+            "model": self.model,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class AIStudioMessage(Base):
+    """
+    AI Studio — a single message in a conversation.
+
+    ``type`` is the free-form Plan I §三 2 event vocabulary:
+
+    - ``"user"`` — the caller's text
+    - ``"assistant"`` — the model's final reply (the SSE driver
+      concatenates every ``content`` chunk and persists one
+      ``assistant`` row at the end of the turn)
+    - ``"thinking"`` — reserved for Phase 2; chain-of-thought text
+    - ``"tool_call"`` — reserved for Phase 2; structured tool call
+    - ``"tool_result"`` — reserved for Phase 2; tool result text
+
+    For Phase 1 the SSE driver only writes ``user`` and ``assistant``
+    rows. The other type values exist so Phase 2 doesn't need a
+    schema change.
+    """
+
+    __tablename__ = "ai_studio_messages"
+
+    id = Column(String(64), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey("ai_studio_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    type = Column(String(32), nullable=False)
+    content = Column(Text, nullable=True)
+    tool_name = Column(String(128), nullable=True)
+    tool_args = Column(JSON, nullable=True)
+    tool_result = Column(Text, nullable=True)
+    agent_role = Column(String(32), nullable=True)
+    timestamp = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    conversation = relationship(
+        "AIStudioConversation", back_populates="messages"
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "conversationId": self.conversation_id,
+            "type": self.type,
+            "content": self.content,
+            "toolName": self.tool_name,
+            "toolArgs": self.tool_args,
+            "toolResult": self.tool_result,
+            "agentRole": self.agent_role,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }
