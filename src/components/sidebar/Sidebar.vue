@@ -25,6 +25,7 @@ import {
   Radio,
   Settings,
   ShieldCheck,
+  Sparkles,
   Square,
   Sun,
   Terminal,
@@ -81,6 +82,7 @@ onMounted(() => {
 const navItems = computed(() => [
   { id: 'board', icon: Columns3, label: 'Board', meta: 'Issues', to: '/' },
   { id: 'command-center', icon: Terminal, label: 'Command Center', meta: 'ECC', to: '/command-center' },
+  { id: 'ai-studio', icon: Sparkles, label: 'AI Studio', meta: 'Chat', to: '/ai-studio' },
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', meta: 'Delivery', to: '/dashboard' },
   { id: 'agents', icon: Bot, label: 'Agents', meta: 'Runners', to: '/agents' },
   { id: 'lanes', icon: GitPullRequest, label: 'Lanes', meta: 'Roles', to: '/lanes' },
