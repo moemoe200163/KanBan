@@ -64,6 +64,10 @@ PyJWT==2.10.0
 # Encryption - Fernet symmetric encryption for API keys
 cryptography>=41.0.0
 
+# Plan I (AI Studio): Server-Sent Events for the chat streaming driver
+# Pinned to a 2.x release for FastAPI 0.115 + Starlette 0.41 compat.
+sse-starlette==2.0.0
+
 # =============================================================================
 # Optional: Faster JSON parsing (uncomment if needed)
 # =============================================================================
