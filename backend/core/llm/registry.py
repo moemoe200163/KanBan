@@ -2,9 +2,13 @@
 LLM Provider Registry
 
 Reads provider definitions and env-based config to build the provider
-list. Never exposes full secrets to the API layer.
+list.  Never exposes full secrets to the API layer.
+
+Priority for provider display values:
+    DB config  >  env var  >  static definition
 """
 
+import asyncio
 import os
 import logging
 from typing import Dict, List, Optional
@@ -45,8 +49,25 @@ def _check_env(env_var: Optional[str]) -> tuple[bool, Optional[str], Optional[st
     return False, None, env_var
 
 
-def list_providers() -> List[dict]:
-    """Return all providers with their current status."""
+# -----------------------------------------------------------------------
+# Sync provider list (env-var based, no DB)
+# -----------------------------------------------------------------------
+
+def list_providers(db_configs: Optional[List[dict]] = None) -> List[dict]:
+    """Return all providers with their current status.
+
+    When *db_configs* is provided (list of dicts from
+    ``list_llm_provider_configs()``), DB values override env-var values
+    for fields like ``baseUrl``, ``model``, ``maskedSecret``.
+    """
+    # Index DB configs by provider_id for fast lookup
+    db_by_id: Dict[str, dict] = {}
+    if db_configs:
+        for cfg in db_configs:
+            pid = cfg.get("providerId") or cfg.get("provider_id")
+            if pid:
+                db_by_id[pid] = cfg
+
     results = []
     for p in PROVIDERS:
         configured, masked, env_var = _check_env(p.auth_env_var)
@@ -56,49 +77,111 @@ def list_providers() -> List[dict]:
         if p.adapter == "local-safe-runner":
             configured = True
             health = "healthy"
-        elif p.adapter == "anthropic-compatible":
-            # Anthropic-compatible adapters need both AUTH_TOKEN and BASE_URL
-            base_url_set = bool(os.environ.get("ANTHROPIC_BASE_URL", ""))
-            if configured and not base_url_set:
-                configured = False
-                error = "Set ANTHROPIC_BASE_URL to configure"
-            elif not configured:
-                error = f"Set {env_var} to configure" if env_var else None
         elif not configured:
             health = "unknown"
             error = f"Set {env_var} to configure" if env_var else None
 
+        # --- Merge DB config on top of env-var / static defaults --------
+        db_cfg = db_by_id.get(p.id)
+        if db_cfg:
+            # DB has a saved API key prefix/last4 -- use that for display
+            db_prefix = db_cfg.get("apiKeyPrefix")
+            db_last4 = db_cfg.get("apiKeyLast4")
+            if db_prefix or db_last4:
+                masked = f"{db_prefix or ''}...{db_last4 or ''}"
+                configured = True
+
+            # DB-provided base URL / model override static defaults
+            # (These are surfaced in the result dict below.)
+
+        # Determine credential source
+        credential_source = "none"
+        if db_cfg and (db_cfg.get("apiKeyPrefix") or db_cfg.get("apiKeyLast4")):
+            credential_source = "db"
+        elif configured and p.auth_env_var:
+            credential_source = "env"
+
         status = "configured" if configured else ("disabled" if not p.enabled else "missing_key")
 
-        results.append({
+        result: dict = {
             "id": p.id,
             "name": p.name,
             "adapter": p.adapter,
-            "enabled": p.enabled,
+            "enabled": p.enabled if not db_cfg else db_cfg.get("enabled", p.enabled),
             "configured": configured,
             "status": status,
-            "defaultModel": p.default_model,
+            "defaultModel": (db_cfg.get("model") if db_cfg else None) or p.default_model,
             "capabilities": p.capabilities,
-            "authType": p.auth_type,
+            "authType": (db_cfg.get("authType") if db_cfg else None) or p.auth_type,
             "authEnvVar": env_var,
             "maskedSecret": masked,
             "healthStatus": health,
             "lastChecked": None,
             "errorSummary": error,
-        })
+            "credentialSource": credential_source,
+        }
+
+        # Surface DB-specific fields when present
+        if db_cfg:
+            if db_cfg.get("baseUrl"):
+                result["baseUrl"] = db_cfg["baseUrl"]
+            if db_cfg.get("apiShape"):
+                result["apiShape"] = db_cfg["apiShape"]
+            if db_cfg.get("endpointPath"):
+                result["endpointPath"] = db_cfg["endpointPath"]
+            if db_cfg.get("lastTestStatus"):
+                result["healthStatus"] = db_cfg["lastTestStatus"]
+            if db_cfg.get("lastTestAt"):
+                result["lastChecked"] = db_cfg["lastTestAt"]
+            if db_cfg.get("lastErrorMessage"):
+                result["errorSummary"] = db_cfg["lastErrorMessage"]
+
+        results.append(result)
     return results
 
 
-def get_provider(provider_id: str) -> Optional[dict]:
+def get_provider(provider_id: str, db_configs: Optional[List[dict]] = None) -> Optional[dict]:
     """Return a single provider by ID."""
     p = PROVIDER_MAP.get(provider_id)
     if not p:
         return None
-    providers = list_providers()
+    providers = list_providers(db_configs=db_configs)
     for prov in providers:
         if prov["id"] == provider_id:
             return prov
     return None
+
+
+# -----------------------------------------------------------------------
+# Async DB-aware helpers (used by API layer)
+# -----------------------------------------------------------------------
+
+async def list_providers_from_db() -> List[dict]:
+    """Read provider configs from DB and return merged provider list.
+
+    Falls back to env-var-only mode when the DB is unavailable.
+    """
+    try:
+        from db.repository import list_llm_provider_configs
+        db_configs = await list_llm_provider_configs()
+        return list_providers(db_configs=db_configs)
+    except Exception as e:
+        logger.warning(f"Failed to read DB configs for provider list: {e}")
+        return list_providers()
+
+
+async def get_provider_from_db(provider_id: str) -> Optional[dict]:
+    """Read a single provider config from DB and return merged result.
+
+    Falls back to env-var-only mode when the DB is unavailable.
+    """
+    try:
+        from db.repository import list_llm_provider_configs
+        db_configs = await list_llm_provider_configs()
+        return get_provider(provider_id, db_configs=db_configs)
+    except Exception as e:
+        logger.warning(f"Failed to read DB config for provider {provider_id}: {e}")
+        return get_provider(provider_id)
 
 
 def get_provider_def(provider_id: str) -> Optional[LLMProviderDef]:
@@ -161,14 +244,6 @@ def check_health(provider_id: str) -> dict:
 
     configured, _, env_var = _check_env(p.auth_env_var)
 
-    # Anthropic-compatible adapters also need ANTHROPIC_BASE_URL
-    if p.adapter == "anthropic-compatible" and configured:
-        if not os.environ.get("ANTHROPIC_BASE_URL", ""):
-            return {
-                "status": "unhealthy",
-                "error": "Missing ANTHROPIC_BASE_URL",
-                "lastChecked": None,
-            }
     if not configured:
         return {
             "status": "unhealthy",

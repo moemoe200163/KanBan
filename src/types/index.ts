@@ -19,6 +19,48 @@ export type MoveStatus = 'idle' | 'pending' | 'confirmed' | 'failed'
 // ECC Job Status — backend control-plane lifecycle
 export type ECCJobStatus = 'queued' | 'running' | 'paused' | 'failed' | 'review_required' | 'completed' | 'cancelled'
 
+// ---------------------------------------------------------------------------
+// Cycle reports
+// ---------------------------------------------------------------------------
+// A Mavis-style handoff captured after a worker pass on an issue. The
+// ``verdict`` column is the auto-promote / leader-override accept/reject
+// of the work product; ``decision`` is the leader's review of the
+// report itself (approve the report, or send the worker back with
+// feedback). Both can coexist on the same row.
+
+export type CycleReportVerdict = 'pending' | 'pass' | 'fail' | 'blocked' | 'auto_passed'
+export type CycleReportDecision = 'approved' | 'changes_requested'
+
+export interface CycleReport {
+  id: string
+  issueId: string
+  jobId: string | null
+  authorId: string | null
+  authorName: string | null
+  plan: string
+  progressLog: Array<{ ts: string; status: string; message: string }>
+  deliverableSummary: string | null
+  verdict: CycleReportVerdict
+  verdictReason: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  // Review fields — populated by POST /cycle-reports/{id}/review
+  decision: CycleReportDecision | null
+  reviewComment: string | null
+  reviewedAt: string | null
+  reviewedBy: string | null
+  reviewedById: string | null
+}
+
+// Subset used by the /reviews queue — adds the parent issue
+// fields that the list endpoint joins in for inline display.
+export interface PendingCycleReport extends CycleReport {
+  issueKey: string
+  issueTitle: string
+  issueStatus: string
+  issuePriority?: string
+}
+
 export interface ECCJobEvent {
   timestamp: string
   status: ECCJobStatus
@@ -65,6 +107,7 @@ export interface ECCLogEntry {
   confidence?: number  // 0-1, agent's confidence in the action
   toolUsed?: string    // e.g., "bash", "edit", "read"
   duration?: number    // ms, execution time
+  runId?: string       // linked AgentRun ID for run-specific entries
 }
 
 // PR Diff View
@@ -176,6 +219,13 @@ export interface IssueArtifact {
   createdAt: string
 }
 
+// Acceptance Criteria
+export interface AcceptanceCriterion {
+  id: string
+  text: string
+  done: boolean
+}
+
 // Issue Interface
 export interface Issue {
   id: string
@@ -192,7 +242,12 @@ export interface Issue {
   storyPoints: number | null
   dependencies: string[]
   prUrl: string | null
-  ciStatus: 'pending' | 'passed' | 'failed' | null
+  // ``error`` is the new state added by the PR/CI webhook
+  // auto-fill path. It represents a system-level CI failure
+  // (timeout, infra outage) — distinct from ``failed`` which is
+  // a code/test failure. IssueCard.vue renders it as an orange
+  // dot so the leader can triage at a glance.
+  ciStatus: 'pending' | 'passed' | 'failed' | 'error' | null
   aiStatus: AIAgentStatus
   harnessType: HarnessType | null
   eccJobId: string | null
@@ -206,6 +261,8 @@ export interface Issue {
   moveStatus: MoveStatus
   moveError: string | null
   handoffs: Handoff[]
+  parentId: string | null
+  acceptanceCriteria: AcceptanceCriterion[]
   createdAt: string
   updatedAt: string
 }
@@ -224,10 +281,11 @@ export interface BoardState {
   isLoading: boolean
   selectedIssue: Issue | null
   isDetailOpen: boolean
-  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs'
+  activeDetailTab: 'overview' | 'ecc-logs' | 'diff' | 'collaboration' | 'handoffs' | 'cycles' | 'worker'
   jobs: ECCDispatchJob[]
   selectedJob: ECCDispatchJob | null
   isLoadingJobs: boolean
+  fetchError: string | null
   isNewIssueModalOpen: boolean
   createIssueError: string | null
   isCreatingIssue: boolean
@@ -242,6 +300,7 @@ export interface BoardState {
   searchQuery: string
   profileFilter: string
   harnessFilter: string
+  agentRoles: AgentRole[]
 }
 
 // ECC Command Mapping
@@ -301,7 +360,7 @@ export const HARNESS_CONFIGS: HarnessConfig[] = [
 // Kanban Protocol — Handoff Types
 // ============================================================================
 
-export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled'
+export type HandoffStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'blocked' | 'cancelled' | 'approved' | 'rejected' | 'rework'
 
 export type RetryPolicy = 'none' | 'fixed' | 'exponential'
 
@@ -322,6 +381,10 @@ export interface Handoff {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  decision: 'approve' | 'reject' | 'request_changes' | null
+  reviewComment: string | null
+  reviewedAt: string | null
+  reviewedBy: string | null
 }
 
 export interface WorkerLane {
@@ -338,6 +401,30 @@ export interface WorkerLane {
   retryMax: number
   nextLanes: string[]
   humanApprovalRequired: boolean
+}
+
+export interface AgentRole {
+  id: string
+  key: string
+  displayName: string
+  description: string
+  allowedProfiles: string[]
+  defaultProvider: string
+  defaultModel: string
+  allowedCommands: string[]
+  requiredCompletionFields: string[]
+  timeoutSeconds: number
+  retryPolicy: RetryPolicy
+  retryMax: number
+  nextRoles: string[]
+  humanApprovalRequired: boolean
+  enabled: boolean
+  isSystem: boolean
+  systemPrompt: string
+  taskPromptTemplate: string
+  reviewPromptTemplate: string
+  createdAt: string | null
+  updatedAt: string | null
 }
 
 export interface HandoffPreview {
@@ -376,6 +463,12 @@ export interface HandoffBlockRequest {
   blockReason: string
 }
 
+export interface HandoffReviewRequest {
+  decision: 'approve' | 'reject' | 'request_changes'
+  actor?: string | null
+  comment?: string | null
+}
+
 // ============================================================================
 // LLM Provider System
 // ============================================================================
@@ -392,13 +485,33 @@ export interface LLMProvider {
   configured: boolean
   status: LLMProviderStatus
   defaultModel: string | null
+  model: string | null
   capabilities: LLMCapability[]
   authType: 'api_key' | 'oauth' | 'cli_path' | 'none'
   authEnvVar: string | null
   maskedSecret: string | null
-  healthStatus: 'healthy' | 'unhealthy' | 'unknown'
+  healthStatus: 'healthy' | 'unhealthy' | 'unknown' | 'not_configured' | 'auth_error' | 'billing_error' | 'model_error' | 'rate_limited' | 'endpoint_error' | 'timeout'
   lastChecked: string | null
   errorSummary: string | null
+  baseUrl: string | null
+  apiShape: string | null
+  endpointPath: string | null
+  credentialSource: 'none' | 'env' | 'db'
+  lastTestStatus: string | null
+  lastLatencyMs: number | null
+  lastErrorMessage: string | null
+}
+
+export interface LLMTestResult {
+  provider: string
+  status: string
+  ok: boolean
+  latencyMs: number
+  model: string
+  baseUrl: string
+  checkedAt: string
+  message: string
+  safeError: string | null
 }
 
 export interface LLMProviderConfig {

@@ -3,6 +3,7 @@ Tests for audit log and analytics date/time filtering endpoints.
 
 Covers:
 - GET /api/v1/audit-logs — date_from, date_to, date range, keyword search, 422 on invalid dates
+- GET /api/v1/audit-logs — resource_id exact-match filter
 - GET /api/v1/audit-logs/stats — date range filtering
 - GET /api/v1/analytics/stats — date range filtering
 
@@ -131,6 +132,63 @@ def fresh_db(tmp_path, monkeypatch):
     new_engine.sync_engine.dispose()
 
 
+@pytest.fixture
+def fresh_db_with_resource_id_rows(tmp_path, monkeypatch):
+    """Point the engine at a fresh SQLite file and seed two audit log
+    entries that share the same action but have different resource_id
+    values. Used to exercise the resource_id exact-match filter in
+    isolation from the date/keyword fixtures."""
+    db_path = tmp_path / "test_audit_api_resource_id.db"
+    new_url = f"sqlite+aiosqlite:///{db_path}"
+
+    new_engine = create_async_engine(new_url, echo=False)
+    new_sessionmaker = async_sessionmaker(new_engine, class_=AsyncSession, expire_on_commit=False)
+
+    def _set_fk_pragma(dbapi_con, con_record):
+        cursor = dbapi_con.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    event.listen(new_engine.sync_engine, "connect", _set_fk_pragma)
+
+    monkeypatch.setattr(db_module, "engine", new_engine, raising=False)
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", new_sessionmaker, raising=False)
+    monkeypatch.setattr(db_module, "_db_initialized", False, raising=False)
+    monkeypatch.setattr(db_module, "DATABASE_URL", new_url, raising=False)
+
+    import asyncio
+
+    async def _setup():
+        async with new_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+
+        ts = datetime.now(timezone.utc)
+        async with new_sessionmaker() as session:
+            # Two rows: same action, different resource_id.
+            session.add(AuditLog(
+                id="audit_ri_a",
+                action="cycle_report.review",
+                resource="cycle_report",
+                resource_id="cr_alpha",
+                agent_name="leader",
+                timestamp=ts,
+            ))
+            session.add(AuditLog(
+                id="audit_ri_b",
+                action="cycle_report.review",
+                resource="cycle_report",
+                resource_id="cr_beta",
+                agent_name="leader",
+                timestamp=ts,
+            ))
+            await session.commit()
+        db_module._db_initialized = True
+
+    asyncio.run(_setup())
+    yield
+    new_engine.sync_engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/audit-logs — basic listing
 # ---------------------------------------------------------------------------
@@ -233,6 +291,52 @@ def test_audit_logs_keyword_search(fresh_db):
     body2 = response2.json()
     assert body2["total"] == 1
     assert body2["entries"][0]["id"] == "audit_mid"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/audit-logs — resource_id exact-match filter
+# ---------------------------------------------------------------------------
+
+def test_audit_logs_resource_id_filter(fresh_db_with_resource_id_rows):
+    """resource_id is an exact match on the resource_id column.
+
+    With two rows sharing the same action but different resource_id,
+    filtering on one resource_id must return only that row — not the
+    sibling row and not all rows.
+    """
+    # Filter on cr_alpha — only audit_ri_a should come back.
+    response = client.get(
+        "/api/v1/audit-logs",
+        params={"resource_id": "cr_alpha"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert len(body["entries"]) == 1
+    entry = body["entries"][0]
+    assert entry["id"] == "audit_ri_a"
+    assert entry["resourceId"] == "cr_alpha"
+    assert entry["action"] == "cycle_report.review"
+
+    # Filter on cr_beta — only audit_ri_b should come back.
+    response_b = client.get(
+        "/api/v1/audit-logs",
+        params={"resource_id": "cr_beta"},
+    )
+    assert response_b.status_code == 200
+    body_b = response_b.json()
+    assert body_b["total"] == 1
+    assert body_b["entries"][0]["id"] == "audit_ri_b"
+    assert body_b["entries"][0]["resourceId"] == "cr_beta"
+
+    # resource_id filter combines with action filter — a mismatched
+    # action on the same resource_id should return zero rows.
+    response_miss = client.get(
+        "/api/v1/audit-logs",
+        params={"resource_id": "cr_alpha", "action": "issue.created"},
+    )
+    assert response_miss.status_code == 200
+    assert response_miss.json()["total"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 """Pydantic schemas for Kanban Protocol API requests and responses."""
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,9 @@ class HandoffDispatchRequest(BaseModel):
     issueKey: str = Field(..., min_length=1, max_length=32)
     profile: str = Field(..., min_length=1, max_length=32)
     actor: Optional[str] = Field(default=None, max_length=128)
+    execution_mode: Optional[str] = Field(default=None, description="safe-runner, api-agent, or cli-agent")
+    provider: Optional[str] = Field(default=None, description="LLM provider id")
+    model: Optional[str] = Field(default=None, description="Model id")
 
 
 class HandoffBlockRequest(BaseModel):
@@ -39,6 +42,12 @@ class HandoffCommentRequest(BaseModel):
     authorId: Optional[str] = Field(default=None, max_length=64)
     authorName: Optional[str] = Field(default=None, max_length=128)
     commentType: str = Field(default="handoff", max_length=32)
+
+
+class HandoffReviewRequest(BaseModel):
+    decision: Literal["approve", "reject", "request_changes"]
+    actor: Optional[str] = Field(default=None, max_length=128)
+    comment: Optional[str] = Field(default=None, max_length=10000)
 
 
 class HandoffPreviewResponse(BaseModel):

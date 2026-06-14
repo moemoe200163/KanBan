@@ -5,8 +5,14 @@ idempotent on read; transitions raise ``ValueError`` on illegal moves.
 """
 from typing import Optional
 
+from pydantic import ValidationError
+
 from db import repository as repo
-from core.kanban_protocol.lanes import get_lane
+from core.kanban_protocol.lanes import get_lane_db
+from core.kanban_protocol.payloads import (
+    LANE_PAYLOADS,
+    PayloadValidationError,
+)
 from core.kanban_protocol.scope_guard import check_payload
 
 
@@ -30,7 +36,7 @@ class HandoffService:
     ) -> dict:
         # Validate target lane up front so callers fail fast.
         try:
-            get_lane(to_lane)
+            await get_lane_db(to_lane)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -70,6 +76,9 @@ class HandoffService:
         issue_key: str,
         profile: str,
         actor: Optional[str],
+        execution_mode: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> dict:
         from core.kanban_protocol.orchestrator import create_job_for_handoff
 
@@ -82,7 +91,7 @@ class HandoffService:
                 "only 'accepted' handoffs can be dispatched"
             )
 
-        lane = get_lane(current["toLane"])
+        lane = await get_lane_db(current["toLane"])
         payload = current.get("payload") or {}
 
         if lane.human_approval_required and not payload.get("approver"):
@@ -91,13 +100,17 @@ class HandoffService:
                 "payload must include an 'approver' field before dispatch"
             )
 
-        job = await create_job_for_handoff(
+        result = await create_job_for_handoff(
             handoff_id=handoff_id,
             issue_id=current["issueId"],
             issue_key=issue_key,
             to_lane=lane.key,
             profile=profile,
             actor=actor,
+            board_id=current.get("boardId", "board-default"),
+            execution_mode=execution_mode,
+            provider=provider,
+            model=model,
         )
 
         updated = await repo.update_issue_handoff(
@@ -106,7 +119,7 @@ class HandoffService:
             actor_field="dispatched_by",
             actor_value=actor,
         )
-        return {"handoff": updated, "job": job}
+        return {"handoff": updated, "job": result.get("job") or result, "_run_id": result.get("_run_id")}
 
     async def complete(
         self,
@@ -124,23 +137,30 @@ class HandoffService:
                 "only 'in_progress' or 'accepted' handoffs can be completed"
             )
 
-        lane = get_lane(current["toLane"])
-        merged_payload = dict(current.get("payload") or {})
-        if payload:
-            merged_payload.update(payload)
-        missing = [
-            field for field in lane.required_completion_fields
-            if field not in merged_payload
-        ]
-        if missing:
-            raise ValueError(
-                f"Cannot complete handoff: missing required fields {missing}"
-            )
+        lane = await get_lane_db(current["toLane"])
+        existing = current.get("payload") or {}
+        caller = payload or {}
+        final_payload = {**existing, **caller}
 
-        # Refuse out-of-scope payload keys (archived security work, etc.).
-        check_payload(merged_payload)
+        # Guardrail #1: scope guard runs FIRST so denied keys are not silently
+        # dropped by Pydantic's `extra="forbid"`.
+        check_payload(final_payload)
 
-        return await repo.update_issue_handoff(
+        payload_model = LANE_PAYLOADS[lane.key]
+        try:
+            validated = payload_model.model_validate(final_payload)
+        except ValidationError as exc:
+            raise PayloadValidationError(
+                lane=lane.key,
+                errors=[
+                    {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+                    for e in exc.errors()
+                ],
+            ) from exc
+
+        merged_payload = validated.model_dump(mode="json")
+
+        result = await repo.update_issue_handoff(
             handoff_id,
             status="completed",
             payload=merged_payload,
@@ -148,6 +168,190 @@ class HandoffService:
             actor_value=actor,
             set_completed_at=True,
         )
+
+        # Post-delivery issue status sync: delivery is the terminal lane,
+        # so completing it means the issue is done.
+        if current["toLane"] == "delivery":
+            await repo.update_issue_status(current["issueId"], "done")
+
+        return result
+
+    async def system_complete(
+        self,
+        *,
+        handoff_id: str,
+        result_summary: Optional[str] = None,
+    ) -> dict:
+        """System-initiated completion that bypasses payload validation.
+
+        Used by the Delivery Orchestrator when an ECC job finishes and the
+        handoff needs to transition to 'completed' without requiring lane-
+        specific payload fields (which are review-time concerns).
+        """
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        if current["status"] not in ("in_progress", "accepted"):
+            raise ValueError(
+                f"Cannot complete handoff in status '{current['status']}'; "
+                "only 'in_progress' or 'accepted' handoffs can be completed"
+            )
+
+        # Preserve existing payload, merge result summary if provided.
+        existing = current.get("payload") or {}
+        merged = {**existing}
+        if result_summary:
+            merged["result_summary"] = result_summary
+
+        return await repo.update_issue_handoff(
+            handoff_id,
+            status="completed",
+            payload=merged,
+            actor_field="completed_by",
+            actor_value="system",
+            set_completed_at=True,
+        )
+
+    async def review(
+        self,
+        *,
+        handoff_id: str,
+        decision: str,
+        actor: Optional[str],
+        comment: Optional[str] = None,
+    ) -> dict:
+        """Reviewer decides on a completed handoff: approve, reject, or request_changes.
+
+        Returns a dict with keys:
+        - ``handoff``: the updated handoff record
+        - ``routing``: a dict describing the routing action taken or suggested
+          - ``action``: ``"none"`` | ``"rework"`` | ``"reject"``
+          - ``next_handoff``: the newly created handoff (for rework/reject), or ``None``
+          - ``next_lane``: the target lane for the routing action
+        """
+        if decision not in ("approve", "reject", "request_changes"):
+            raise ValueError(
+                f"Invalid decision '{decision}'; "
+                "must be 'approve', 'reject', or 'request_changes'"
+            )
+
+        current = await repo.get_issue_handoff(handoff_id)
+        if not current:
+            raise ValueError(f"Handoff '{handoff_id}' not found")
+        # Guard: reject re-review before status check so the message is clear
+        # even after a first review moved the status away from "completed".
+        if current.get("decision") is not None:
+            raise ValueError(
+                f"Handoff '{handoff_id}' already reviewed "
+                f"with decision '{current['decision']}'"
+            )
+        if current["status"] != "completed":
+            raise ValueError(
+                f"Cannot review handoff in status '{current['status']}'; "
+                "only 'completed' handoffs can be reviewed"
+            )
+
+        # Determine new status.
+        if decision == "approve":
+            new_status = "approved"
+        else:
+            new_status = "rejected" if decision == "reject" else "rework"
+
+        updated = await repo.update_issue_handoff(
+            handoff_id,
+            status=new_status,
+            decision=decision,
+            review_comment=comment,
+            reviewed_by=actor,
+            set_reviewed_at=True,
+        )
+
+        # --- Decision routing ---
+        from_lane = current.get("fromLane")
+        issue_id = current["issueId"]
+        board_id = current.get("boardId", "board-default")
+
+        routing: dict = {"action": "none", "next_handoff": None, "next_lane": None}
+
+        if decision == "request_changes":
+            # Create a rework handoff back to the originating lane.
+            target_lane = from_lane or "triage"
+            rework_payload: dict = {
+                "rework_reason": comment or "",
+                "original_reviewer": actor,
+                "rework_from_review": handoff_id,
+            }
+            next_h = await self.create(
+                issue_id=issue_id,
+                board_id=board_id,
+                from_lane="review",
+                to_lane=target_lane,
+                payload=rework_payload,
+                created_by=actor,
+            )
+            routing = {"action": "rework", "next_handoff": next_h, "next_lane": target_lane}
+
+        elif decision == "reject":
+            # Route to triage for re-evaluation.
+            target_lane = "triage"
+            reject_payload: dict = {
+                "rejection_reason": comment or "",
+                "original_reviewer": actor,
+                "rejected_from_review": handoff_id,
+                "rejected_from_lane": from_lane,
+            }
+            next_h = await self.create(
+                issue_id=issue_id,
+                board_id=board_id,
+                from_lane="review",
+                to_lane=target_lane,
+                payload=reject_payload,
+                created_by=actor,
+            )
+            routing = {"action": "reject", "next_handoff": next_h, "next_lane": target_lane}
+
+        elif decision == "approve":
+            # Use lane.next_lanes to suggest/create the next handoff.
+            to_lane = current.get("toLane", "")
+            try:
+                lane = await get_lane_db(to_lane)
+                next_lane_candidates = lane.next_lanes
+            except KeyError:
+                next_lane_candidates = []
+
+            if next_lane_candidates:
+                target_lane = next_lane_candidates[0]
+                approve_payload: dict = {
+                    "approved_by": actor,
+                    "approved_from_review": handoff_id,
+                }
+                next_h = await self.create(
+                    issue_id=issue_id,
+                    board_id=board_id,
+                    from_lane=to_lane,
+                    to_lane=target_lane,
+                    payload=approve_payload,
+                    created_by=actor,
+                )
+                routing = {"action": "approve", "next_handoff": next_h, "next_lane": target_lane}
+
+        # --- Issue status sync ---
+        _status_map = {
+            "delivery": "in_progress",
+            "frontend": "in_progress",
+            "backend": "in_progress",
+            "qa": "in_progress",
+            "review": "human_review",
+            "triage": "backlog",
+        }
+        target = routing.get("next_lane")
+        if target and target in _status_map:
+            await repo.update_issue_status(issue_id, _status_map[target])
+        elif decision == "reject":
+            # Reject without routing → move to backlog
+            await repo.update_issue_status(issue_id, "backlog")
+
+        return {"handoff": updated, "routing": routing}
 
     async def block(self, *, handoff_id: str, actor: Optional[str], reason: str) -> dict:
         if not reason or not reason.strip():

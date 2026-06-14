@@ -1,30 +1,45 @@
-"""Worker Lane read-only API."""
+"""Worker Lane read-only API.
+
+Reads from the agent_roles database table. On startup, default roles are
+seeded from the code-defined WORKER_LANES registry via seed_default_roles().
+"""
+import logging
+
 from fastapi import APIRouter
 
-from core.kanban_protocol.lanes import WORKER_LANES
+from db import repository as repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 @router.get("/lanes")
 async def list_lanes():
-    """Return the code-defined worker lane registry."""
-    lanes = [
-        {
-            "key": lane.key,
-            "displayName": lane.display_name,
-            "description": lane.description,
-            "allowedProfiles": lane.allowed_profiles,
-            "defaultProvider": lane.default_provider,
-            "defaultModel": lane.default_model,
-            "allowedCommands": lane.allowed_commands,
-            "requiredCompletionFields": lane.required_completion_fields,
-            "timeoutSeconds": lane.timeout_seconds,
-            "retryPolicy": lane.retry_policy,
-            "retryMax": lane.retry_max,
-            "nextLanes": lane.next_lanes,
-            "humanApprovalRequired": lane.human_approval_required,
-        }
-        for lane in WORKER_LANES.values()
-    ]
+    """Return enabled agent roles in the legacy lanes response shape.
+
+    The response shape is kept identical to the original WORKER_LANES-based
+    response for backward compatibility. The key difference:
+    DB column ``next_roles`` is mapped to ``nextLanes`` in the response.
+    """
+    roles = await repo.list_agent_roles(include_disabled=False)
+
+    lanes = []
+    for role in roles:
+        lanes.append({
+            "key": role["key"],
+            "displayName": role["displayName"],
+            "description": role["description"],
+            "allowedProfiles": role["allowedProfiles"],
+            "defaultProvider": role["defaultProvider"],
+            "defaultModel": role["defaultModel"],
+            "allowedCommands": role["allowedCommands"],
+            "requiredCompletionFields": role["requiredCompletionFields"],
+            "timeoutSeconds": role["timeoutSeconds"],
+            "retryPolicy": role["retryPolicy"],
+            "retryMax": role["retryMax"],
+            "nextLanes": role["nextRoles"],
+            "humanApprovalRequired": role["humanApprovalRequired"],
+        })
+
     return {"lanes": lanes}

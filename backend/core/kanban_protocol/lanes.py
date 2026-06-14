@@ -14,12 +14,21 @@ class WorkerLane:
     default_provider: str                         # e.g. "claude-code"
     default_model: str                            # e.g. "claude-3-5-sonnet"
     allowed_commands: List[str]
-    required_completion_fields: List[str]
     timeout_seconds: int
     retry_policy: RetryPolicy
     retry_max: int
     next_lanes: List[str]
     human_approval_required: bool
+
+
+@property
+def required_completion_fields(self) -> List[str]:
+    """Derived from LANE_PAYLOADS schema — single source of truth."""
+    from core.kanban_protocol.payloads import LANE_PAYLOADS
+    return list(LANE_PAYLOADS[self.key].model_fields.keys())
+
+
+WorkerLane.required_completion_fields = required_completion_fields
 
 
 WORKER_LANES: dict[str, WorkerLane] = {
@@ -31,7 +40,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=general"],
-        required_completion_fields=["lane_recommendation", "summary"],
         timeout_seconds=900,
         retry_policy="none",
         retry_max=0,
@@ -46,7 +54,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=general"],
-        required_completion_fields=["acceptance_criteria"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
@@ -61,7 +68,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=backend"],
-        required_completion_fields=["design_notes", "interfaces"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
@@ -76,7 +82,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=frontend"],
-        required_completion_fields=["diff_summary", "screenshots"],
         timeout_seconds=1800,
         retry_policy="fixed",
         retry_max=1,
@@ -91,7 +96,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/loop-start --profile=backend"],
-        required_completion_fields=["diff_summary", "test_results"],
         timeout_seconds=1800,
         retry_policy="fixed",
         retry_max=1,
@@ -106,7 +110,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/quality-gate --verify"],
-        required_completion_fields=["test_results", "coverage_pct"],
         timeout_seconds=3600,
         retry_policy="exponential",
         retry_max=2,
@@ -121,7 +124,6 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/harness-pause"],
-        required_completion_fields=["reviewer", "decision"],
         timeout_seconds=86400,
         retry_policy="none",
         retry_max=0,
@@ -136,11 +138,33 @@ WORKER_LANES: dict[str, WorkerLane] = {
         default_provider="claude-code",
         default_model="claude-3-5-sonnet",
         allowed_commands=["/release-ready --merge"],
-        required_completion_fields=["release_notes"],
         timeout_seconds=1800,
         retry_policy="none",
         retry_max=0,
         next_lanes=[],
+        human_approval_required=True,
+    ),
+    # Mavis — Plan C worker lane. Mavis is the user's AI assistant
+    # operating as a shadow worker: jobs are dispatched with
+    # harness="mavis" + execution_mode="shadow" and Mavis pushes
+    # events to the board via the mavis event endpoint instead of
+    # a long-running runner process. retry_policy="none" mirrors
+    # the "manual" semantics from the plan (Mavis decides whether
+    # to retry, not the lane), and human_approval_required=True
+    # because every Mavis-written job needs leader review before
+    # the issue can move to done.
+    "mavis": WorkerLane(
+        key="mavis",
+        display_name="Mavis",
+        description="Mavis orchestrator worker — handles bug fixes, refactors, and cross-cutting investigation as a shadow worker (events pushed by the Mavis CLI rather than a long-running runner).",
+        allowed_profiles=["general", "backend", "frontend", "refactor", "debug"],
+        default_provider="minimax",
+        default_model="MiniMax-M3",
+        allowed_commands=["/loop-start", "/loop-reset", "/harness-pause"],
+        timeout_seconds=3600,
+        retry_policy="none",
+        retry_max=0,
+        next_lanes=["qa", "review"],
         human_approval_required=True,
     ),
 }
@@ -154,3 +178,66 @@ def get_lane(key: str) -> WorkerLane:
             f"Known lanes: {sorted(WORKER_LANES.keys())}"
         )
     return WORKER_LANES[key]
+
+
+# ---------------------------------------------------------------------------
+# DB-backed lane resolution with in-memory cache
+# ---------------------------------------------------------------------------
+
+_role_cache: dict[str, WorkerLane] = {}
+_cache_populated = False
+
+
+async def _refresh_cache() -> None:
+    """Refresh the in-memory cache from the database."""
+    global _role_cache, _cache_populated
+    from db.repository import list_agent_roles
+
+    try:
+        roles = await list_agent_roles(include_disabled=False)
+        _role_cache.clear()
+        for r in roles:
+            _role_cache[r["key"]] = WorkerLane(
+                key=r["key"],
+                display_name=r["displayName"],
+                description=r["description"],
+                allowed_profiles=r["allowedProfiles"],
+                default_provider=r["defaultProvider"],
+                default_model=r["defaultModel"],
+                allowed_commands=r["allowedCommands"],
+                timeout_seconds=r["timeoutSeconds"],
+                retry_policy=r["retryPolicy"],
+                retry_max=r["retryMax"],
+                next_lanes=r["nextRoles"],
+                human_approval_required=r["humanApprovalRequired"],
+            )
+        _cache_populated = True
+    except Exception:
+        # DB unavailable — reset so next call retries.
+        _cache_populated = False
+
+
+async def get_lane_db(key: str) -> WorkerLane:
+    """Return lane from the DB cache, falling back to code-defined ``WORKER_LANES``.
+
+    The cache is lazily populated on the first call. Subsequent calls reuse it
+    until ``clear_role_cache()`` is invoked (e.g. after an admin role update).
+    """
+    global _cache_populated
+    if not _cache_populated:
+        await _refresh_cache()
+    if key in _role_cache:
+        return _role_cache[key]
+    # Fallback to code-defined lanes when the key is not in the DB.
+    return get_lane(key)
+
+
+def clear_role_cache() -> None:
+    """Clear the in-memory role cache so the next ``get_lane_db()`` reads from DB.
+
+    Call this after creating, updating, or deleting agent roles via the admin
+    API to ensure handoff routing picks up the latest configuration.
+    """
+    global _role_cache, _cache_populated
+    _role_cache.clear()
+    _cache_populated = False

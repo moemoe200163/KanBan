@@ -119,6 +119,8 @@ const handleCreateKeydown = (e: KeyboardEvent) => {
         @select="emit('cardClick', issue)"
         @retry="emit('retry', $event)"
         @start="emit('start', $event)"
+        @archive="emit('archive', $event)"
+        @unarchive="emit('unarchive', $event)"
         @dragover.prevent
         @drop="handleIssueCardDrop($event, index)"
       />
@@ -132,6 +134,7 @@ const handleCreateKeydown = (e: KeyboardEvent) => {
           ref="createInput"
           v-model="newIssueTitle"
           type="text"
+          :aria-label="`Issue title for ${column.title}`"
           placeholder="Issue title..."
           class="kanban-column__create-input"
           @keydown="handleCreateKeydown"
@@ -139,12 +142,14 @@ const handleCreateKeydown = (e: KeyboardEvent) => {
         <div class="kanban-column__create-actions">
           <button
             class="kanban-column__create-btn kanban-column__create-btn--submit"
+            :aria-label="`Create issue in ${column.title}`"
             @click="submitCreate"
           >
             <Check class="w-4 h-4" />
           </button>
           <button
             class="kanban-column__create-btn kanban-column__create-btn--cancel"
+            aria-label="Cancel issue creation"
             @click="cancelCreate"
           >
             <X class="w-4 h-4" />

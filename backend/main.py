@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 import logging
 import asyncio
+import os
 from typing import Set
 
 # Configure logging
@@ -19,6 +20,21 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Plan J phase 2 — register the SQLAlchemy tenant-scope listener at
+# process start. The listener is idempotent so importing the module
+# twice (here + via the middleware) is safe; the goal is to make
+# sure the listener is bound *before* the first session.execute()
+# fires — both the lifespan's ``init_db`` and the auth dep paths
+# open sessions, and we want both to be covered.
+# ---------------------------------------------------------------------------
+try:
+    from db.tenant_scope import register_tenant_scope_listener
+    register_tenant_scope_listener()
+except Exception:  # pragma: no cover - non-fatal at boot
+    logger.exception("Failed to register tenant scope listener at startup")
 
 
 # ============================================================================
@@ -50,11 +66,16 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info(f"Database initialized: OK ({DATABASE_URL})")
 
-        seeded = await repo.seed_if_empty()
-        if seeded:
-            logger.info(f"Database seeded with {seeded} initial issues")
+        # Seed dev data only when explicitly requested. Production and
+        # demos that need a clean board should leave this off.
+        if os.getenv("SEED_DEV_DATA", "true").lower() in ("1", "true", "yes"):
+            seeded = await repo.seed_if_empty()
+            if seeded:
+                logger.info(f"Database seeded with {seeded} initial issues")
+            else:
+                logger.info("Database already seeded; skipping")
         else:
-            logger.info("Database already seeded; skipping")
+            logger.info("SEED_DEV_DATA is off; skipping seed")
 
         # Load existing jobs from DB into memory for the in-memory ECC hot path.
         from api.v1.endpoints.ecc import load_jobs_from_db
@@ -65,6 +86,38 @@ async def lifespan(app: FastAPI):
         audit_seeded = await repo.seed_audit_logs_from_jobs()
         if audit_seeded:
             logger.info(f"Audit logs seeded with {audit_seeded} entries")
+
+        # Seed default LLM provider configs (one-time)
+        llm_seeded = await repo.seed_llm_provider_configs()
+        if llm_seeded:
+            logger.info(f"Seeded {llm_seeded} default LLM provider configs")
+
+        # Seed default agent roles from WORKER_LANES (one-time)
+        roles_seeded = await repo.seed_default_roles()
+        if roles_seeded:
+            logger.info(f"Seeded {roles_seeded} default agent roles")
+
+        # Plan J phase 1 — seed dev tenant + 4 dev accounts so
+        # the operator can exercise every require_*() path in
+        # J-2's auth_deps without going through /register.
+        # Gated on a separate ``SEED_DEV_TENANTS`` env (defaults
+        # to off) so production deploys, which already set
+        # SEED_DEV_DATA=false, stay clean. Dev compose flips
+        # this on by default — fresh ``docker compose up -d
+        # backend`` lands the 4 accounts on a clean DB without
+        # the operator having to ``docker exec`` in.
+        # ``run_dev_seed`` is itself idempotent: the tenant row
+        # is created by migration 0021 on a fresh deploy, and
+        # the 4 users are inserted only if missing.
+        if os.getenv("SEED_DEV_TENANTS", "false").lower() in ("1", "true", "yes"):
+            from db.seed_dev_tenants import run as run_dev_seed
+            seed_report = await run_dev_seed()
+            logger.info(
+                "Dev tenant seed: tenants_inserted=%d users_inserted=%d users_refreshed=%d",
+                seed_report["tenants_inserted"],
+                seed_report["users_inserted"],
+                seed_report["users_refreshed"],
+            )
     except Exception:
         logger.exception("Database initialization failed during startup")
         raise
@@ -78,13 +131,75 @@ async def lifespan(app: FastAPI):
         logger.exception("ProcessRunner initialization failed during startup")
         raise
 
+    # Start the background agent worker when real execution is enabled.
+    # The worker polls for pending AgentRun records and executes them via
+    # the safe runner (P0) or real adapters (when harness is "claude-code").
+    app.state.worker = None
+    import os as _worker_os
+    if _worker_os.getenv("ALLOW_REAL_LLM_EXECUTION", "false").lower() == "true":
+        try:
+            from core.runtime.worker import start_background_worker
+            app.state.worker = await start_background_worker(
+                claude_path=_worker_os.getenv("CLAUDE_CODE_PATH", "claude"),
+                workspace_path=_worker_os.getenv("WORKSPACE_PATH", "/Users/user/Code/kanban"),
+            )
+            logger.info("Background agent worker started (real execution enabled)")
+        except Exception:
+            logger.exception("Background agent worker failed to start (non-fatal)")
+
+    # Register adapters in the HarnessRegistry
+    try:
+        from core.adapters.registry import HarnessRegistry
+        from core.adapters.claude_local import ClaudeLocalAdapter
+        from core.adapters.safe_runner import SafeRunAdapter
+        from core.adapters.api_model import APIModelAdapter
+
+        # Harness adapters (keyed by harness type)
+        HarnessRegistry.register("claude-code", ClaudeLocalAdapter)
+        HarnessRegistry.register("safe-runner", SafeRunAdapter)
+        HarnessRegistry.register("api-model", APIModelAdapter)
+
+        # Provider adapters (keyed by provider_id — used when run.provider is set)
+        # These share the same APIModelAdapter class but are resolved per-provider.
+        from core.llm.providers import PROVIDERS
+        for prov in PROVIDERS:
+            if prov.adapter in ("api-chat", "api-responses"):
+                HarnessRegistry.register_provider(prov.id, APIModelAdapter)
+
+        logger.info(
+            "HarnessRegistry: harness=%s, providers=%s",
+            HarnessRegistry.list_supported(),
+            HarnessRegistry.list_providers(),
+        )
+    except Exception:
+        logger.exception("HarnessRegistry registration failed (non-fatal)")
+
     logger.info("DevFlow Backend started successfully")
+
+    # Start the autopilot scheduler (auto-dispatches non-human lanes).
+    try:
+        from core.kanban_protocol.autopilot import scheduler as autopilot_scheduler
+        await autopilot_scheduler.start()
+        logger.info("Autopilot scheduler started (tick=%ds)", autopilot_scheduler.tick_interval)
+    except Exception:
+        logger.exception("Autopilot scheduler failed to start (non-fatal)")
 
     # Yield control to the application
     yield
 
-    # Shutdown: Clean up connections
+    # Shutdown: stop the autopilot scheduler, then the background worker, then clean up connections
     logger.info("Shutting down DevFlow Backend...")
+    try:
+        from core.kanban_protocol.autopilot import scheduler as autopilot_scheduler
+        await autopilot_scheduler.stop()
+    except Exception:
+        pass
+    if getattr(app.state, "worker", None) is not None:
+        try:
+            from core.runtime.worker import stop_background_worker
+            stop_background_worker()
+        except Exception:
+            logger.exception("Error stopping background worker")
 
     # Example: await close_redis_connection()
     # Example: await close_database_connection()
@@ -121,12 +236,36 @@ app.add_middleware(
         "http://127.0.0.1:3010",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        # Dev-only: when the frontend is served by the
+        # devflow-nginx container on port 80 (no explicit port in
+        # the URL), the browser origin is just ``http://127.0.0.1``.
+        # Without this entry every fetch from the nginx-served
+        # frontend is rejected. Port 80 only — production deploys
+        # behind a real domain should override the full list.
+        "http://127.0.0.1",
+        "http://localhost",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 logger.info("CORS middleware configured")
+
+
+# ============================================================================
+# Plan J phase 2 — TenantContextMiddleware
+# ============================================================================
+# Wraps every request and binds the per-request tenant context into
+# the contextvar the SQLAlchemy listener reads. The middleware is
+# added *after* CORS so OPTIONS preflight requests skip the
+# context-binding code path (those don't carry a bearer token).
+# ============================================================================
+try:
+    from api.middleware.tenant_scope_middleware import TenantContextMiddleware
+    app.add_middleware(TenantContextMiddleware)
+    logger.info("TenantContextMiddleware registered (Plan J phase 2)")
+except Exception:  # pragma: no cover - non-fatal at boot
+    logger.exception("Failed to register TenantContextMiddleware")
 
 
 # ============================================================================
@@ -327,7 +466,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Import API v1 routers (will be created as separate modules)
 try:
-    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs
+    from api.v1.endpoints import webhooks, agents, issues, ecc, board, quality, auth, ws, audit, analytics, llm, issue_collaboration, lanes, handoffs, runtime, autopilot, kanban_tools, github_api, agent_roles, artifacts, deliveries, cycle_reports, suggestions
 
     # Mount API v1 routers with prefix
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
@@ -341,8 +480,29 @@ try:
     app.include_router(audit.router, prefix="/api/v1", tags=["Audit"])
     app.include_router(analytics.router, prefix="/api/v1", tags=["Analytics"])
     app.include_router(lanes.router, prefix="/api/v1", tags=["Lanes"])
+    app.include_router(agent_roles.router, prefix="/api/v1", tags=["Agent Roles"])
     app.include_router(llm.router, prefix="/api/v1", tags=["LLM"])
     app.include_router(handoffs.router, prefix="/api/v1", tags=["Kanban Protocol"])
+    app.include_router(runtime.router, prefix="/api/v1", tags=["Agent Runtime"])
+    app.include_router(autopilot.router, prefix="/api/v1", tags=["Autopilot"])
+    app.include_router(kanban_tools.router, prefix="/api/v1", tags=["Kanban Tools"])
+    app.include_router(github_api.router, prefix="/api/v1", tags=["GitHub"])
+    app.include_router(artifacts.router, prefix="/api/v1", tags=["Artifacts"])
+    app.include_router(deliveries.router, prefix="/api/v1", tags=["Deliveries"])
+    app.include_router(cycle_reports.router, prefix="/api/v1", tags=["Cycle Reports"])
+    app.include_router(suggestions.router, prefix="/api/v1", tags=["Suggestions"])
+
+    # Dev management endpoints (stats + reset self-gate on dev mode; 404 in production)
+    from api.v1.endpoints import dev
+    app.include_router(dev.router, prefix="/api/v1", tags=["Dev"])
+
+    # Plan J-3: 6 new tenant endpoints (invite / members CRUD / super-admin CRUD)
+    from api.v1.endpoints import tenants as tenants_router
+    app.include_router(tenants_router.router, prefix="/api/v1", tags=["Tenants"])
+
+    # Plan J-3: AI Studio conversations endpoints (require_auth; real impl in Plan I)
+    from api.v1.endpoints import ai_studio as ai_studio_router
+    app.include_router(ai_studio_router.router, prefix="/api/v1", tags=["AI Studio"])
 
     # Mount WebSocket router for ECC job updates at /ws/ecc/jobs
     app.include_router(ws.router, tags=["WebSocket"])
@@ -403,6 +563,12 @@ async def global_exception_handler(request, exc):
     Logs the error and returns a generic 500 response.
     """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    # Also flush to stderr so the trace is visible even when the global
+    # logger has its own handlers that buffer or filter.
+    import traceback, sys
+    print("=== UNHANDLED EXCEPTION ===", file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print("=== END ===", file=sys.stderr, flush=True)
     return JSONResponse(
         content={
             "error": "Internal Server Error",

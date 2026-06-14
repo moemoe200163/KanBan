@@ -111,7 +111,7 @@ body {
   background-color: var(--canvas);
   color: var(--ink);
   line-height: 1.6;
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -147,6 +147,74 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted-soft);
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}
+
+.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+/* ==========================================================================
+   Layout Contract — Shared scroll/layout utilities
+   ========================================================================== */
+
+/* Page Shell — standard full-viewport page wrapper */
+.page-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  padding: 22px;
+  gap: 18px;
+}
+
+/* Page Shell with page-level scroll (most pages) */
+.page-shell--scroll {
+  overflow-y: auto;
+}
+
+/* Page Shell without page-level scroll (board, command-center module scroll) */
+.page-shell--clip {
+  overflow: hidden;
+}
+
+/* Scroll Area — reusable scrollable region inside a page/module */
+.scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Module Shell — a card/section that contains its own scroll */
+.module-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.module-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Sticky header/toolbar that should not scroll away */
+.page-header {
+  flex-shrink: 0;
+}
+
+/* Ensure 100dvh support (fallback for older browsers) */
+@supports not (height: 100dvh) {
+  .page-shell {
+    height: 100vh;
+  }
 }
 
 /* Typography */

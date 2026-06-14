@@ -16,10 +16,29 @@ from sqlalchemy import (
     Text,
     Boolean,
     Integer,
+    BigInteger,
+    LargeBinary,
     Index,
     ForeignKey,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, relationship
+
+from core.kanban_protocol.board_scope import DEFAULT_BOARD_ID
+
+
+# ---------------------------------------------------------------------------
+# Plan J: Multi-tenant defaults
+# ---------------------------------------------------------------------------
+# All tenant-scoped tables (boards/issues/agents/webhooks/...) carry a
+# nullable ``tenant_id`` FK during the J-1 transition. The seed tenant
+# ``tnt_default`` is the value migration 0021 backfills existing rows
+# with so the existing 727 tests still see their data.
+DEFAULT_TENANT_ID = "tnt_default"
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -39,7 +58,12 @@ class Issue(Base):
     description = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="backlog", index=True)
     priority = Column(String(16), nullable=True, index=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary. Existing rows backfill to ``tnt_default``
+    # via migration 0021. Nullable during the transition so legacy
+    # imports (e.g. dump/restore) can still land rows; a follow-up
+    # migration will tighten to NOT NULL after the data is clean.
+    tenant_id = Column(String(64), nullable=True, index=True)
     profile = Column(String(32), nullable=True, index=True)
     labels = Column(JSON, nullable=True, default=list)
     assignee_id = Column(String(64), nullable=True, index=True)
@@ -47,6 +71,18 @@ class Issue(Base):
     story_points = Column(String(8), nullable=True)
     dependencies = Column(JSON, nullable=True, default=list)
     pr_url = Column(String(512), nullable=True)
+    ci_status = Column(String(32), nullable=True, index=True)  # pending | passed | failed
+    # Mavis-collaboration fields: epics + structured acceptance criteria.
+    # ``parent_id`` is a self-FK so an issue can belong to an epic.
+    # ``acceptance_criteria`` is a list of {id, text, done} entries; the
+    # front-end renders the checklist, and a future AI agent can use
+    # it as a completion gate.
+    parent_id = Column(String(64), ForeignKey("issues.id", ondelete="SET NULL"), nullable=True, index=True)
+    acceptance_criteria = Column(JSON, nullable=True, default=list)
+    # Soft-delete columns. ``is_archived`` is the fast filter the
+    # board endpoint hits; ``archived_at`` is the audit trail.
+    is_archived = Column(Boolean, nullable=False, default=False, index=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -72,6 +108,11 @@ class Issue(Base):
             "storyPoints": self.story_points,
             "dependencies": self.dependencies or [],
             "prUrl": self.pr_url,
+            "ciStatus": self.ci_status,
+            "parentId": self.parent_id,
+            "acceptanceCriteria": self.acceptance_criteria or [],
+            "isArchived": bool(self.is_archived),
+            "archivedAt": self.archived_at.isoformat() if self.archived_at else None,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -89,6 +130,8 @@ class Agent(Base):
     agent_type = Column(String(32), nullable=True, index=True)
     role = Column(String(32), nullable=True)
     status = Column(String(16), nullable=False, default="active", index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     is_available = Column(Boolean, nullable=False, default=True)
     capabilities = Column(JSON, nullable=True, default=list)
     agent_metadata = Column(JSON, nullable=True, default=dict)
@@ -134,6 +177,8 @@ class AuditLog(Base):
     changes = Column(JSON, nullable=True, default=dict)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(String(512), nullable=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (
@@ -176,6 +221,8 @@ class WebhookEvent(Base):
     attempts = Column(Integer, nullable=False, default=0)
     max_attempts = Column(Integer, nullable=False, default=3)
     next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     sent_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -225,7 +272,9 @@ class JobModel(Base):
     updated_at = Column(String(32), nullable=False)
     message = Column(String(512), nullable=True)
     events = Column(JSON, nullable=False, default=list)  # JSON array of ECCJobEvent
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         # Note: status already gets an auto-index from `Column(..., index=True)`.
@@ -323,7 +372,24 @@ class User(Base):
     # User profile
     avatar_url = Column(String(512), nullable=True)
     full_name = Column(String(256), nullable=True)
-    role = Column(String(32), nullable=True, default="member")
+    # Plan J: role enum-style (``super_admin`` / ``admin`` / ``ops`` / ``user``).
+    # The pre-J model had ``nullable=True, default="member"``. The migration
+    # backfills any NULL with ``"user"`` first, then tightens the column to
+    # NOT NULL — leaving the upgrade safe on a DB with legacy rows.
+    role = Column(String(32), nullable=False, default="user")
+
+    # Plan J: tenant boundary. Nullable so the migration can land
+    # before any seed user is created. ``super_admin`` users live with
+    # ``tenant_id=NULL``; everyone else belongs to a tenant.
+    tenant_id = Column(String(64), nullable=True, index=True)
+    # ``True`` only for the cross-tenant leader account. Used by
+    # ``require_super_admin`` and the SQLAlchemy event listener in
+    # J-2 to bypass per-tenant query rewriting.
+    is_super_admin = Column(Boolean, nullable=False, default=False)
+    # Reserved for Plan K's tenant switcher UI: a cross-tenant user
+    # can sit in many ``tenant_memberships`` rows. The ``last`` column
+    # lets us detect stale switches and force a re-pick.
+    last_tenant_switch_at = Column(DateTime(timezone=True), nullable=True)
 
     # Status
     is_active = Column(Boolean, nullable=False, default=True)
@@ -347,6 +413,8 @@ class User(Base):
             "avatarUrl": self.avatar_url,
             "fullName": self.full_name,
             "role": self.role,
+            "tenantId": self.tenant_id,
+            "isSuperAdmin": bool(self.is_super_admin),
             "isActive": self.is_active,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
@@ -376,7 +444,9 @@ class IssueEvent(Base):
     summary = Column(Text, nullable=True)
     details = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_events_issue_created", "issue_id", "created_at"),
@@ -413,7 +483,9 @@ class IssueComment(Base):
     extra_data = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_comments_issue_created", "issue_id", "created_at"),
@@ -459,7 +531,9 @@ class IssueArtifact(Base):
     created_by_id = Column(String(64), nullable=True)
     created_by_name = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_issue_artifacts_issue_created", "issue_id", "created_at"),
@@ -484,6 +558,97 @@ class IssueArtifact(Base):
         }
 
 
+class CycleReport(Base):
+    """
+    CycleReport — a Mavis-style handoff captured after a worker pass.
+
+    One row per cycle on an issue. Written by:
+
+    - The auto-promote hook when an ECC job reaches a terminal success
+      state (``review_required`` or ``completed``); the ``verdict`` is
+      set to ``auto_passed`` and the progress log mirrors the ECC job
+      events. A leader can later override the verdict.
+    - The leader manually when overriding the auto decision, e.g.
+      when AC are partially met and the issue needs to bounce back to
+      ``in_progress``.
+
+    A cycle report is the single artifact that ties together the plan
+    the worker started with, what happened during execution, what was
+    produced, and whether the leader accepts the result. The Kanban
+    detail drawer renders it as the primary review surface.
+    """
+    __tablename__ = "cycle_reports"
+
+    id = Column(String(64), primary_key=True)
+    issue_id = Column(String(64), ForeignKey("issues.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(String(64), nullable=True, index=True)
+    author_id = Column(String(64), nullable=True)
+    author_name = Column(String(128), nullable=True)
+    plan = Column(Text, nullable=False)
+    # ``progress_log`` mirrors the ECCJobEvent shape: a list of
+    # ``{ts, status, message}`` dicts. Stored as JSON so the safe
+    # runner can append incrementally.
+    progress_log = Column(JSON, nullable=True, default=list)
+    deliverable_summary = Column(Text, nullable=True)
+    # Verdict values: pending | pass | fail | blocked | auto_passed.
+    # ``auto_passed`` is the auto-promote hook's signature; a leader
+    # can later flip it to ``pass`` (with their own reason) or ``fail``.
+    verdict = Column(String(32), nullable=False, default="pending", index=True)
+    verdict_reason = Column(Text, nullable=True)
+    # Plan G: identifies the writer of this report.
+    #   ``auto``     — written by the safe-runner auto-promote hook
+    #   ``mavis_auto`` — written by Mavis pushing review_required
+    #   ``leader``   — written by a leader override
+    #   ``None``     — legacy rows from before Plan G
+    source = Column(String(32), nullable=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    # Review gate fields — populated by ``POST /cycle-reports/{id}/review``
+    # (see migration 0020). Distinct from the ``verdict`` column:
+    # ``verdict`` is the leader's binary accept/reject of the work
+    # product, ``decision`` is the leader's *review* of the report
+    # itself (approve the report, or send the worker back). A report
+    # can carry both — e.g. ``verdict=pass, decision=approved`` after
+    # the leader accepts, or ``verdict=pending, decision=changes_requested``
+    # when the leader wants the worker to revise.
+    decision = Column(String(32), nullable=True)  # 'approved' | 'changes_requested'
+    review_comment = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
+    reviewed_by_id = Column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("ix_cycle_reports_issue_created", "issue_id", "created_at"),
+        Index("ix_cycle_reports_board_decision", "board_id", "decision"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "issueId": self.issue_id,
+            "jobId": self.job_id,
+            "authorId": self.author_id,
+            "authorName": self.author_name,
+            "plan": self.plan,
+            "progressLog": self.progress_log or [],
+            "deliverableSummary": self.deliverable_summary,
+            "verdict": self.verdict,
+            "verdictReason": self.verdict_reason,
+            "boardId": self.board_id,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "decision": self.decision,
+            "reviewComment": self.review_comment,
+            "reviewedAt": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "reviewedBy": self.reviewed_by,
+            "reviewedById": self.reviewed_by_id,
+        }
+
+
 class IssueHandoff(Base):
     """
     Durable queue item for Kanban Protocol.
@@ -495,7 +660,9 @@ class IssueHandoff(Base):
     __tablename__ = "issue_handoffs"
 
     id = Column(String(64), primary_key=True)
-    board_id = Column(String(64), nullable=False, default="board-default", index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
     issue_id = Column(String(64), ForeignKey("issues.id"), nullable=False, index=True)
     from_lane = Column(String(32), nullable=True)
     to_lane = Column(String(32), nullable=False)
@@ -519,6 +686,12 @@ class IssueHandoff(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Review gate fields — nullable, populated only after a review decision.
+    decision = Column(String(32), nullable=True)  # 'approve' | 'reject' | 'request_changes'
+    review_comment = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
 
     __table_args__ = (
         Index("ix_issue_handoffs_board_status", "board_id", "status"),
@@ -544,4 +717,724 @@ class IssueHandoff(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+            "decision": self.decision,
+            "reviewComment": self.review_comment,
+            "reviewedAt": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "reviewedBy": self.reviewed_by,
+        }
+
+
+class LLMProviderConfig(Base):
+    """
+    Persistent LLM provider configuration.
+
+    Stores API keys (encrypted), base URLs, model selections, and
+    health check results. Replaces the in-memory stub in registry.py.
+    """
+    __tablename__ = "llm_provider_configs"
+
+    id = Column(String(64), primary_key=True)  # e.g. "llm_minimax"
+    provider_id = Column(String(32), unique=True, nullable=False)
+    # Plan J: tenant boundary. Existing ``llm_provider_configs`` rows are
+    # global (the unique constraint on ``provider_id`` already prevents
+    # per-tenant duplicates), so the migration drops the unique index
+    # and re-creates it as ``(tenant_id, provider_id)`` in J-2. For
+    # J-1 we keep the column nullable and backfill ``tnt_default``.
+    tenant_id = Column(String(64), nullable=True, index=True)
+    display_name = Column(String(128), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    base_url = Column(String(512), nullable=True)
+    endpoint_path = Column(String(128), nullable=True)
+    api_shape = Column(String(32), nullable=True)  # openai-chat | openai-responses | anthropic-messages | ollama
+    auth_type = Column(String(32), nullable=True)   # bearer | x-api-key | api-key | none
+    model = Column(String(128), nullable=True)
+    api_key_encrypted = Column(String(1024), nullable=True)
+    api_key_prefix = Column(String(16), nullable=True)
+    api_key_last4 = Column(String(8), nullable=True)
+    last_test_status = Column(String(32), nullable=True)
+    last_test_at = Column(DateTime(timezone=True), nullable=True)
+    last_latency_ms = Column(Integer, nullable=True)
+    last_error_code = Column(String(32), nullable=True)
+    last_error_message = Column(String(512), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "providerId": self.provider_id,
+            "displayName": self.display_name,
+            "enabled": self.enabled,
+            "baseUrl": self.base_url,
+            "endpointPath": self.endpoint_path,
+            "apiShape": self.api_shape,
+            "authType": self.auth_type,
+            "model": self.model,
+            "apiKeyPrefix": self.api_key_prefix,
+            "apiKeyLast4": self.api_key_last4,
+            "lastTestStatus": self.last_test_status,
+            "lastTestAt": self.last_test_at.isoformat() if self.last_test_at else None,
+            "lastLatencyMs": self.last_latency_ms,
+            "lastErrorCode": self.last_error_code,
+            "lastErrorMessage": self.last_error_message,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Agent Runtime — Multi-Agent Worker System
+# ---------------------------------------------------------------------------
+
+
+class AgentWorker(Base):
+    """
+    Tracks agent worker processes.
+
+    A worker is a long-lived process that claims and executes runs.
+    Workers register on startup, send heartbeats, and report status.
+    Every worker belongs to a board (board_id) for isolation.
+    """
+    __tablename__ = "agent_workers"
+
+    id = Column(String(64), primary_key=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    worker_type = Column(String(32), nullable=False, index=True)  # claude-code, codex, safe-runner, etc.
+    harness = Column(String(32), nullable=True)  # claude-code, codex, cursor, etc.
+    status = Column(String(32), nullable=False, default="idle", index=True)  # idle, claimed, starting, running, stopping, stopped, error
+    capabilities = Column(JSON, nullable=True, default=list)
+    max_concurrency = Column(Integer, nullable=False, default=1)
+    active_run_id = Column(String(64), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(String(512), nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_agent_workers_board_status", "board_id", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "boardId": self.board_id,
+            "workerType": self.worker_type,
+            "harness": self.harness,
+            "status": self.status,
+            "capabilities": self.capabilities or [],
+            "maxConcurrency": self.max_concurrency,
+            "activeRunId": self.active_run_id,
+            "claimedAt": self.claimed_at.isoformat() if self.claimed_at else None,
+            "startedAt": self.started_at.isoformat() if self.started_at else None,
+            "stoppedAt": self.stopped_at.isoformat() if self.stopped_at else None,
+            "lastHeartbeatAt": self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
+            "errorMessage": self.error_message,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class AgentRun(Base):
+    """
+    Tracks execution runs assigned to workers.
+
+    A run is a single execution attempt of a command against an issue.
+    It references both the worker that runs it and optionally the ECC job.
+    """
+    __tablename__ = "agent_runs"
+
+    id = Column(String(64), primary_key=True)
+    worker_id = Column(String(64), nullable=True, index=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    issue_id = Column(String(64), nullable=True, index=True)
+    issue_key = Column(String(32), nullable=True)
+    job_id = Column(String(64), nullable=True, index=True)  # links to ecc_jobs.id
+    session_id = Column(String(64), nullable=True, index=True)  # soft ref to agent_sessions.id
+    status = Column(String(32), nullable=False, default="pending", index=True)  # pending, claimed, running, completed, failed, cancelled
+    command = Column(String(128), nullable=True)
+    profile = Column(String(32), nullable=True)
+    harness = Column(String(32), nullable=True)
+    provider = Column(String(32), nullable=True)
+    model = Column(String(128), nullable=True)
+    required_role = Column(String(32), nullable=True)  # role-based dispatch: backend-dev, frontend-dev, code-reviewer, etc.
+    result_summary = Column(Text, nullable=True)
+    error_message = Column(String(512), nullable=True)
+    # Queue hardening: retry + heartbeat + max runtime
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    max_runtime_seconds = Column(Integer, nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_runs_board_status", "board_id", "status"),
+        Index("ix_agent_runs_worker_status", "worker_id", "status"),
+        Index("ix_agent_runs_retry", "status", "next_retry_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "workerId": self.worker_id,
+            "boardId": self.board_id,
+            "issueId": self.issue_id,
+            "issueKey": self.issue_key,
+            "jobId": self.job_id,
+            "sessionId": self.session_id,
+            "status": self.status,
+            "command": self.command,
+            "profile": self.profile,
+            "harness": self.harness,
+            "provider": self.provider,
+            "model": self.model,
+            "requiredRole": self.required_role,
+            "resultSummary": self.result_summary,
+            "errorMessage": self.error_message,
+            "retryCount": self.retry_count,
+            "maxRetries": self.max_retries,
+            "nextRetryAt": self.next_retry_at.isoformat() if self.next_retry_at else None,
+            "lastHeartbeatAt": self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
+            "maxRuntimeSeconds": self.max_runtime_seconds,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "startedAt": self.started_at.isoformat() if self.started_at else None,
+            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+
+# AgentRunEvent event_type constants
+class RunEventType:
+    STATUS_CHANGE = "status_change"
+    LOG = "log"
+    ERROR = "error"
+    TOOL_CALL_COMPLETED = "tool_call_completed"
+    TOOL_CALL_FAILED = "tool_call_failed"
+    WORKER_LOST = "worker_lost"
+    HEARTBEAT = "heartbeat"
+
+
+class AgentRunEvent(Base):
+    """
+    Logs events within a run (status changes, log lines, errors).
+
+    Events are append-only and ordered by created_at for streaming.
+    """
+    __tablename__ = "agent_run_events"
+
+    id = Column(String(64), primary_key=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    event_type = Column(String(32), nullable=False, index=True)  # status_change, log, error, heartbeat
+    message = Column(Text, nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_agent_run_events_run_created", "run_id", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "runId": self.run_id,
+            "eventType": self.event_type,
+            "message": self.message,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AgentSession(Base):
+    """Groups multiple runs into a resumable conversation."""
+    __tablename__ = "agent_sessions"
+
+    id = Column(String(64), primary_key=True)
+    board_id = Column(String(64), nullable=False, default=DEFAULT_BOARD_ID, index=True)
+    # Plan J: tenant boundary (nullable during J-1 transition).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    issue_id = Column(String(64), nullable=True, index=True)
+    issue_key = Column(String(32), nullable=True)
+
+    harness = Column(String(32), nullable=True)
+    provider = Column(String(32), nullable=True)
+    model = Column(String(128), nullable=True)
+
+    status = Column(String(32), nullable=False, default="active", index=True)
+
+    conversation_history = Column(JSON, nullable=True, default=list)
+    checkpoint_data = Column(JSON, nullable=True, default=dict)
+    provider_resume_ref = Column(String(512), nullable=True)
+
+    total_runs = Column(Integer, nullable=False, default=1)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    extra_metadata = Column(JSON, nullable=True, default=dict)
+
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_sessions_board_status", "board_id", "status"),
+        Index("ix_agent_sessions_issue", "issue_id", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "boardId": self.board_id,
+            "issueId": self.issue_id,
+            "issueKey": self.issue_key,
+            "harness": self.harness,
+            "provider": self.provider,
+            "model": self.model,
+            "status": self.status,
+            "conversationHistory": self.conversation_history,
+            "checkpointData": self.checkpoint_data,
+            "providerResumeRef": self.provider_resume_ref,
+            "totalRuns": self.total_runs,
+            "totalTokens": self.total_tokens,
+            "lastError": self.last_error,
+            "expiresAt": self.expires_at.isoformat() if self.expires_at else None,
+            "metadata": self.extra_metadata or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "lastRunAt": self.last_run_at.isoformat() if self.last_run_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Agent Roles — configurable role definitions for dispatch and completion
+# ---------------------------------------------------------------------------
+
+
+class AgentRole(Base):
+    """
+    Configurable agent role definition.
+
+    Seeded from WORKER_LANES on startup; admin-editable at runtime.
+    Controls dispatch routing, allowed providers, completion payload
+    requirements, and human-approval gates.
+    """
+    __tablename__ = "agent_roles"
+
+    id = Column(String(64), primary_key=True)
+    key = Column(String(32), unique=True, nullable=False, index=True)
+    display_name = Column(String(128), nullable=False)
+    description = Column(String(512), default="")
+    allowed_profiles = Column(JSON, default=list)
+    default_provider = Column(String(32), default="")
+    default_model = Column(String(128), default="")
+    allowed_commands = Column(JSON, default=list)
+    timeout_seconds = Column(Integer, default=1800)
+    retry_policy = Column(String(16), default="none")
+    retry_max = Column(Integer, default=0)
+    next_roles = Column(JSON, default=list)
+    human_approval_required = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    is_system = Column(Boolean, default=False)
+    required_completion_fields = Column(JSON, default=list)
+    system_prompt = Column(Text, default="")
+    task_prompt_template = Column(Text, default="")
+    review_prompt_template = Column(Text, default="")
+    # Plan J: tenant boundary. The unique constraint on ``key`` is global
+    # today, so the migration drops + recreates it as
+    # ``(tenant_id, key)`` in J-2. For J-1 we keep the column nullable
+    # and backfill existing rows with ``tnt_default``.
+    tenant_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "key": self.key,
+            "displayName": self.display_name,
+            "description": self.description,
+            "allowedProfiles": self.allowed_profiles or [],
+            "defaultProvider": self.default_provider,
+            "defaultModel": self.default_model,
+            "allowedCommands": self.allowed_commands or [],
+            "timeoutSeconds": self.timeout_seconds,
+            "retryPolicy": self.retry_policy,
+            "retryMax": self.retry_max,
+            "nextRoles": self.next_roles or [],
+            "humanApprovalRequired": self.human_approval_required,
+            "enabled": self.enabled,
+            "isSystem": self.is_system,
+            "requiredCompletionFields": self.required_completion_fields or [],
+            "systemPrompt": self.system_prompt or "",
+            "taskPromptTemplate": self.task_prompt_template or "",
+            "reviewPromptTemplate": self.review_prompt_template or "",
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class Artifact(Base):
+    """
+    Stored file artifact (deliverable, screenshot, log, etc.).
+
+    Each upload is its own row; re-uploading the same logical name with
+    ``parent_id`` set creates a version chain. Tags are stored as a JSON
+    array on the row for cheap filtering without a join table.
+    Blob bytes live inline (``content`` LargeBinary) — the user explicitly
+    chose Postgres blob over filesystem for this iteration.
+    """
+    __tablename__ = "artifacts"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(512), nullable=False, index=True)
+    mime_type = Column(String(256), nullable=False, default="application/octet-stream")
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    content = Column(LargeBinary, nullable=False)
+    tags = Column(JSON, nullable=False, default=list)
+    description = Column(Text, nullable=True, default="")
+    uploader = Column(String(128), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    parent_id = Column(String(64), ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True)
+    folder_path = Column(String(512), nullable=False, default="/Uploads", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "mimeType": self.mime_type,
+            "sizeBytes": self.size_bytes,
+            "tags": self.tags or [],
+            "description": self.description or "",
+            "uploader": self.uploader or "",
+            "version": self.version,
+            "parentId": self.parent_id,
+            "folderPath": self.folder_path or "/Uploads",
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Plan J: Multi-tenant tables
+# ---------------------------------------------------------------------------
+# Three new tables for the multi-tenant refactor:
+#
+# * ``tenants`` — the tenant itself, identified by an opaque ``tnt_xxx``
+#   id. ``slug`` is a human-readable handle (used in URLs, JWT claims
+#   in Plan K's switcher UI). One row per customer / org.
+# * ``tenant_memberships`` — join table for ``users`` ↔ ``tenants`` so a
+#   single user can belong to multiple tenants (Plan K feature, not
+#   used in J-1's 1-user-1-tenant workflow). The unique constraint on
+#   ``(tenant_id, user_id)`` keeps the join idempotent.
+# * ``tenant_audits`` — append-only log of tenant-scoped actions
+#   (invite, role change, tenant deletion, cross-tenant access
+#   attempts). Written from J-2's ``require_*`` deps and the event
+#   listener.
+#
+# All three are FK-targets for the new ``users.tenant_id`` column and
+# the ``*.tenant_id`` columns on the 9 main tables. The migration
+# creates them after the User table so the FK targets are valid.
+# ---------------------------------------------------------------------------
+
+
+class Tenant(Base):
+    """
+    Tenant — the top-level data-isolation boundary.
+
+    A tenant owns a set of users, boards, issues, agents, webhooks,
+    LLM provider configs, etc. The 9 main tables all gain a
+    ``tenant_id`` FK in migration 0021. The cross-tenant leader
+    (``super_admin``) lives with ``tenant_id=NULL`` on the ``users``
+    row but is still allowed to address any tenant by id when the
+    ``is_super_admin`` flag is set.
+    """
+    __tablename__ = "tenants"
+
+    id = Column(String(64), primary_key=True)  # e.g. "tnt_default"
+    slug = Column(String(64), unique=True, nullable=False, index=True)  # e.g. "default", "acme-co"
+    name = Column(String(128), nullable=False)
+    # Plan / billing tier. Free / pro / enterprise. The column is
+    # reserved for Plan K's billing flow; no enforcement yet.
+    plan = Column(String(32), nullable=False, default="free")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "name": self.name,
+            "plan": self.plan,
+            "isActive": bool(self.is_active),
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TenantMembership(Base):
+    """
+    TenantMembership — a (tenant, user, role) join row.
+
+    J-1 doesn't read from this table (a user has at most one tenant,
+    stored on ``users.tenant_id``). The table exists so the J-5
+    multi-tenant switcher UI doesn't need a schema migration to
+    start tracking memberships.
+    """
+    __tablename__ = "tenant_memberships"
+
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # The role this user holds *within this tenant*. Values: super_admin
+    # (cross-tenant) / admin / ops / user. ``super_admin`` is allowed
+    # here for completeness but a super_admin typically has
+    # ``tenant_id=NULL`` on the user row.
+    role = Column(String(32), nullable=False, default="user")
+    invited_by = Column(String(64), ForeignKey("users.id"), nullable=True)
+    joined_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", name="uq_tenant_memberships_tenant_user"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "userId": self.user_id,
+            "role": self.role,
+            "invitedBy": self.invited_by,
+            "joinedAt": self.joined_at.isoformat() if self.joined_at else None,
+        }
+
+
+class TenantAudit(Base):
+    """
+    TenantAudit — append-only log of tenant-scoped actions.
+
+    J-2 writes to this table from ``require_admin`` /
+    ``require_super_admin`` and the event listener. J-1 just
+    creates the schema so the writer-side commit can land in
+    the same chain.
+    """
+    __tablename__ = "tenant_audits"
+
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Actor can be ``None`` for system-initiated actions (e.g. the
+    # seed script or the alembic migration itself).
+    actor_id = Column(String(64), ForeignKey("users.id"), nullable=True)
+    # Snapshot the actor's username at write time so the audit row
+    # keeps a readable name even after the user is renamed.
+    actor_username = Column(String(128), nullable=True)
+    # Verb describing the action: ``invite``, ``remove_member``,
+    # ``change_role``, ``delete_tenant``, ``cross_tenant_denied``,
+    # ``create_tenant``. New verbs are added in J-2.
+    action = Column(String(64), nullable=False, index=True)
+    target_user_id = Column(String(64), ForeignKey("users.id"), nullable=True)
+    # Free-form payload — most audit rows carry a small JSON body
+    # with the old/new role, the invitee email, the denied request
+    # URL, etc. Schema is intentionally open.
+    details = Column(JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "actorId": self.actor_id,
+            "actorUsername": self.actor_username,
+            "action": self.action,
+            "targetUserId": self.target_user_id,
+            "details": self.details,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Plan I: AI Studio — chat-style conversation + message history
+# ---------------------------------------------------------------------------
+# Plan I Phase 1 introduces a small subset of the AI Studio feature
+# (the multi-agent / tool / thinking parts land in Phase 2). The two
+# tables here are the bare persistence layer the SSE driver in
+# ``backend/core/execution/ai_studio_runner.py`` reads from and writes
+# to. Schema mirrors the Plan I §三 7 spec; tenant scope is nullable
+# so the migration can land before any seed user is created.
+# ---------------------------------------------------------------------------
+
+
+class AIStudioConversation(Base):
+    """
+    AI Studio — a single chat conversation owned by one user.
+
+    The Plan I MVP is single-agent (no handoff), single-model per
+    conversation, single-tenant. ``provider_id`` and ``model`` are
+    snapshots of the choice the user made at the moment they sent
+    the first message; flipping the dropdown mid-conversation
+    affects subsequent messages only (Phase 2 may thread a system
+    message to explain the switch).
+    """
+
+    __tablename__ = "ai_studio_conversations"
+
+    id = Column(String(64), primary_key=True)
+    title = Column(String(256), nullable=False, default="New chat")
+    user_id = Column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Plan J: tenant-scoped. Nullable so the migration can land
+    # before any seed user is created (the alembic migration
+    # backfills ``tnt_default`` for existing rows).
+    tenant_id = Column(String(64), nullable=True, index=True)
+    provider_id = Column(String(64), nullable=False, default="minimax")
+    model = Column(String(128), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    messages = relationship(
+        "AIStudioMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="AIStudioMessage.timestamp",
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "userId": self.user_id,
+            "tenantId": self.tenant_id,
+            "providerId": self.provider_id,
+            "model": self.model,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class AIStudioMessage(Base):
+    """
+    AI Studio — a single message in a conversation.
+
+    ``type`` is the free-form Plan I §三 2 event vocabulary:
+
+    - ``"user"`` — the caller's text
+    - ``"assistant"`` — the model's final reply (the SSE driver
+      concatenates every ``content`` chunk and persists one
+      ``assistant`` row at the end of the turn)
+    - ``"thinking"`` — reserved for Phase 2; chain-of-thought text
+    - ``"tool_call"`` — reserved for Phase 2; structured tool call
+    - ``"tool_result"`` — reserved for Phase 2; tool result text
+
+    For Phase 1 the SSE driver only writes ``user`` and ``assistant``
+    rows. The other type values exist so Phase 2 doesn't need a
+    schema change.
+    """
+
+    __tablename__ = "ai_studio_messages"
+
+    id = Column(String(64), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey("ai_studio_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    type = Column(String(32), nullable=False)
+    content = Column(Text, nullable=True)
+    tool_name = Column(String(128), nullable=True)
+    tool_args = Column(JSON, nullable=True)
+    tool_result = Column(Text, nullable=True)
+    agent_role = Column(String(32), nullable=True)
+    timestamp = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    conversation = relationship(
+        "AIStudioConversation", back_populates="messages"
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "conversationId": self.conversation_id,
+            "type": self.type,
+            "content": self.content,
+            "toolName": self.tool_name,
+            "toolArgs": self.tool_args,
+            "toolResult": self.tool_result,
+            "agentRole": self.agent_role,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

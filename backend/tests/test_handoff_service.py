@@ -252,15 +252,16 @@ async def test_complete_rejects_when_required_fields_missing(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={},  # missing test_results and coverage_pct
+        payload={"approver": "alice"},  # test_results and coverage_pct missing
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
     with pytest.raises(ValueError) as exc_info:
         await svc.complete(handoff_id=handoff["id"], actor="bob", payload=None)
-    msg = str(exc_info.value)
-    assert "test_results" in msg
-    assert "coverage_pct" in msg
+    # Pydantic v2 returns structured errors; field names live in errors[].loc
+    error_locs = [tuple(e["loc"]) for e in exc_info.value.errors]
+    assert ("test_results",) in error_locs
+    assert ("coverage_pct",) in error_locs
 
 
 @pytest.mark.asyncio
@@ -271,7 +272,7 @@ async def test_complete_succeeds_with_all_required_fields(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={"test_results": "ok", "coverage_pct": 95},
+        payload={"test_results": "ok", "coverage_pct": 95, "approver": "alice"},
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -291,18 +292,20 @@ async def test_complete_merges_existing_and_new_payload(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="qa",
-        payload={"test_results": "ok"},  # coverage_pct missing
+        payload={"test_results": "ok", "approver": "alice"},  # coverage_pct missing
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
     completed = await svc.complete(
         handoff_id=handoff["id"],
         actor="bob",
-        payload={"coverage_pct": 95, "extra_meta": "x"},
+        payload={"coverage_pct": 95},
     )
-    assert completed["payload"]["test_results"] == "ok"   # preserved
-    assert completed["payload"]["coverage_pct"] == 95     # added
-    assert completed["payload"]["extra_meta"] == "x"      # added
+    assert completed["payload"]["test_results"] == "ok"   # preserved (existing)
+    assert completed["payload"]["coverage_pct"] == 95     # added (caller)
+    assert completed["payload"]["approver"] == "alice"    # preserved (existing)
+    # declared-only — no rogue keys leak through
+    assert set(completed["payload"].keys()) == {"test_results", "coverage_pct", "approver"}
 
 
 @pytest.mark.asyncio
@@ -367,7 +370,7 @@ async def test_cancel_rejected_from_completed_state(fresh_db):
         board_id="board-default",
         from_lane=None,
         to_lane="frontend",
-        payload={"diff_summary": "ok", "screenshots": "ok"},
+        payload={"diff_summary": "ok", "screenshots": ["ok"]},
         created_by="alice",
     )
     await svc.accept(handoff["id"], actor="bob")
@@ -390,6 +393,34 @@ async def test_cancel_rejected_from_cancelled_state(fresh_db):
     await svc.cancel(handoff_id=handoff["id"], actor="bob")
     with pytest.raises(ValueError):
         await svc.cancel(handoff_id=handoff["id"], actor="bob")
+
+
+@pytest.mark.asyncio
+async def test_scope_guard_fires_before_pydantic_for_denied_keys(fresh_db):
+    """Guardrail #1: scope guard must run BEFORE Pydantic validation.
+
+    If Pydantic's `extra="forbid"` ran first it would silently drop
+    out-of-scope keys, and `check_payload` would never see them. This
+    test pins the order.
+    """
+    from core.kanban_protocol.scope_guard import ScopeDeniedError
+
+    svc = HandoffService()
+    handoff = await svc.create(
+        issue_id="issue-1",
+        board_id="board-default",
+        from_lane=None,
+        to_lane="frontend",
+        payload={"diff_summary": "ok"},
+        created_by="alice",
+    )
+    await svc.accept(handoff["id"], actor="bob")
+    with pytest.raises(ScopeDeniedError):
+        await svc.complete(
+            handoff_id=handoff["id"],
+            actor="bob",
+            payload={"sandbox_egress": "1.1.1.1"},
+        )
 
 
 @pytest.mark.asyncio
@@ -486,3 +517,252 @@ async def test_block_reason_preserved_across_non_block_updates(fresh_db):
         payload={"diff_summary": "v2", "test_results": "pass"},
     )
     assert completed["blockReason"] is None
+
+
+@pytest.mark.asyncio
+async def test_complete_triage_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="triage",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"lane_recommendation": "frontend", "summary": "routes to frontend"},
+    )
+    assert completed["status"] == "completed"
+    assert completed["payload"]["lane_recommendation"] == "frontend"
+
+
+@pytest.mark.asyncio
+async def test_complete_product_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="product",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={
+            "acceptance_criteria": ["User can submit form"],
+            "approver": "alice",
+        },
+    )
+    assert completed["payload"]["acceptance_criteria"] == ["User can submit form"]
+
+
+@pytest.mark.asyncio
+async def test_complete_architect_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="architect",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={
+            "design_notes": "use ESM",
+            "interfaces": ["GET /lanes"],
+            "approver": "alice",
+        },
+    )
+    assert completed["payload"]["interfaces"] == ["GET /lanes"]
+
+
+@pytest.mark.asyncio
+async def test_complete_frontend_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="frontend",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"diff_summary": "added sidebar", "screenshots": ["a.png"]},
+    )
+    assert completed["payload"]["screenshots"] == ["a.png"]
+
+
+@pytest.mark.asyncio
+async def test_complete_backend_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="backend",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"diff_summary": "added endpoint", "test_results": "42 passed"},
+    )
+    assert completed["payload"]["test_results"] == "42 passed"
+
+
+@pytest.mark.asyncio
+async def test_complete_qa_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="qa",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"test_results": "ok", "coverage_pct": 95, "approver": "alice"},
+    )
+    assert completed["payload"]["coverage_pct"] == 95
+
+
+@pytest.mark.asyncio
+async def test_complete_review_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="review",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"reviewer": "alice", "decision": "approve", "approver": "alice"},
+    )
+    assert completed["payload"]["decision"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_complete_delivery_with_typed_payload(fresh_db):
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="delivery",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    completed = await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"release_notes": "shipped v1.0", "approver": "alice"},
+    )
+    assert completed["payload"]["release_notes"] == "shipped v1.0"
+
+
+@pytest.mark.asyncio
+async def test_complete_delivery_transitions_issue_to_done(fresh_db):
+    """Completing a delivery handoff should mark the issue as 'done'."""
+    from db import repository as repo
+
+    svc = HandoffService()
+    # Ensure issue exists with in_progress status
+    await repo.upsert_issue({
+        "id": "issue-1", "key": "DEV-300", "board_id": "board-default",
+        "title": "Delivery test", "status": "in_progress",
+    })
+
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="delivery",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    await svc.complete(
+        handoff_id=h["id"], actor="bob",
+        payload={"release_notes": "shipped v1.0", "approver": "alice"},
+    )
+
+    issue = await repo.get_issue("issue-1")
+    assert issue["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_complete_qa_raises_payload_validation_error_for_bad_coverage(fresh_db):
+    from core.kanban_protocol.payloads import PayloadValidationError
+
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="qa",
+        payload={"test_results": "ok", "approver": "alice"},
+        created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await svc.complete(
+            handoff_id=h["id"], actor="bob",
+            payload={"coverage_pct": 150},
+        )
+    assert exc_info.value.lane == "qa"
+    assert any(
+        e["loc"] == ["coverage_pct"]
+        for e in exc_info.value.errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_review_raises_payload_validation_error_for_bad_decision(fresh_db):
+    from core.kanban_protocol.payloads import PayloadValidationError
+
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="review",
+        payload={"reviewer": "x", "approver": "alice"},
+        created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await svc.complete(
+            handoff_id=h["id"], actor="bob",
+            payload={"decision": "yes"},
+        )
+    assert exc_info.value.lane == "review"
+    assert any(
+        e["loc"] == ["decision"] for e in exc_info.value.errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_frontend_rejects_extra_field(fresh_db):
+    from core.kanban_protocol.payloads import PayloadValidationError
+
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="frontend",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await svc.complete(
+            handoff_id=h["id"], actor="bob",
+            payload={"diff_summary": "x", "screenshots": [], "rogue": 1},
+        )
+    assert any(
+        e["type"] == "extra_forbidden" for e in exc_info.value.errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_product_rejects_empty_acceptance_criteria(fresh_db):
+    from core.kanban_protocol.payloads import PayloadValidationError
+
+    svc = HandoffService()
+    h = await svc.create(
+        issue_id="issue-1", board_id="board-default",
+        from_lane=None, to_lane="product",
+        payload={}, created_by="alice",
+    )
+    await svc.accept(h["id"], actor="bob")
+    with pytest.raises(PayloadValidationError):
+        await svc.complete(
+            handoff_id=h["id"], actor="bob",
+            payload={"acceptance_criteria": []},
+        )

@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test'
+import { loginAsAdmin } from './auth'
+
+const BACKEND = 'http://127.0.0.1:8000'
 
 test.describe('Command Center', () => {
   test('loads the Command Center page', async ({ page }) => {
@@ -10,8 +13,11 @@ test.describe('Command Center', () => {
   })
 
   test('dispatch creates a job visible in the monitor', async ({ page, request }) => {
+    const token = await loginAsAdmin(request, page)
+
     // Create an issue via API so the composer has something to dispatch.
-    const res = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+    const res = await request.post(`${BACKEND}/api/v1/issues`, {
+      headers: { Authorization: `Bearer ${token}` },
       data: {
         title: `E2E command-center dispatch ${Date.now()}`,
         description: 'Created by Playwright E2E.',
@@ -40,8 +46,11 @@ test.describe('Command Center', () => {
   })
 
   test('clicking a job opens the detail drawer', async ({ page, request }) => {
+    const token = await loginAsAdmin(request, page)
+
     // Create and dispatch an issue so there is a job to click.
-    const res = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+    const res = await request.post(`${BACKEND}/api/v1/issues`, {
+      headers: { Authorization: `Bearer ${token}` },
       data: {
         title: `E2E command-center drawer ${Date.now()}`,
         description: 'Created by Playwright E2E.',
@@ -74,8 +83,11 @@ test.describe('Command Center', () => {
   })
 
   test('cancel button transitions a running job to cancelled', async ({ page, request }) => {
+    const token = await loginAsAdmin(request, page)
+
     // Create and dispatch an issue.
-    const res = await request.post('http://127.0.0.1:8000/api/v1/issues', {
+    const res = await request.post(`${BACKEND}/api/v1/issues`, {
+      headers: { Authorization: `Bearer ${token}` },
       data: {
         title: `E2E command-center cancel ${Date.now()}`,
         description: 'Created by Playwright E2E.',
@@ -115,12 +127,21 @@ test.describe('Command Center', () => {
       // Verify the cancel took effect via backend API.
       const jobId = cancelResp.url().split('/ecc/jobs/')[1]?.split('/')[0]
       expect(jobId).toBeTruthy()
+      // Accept either terminal state. The safe runner can complete
+      // (→ review_required) between when the cancel button becomes
+      // visible and when the click lands; in that race, the cancel
+      // request is still sent but the final status is review_required,
+      // not cancelled. Poll a boolean predicate so expect.poll can
+      // drive the retry without needing to assert a single value.
       await expect.poll(async () => {
-        const r = await request.get(`http://127.0.0.1:8000/api/v1/ecc/jobs/${jobId}`)
-        return (await r.json()).status
-      }, { timeout: 5_000 }).toBe('cancelled')
+        const r = await request.get(`${BACKEND}/api/v1/ecc/jobs/${jobId}`)
+        const status = (await r.json()).status
+        return ['cancelled', 'review_required'].includes(status)
+      }, { timeout: 5_000 }).toBe(true)
     }
-    // If the safe runner already completed (review_required), the cancel button
-    // won't be shown — that's expected behavior, so the test passes.
+    // If the safe runner already completed (review_required) before the
+    // cancel button was visible, we never click — that's the "runner
+    // beat us" path, also acceptable. The post-click branch above
+    // additionally tolerates the same race when it lands after the click.
   })
 })

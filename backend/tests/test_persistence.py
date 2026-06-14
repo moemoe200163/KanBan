@@ -49,13 +49,27 @@ def fresh_db(tmp_path, monkeypatch):
             await conn.run_sync(Base.metadata.create_all)
         db_module._db_initialized = True
         await repo.seed_if_empty()
-    asyncio.run(_setup())
+        # Seed test user for auth
+        from datetime import datetime, timezone
+        from api.v1.endpoints.auth import hash_password, create_jwt_token
+        from db.models import User as UserModel
+        from sqlalchemy import select as sa_select
+        now = datetime.now(timezone.utc)
+        async with new_sessionmaker() as session:
+            result = await session.execute(sa_select(UserModel).where(UserModel.username == "testuser"))
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(id="user_test_1", username="testuser", email="test@example.com", password_hash=pwd_hash, role="admin", created_at=now, updated_at=now))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+    headers = asyncio.run(_setup())
 
-    yield main.app, repo
+    yield main.app, repo, headers
 
 
 def test_board_returns_seeded_issues_when_db_empty(fresh_db):
-    app, _ = fresh_db
+    app, _, _ = fresh_db
     # Use a TestClient without lifespan management since we already
     # initialized and seeded in the fixture.
     with TestClient(app) as client:
@@ -71,7 +85,7 @@ def test_board_returns_seeded_issues_when_db_empty(fresh_db):
 
 
 def test_create_issue_persists_and_board_reflects(fresh_db):
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         create = client.post(
             "/api/v1/issues",
@@ -82,6 +96,7 @@ def test_create_issue_persists_and_board_reflects(fresh_db):
                 "priority": "low",
                 "profile": "general",
             },
+            headers=headers,
         )
         assert create.status_code == 200
         created = create.json()
@@ -100,7 +115,7 @@ def test_create_issue_persists_and_board_reflects(fresh_db):
 
 
 def test_list_jobs_filters_by_issue_id(fresh_db):
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         for issue_id in ("alpha", "beta"):
             client.post(
@@ -112,6 +127,7 @@ def test_list_jobs_filters_by_issue_id(fresh_db):
                     "profile": "frontend",
                     "harness": "claude-code",
                 },
+                headers=headers,
             )
         response = client.get("/api/v1/ecc/jobs", params={"issue_id": "alpha"})
         assert response.status_code == 200
@@ -124,7 +140,7 @@ def test_list_jobs_filters_by_issue_id(fresh_db):
 
 def test_list_jobs_returns_all_when_no_filter(fresh_db):
     """Without an issue_id filter, /ecc/jobs must include every job."""
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         for issue_id in ("alpha", "beta", "gamma"):
             client.post(
@@ -136,6 +152,7 @@ def test_list_jobs_returns_all_when_no_filter(fresh_db):
                     "profile": "backend",
                     "harness": "claude-code",
                 },
+                headers=headers,
             )
         response = client.get("/api/v1/ecc/jobs")
         assert response.status_code == 200
@@ -150,7 +167,7 @@ def test_list_jobs_returns_all_when_no_filter(fresh_db):
 
 def test_list_jobs_filter_with_no_matches_returns_empty(fresh_db):
     """A filter that matches no jobs must return total=0 and an empty list."""
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         client.post(
             "/api/v1/ecc/dispatch",
@@ -161,6 +178,7 @@ def test_list_jobs_filter_with_no_matches_returns_empty(fresh_db):
                 "profile": "frontend",
                 "harness": "claude-code",
             },
+            headers=headers,
         )
         response = client.get("/api/v1/ecc/jobs", params={"issue_id": "does-not-exist"})
         assert response.status_code == 200
@@ -172,7 +190,7 @@ def test_list_jobs_filter_with_no_matches_returns_empty(fresh_db):
 def test_jobs_and_events_round_trip_through_repository(fresh_db):
     """A job persisted via the repository survives a fresh load and its
     events come back as a list of dicts, not a JSON string."""
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         dispatch = client.post(
             "/api/v1/ecc/dispatch",
@@ -183,6 +201,7 @@ def test_jobs_and_events_round_trip_through_repository(fresh_db):
                 "profile": "backend",
                 "harness": "claude-code",
             },
+            headers=headers,
         )
         assert dispatch.status_code == 200
         job_response = client.get("/api/v1/ecc/jobs", params={"issue_id": "persist-1"})
@@ -197,7 +216,7 @@ def test_jobs_and_events_round_trip_through_repository(fresh_db):
 def test_status_update_persists_through_repository(fresh_db):
     """A PATCH /api/v1/ecc/jobs/{id} update is reflected in a subsequent
     load_all_jobs_into_memory() call."""
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         dispatch = client.post(
             "/api/v1/ecc/dispatch",
@@ -208,12 +227,14 @@ def test_status_update_persists_through_repository(fresh_db):
                 "profile": "frontend",
                 "harness": "claude-code",
             },
+            headers=headers,
         )
         job_id = dispatch.json()["id"]
 
         patch = client.patch(
             f"/api/v1/ecc/jobs/{job_id}",
             json={"status": "completed", "message": "all done"},
+            headers=headers,
         )
         assert patch.status_code == 200
 
@@ -228,7 +249,7 @@ def test_jobs_and_events_survive_simulated_restart(fresh_db):
     """Simulates a process restart by clearing the in-memory job cache
     and re-running `load_jobs_from_db()`. The job and its event timeline
     must be restored from the database."""
-    app, _ = fresh_db
+    app, _, headers = fresh_db
     with TestClient(app) as client:
         # Dispatch + wait for the safe runner to emit its events.
         dispatch = client.post(
@@ -240,6 +261,7 @@ def test_jobs_and_events_survive_simulated_restart(fresh_db):
                 "profile": "frontend",
                 "harness": "claude-code",
             },
+            headers=headers,
         )
         assert dispatch.status_code == 200
         job_id = dispatch.json()["id"]

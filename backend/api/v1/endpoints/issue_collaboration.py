@@ -6,11 +6,13 @@ All endpoints require an issue_id path parameter and operate within
 the scope of that issue.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
+from core.kanban_protocol.board_scope import assert_board_id_allowed
 from db import repository as repo
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 
@@ -62,6 +64,10 @@ async def list_issue_events(
             status_code=404,
             detail=f"Issue '{issue_id}' not found",
         )
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     events = await repo.list_issue_events(issue_id, limit=limit)
     return {"events": events, "total": len(events)}
@@ -87,6 +93,10 @@ async def list_issue_comments(
             status_code=404,
             detail=f"Issue '{issue_id}' not found",
         )
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     comments = await repo.list_issue_comments(issue_id, limit=limit)
     return {"comments": comments, "total": len(comments)}
@@ -96,6 +106,7 @@ async def list_issue_comments(
 async def create_issue_comment(
     issue_id: str,
     request: CommentCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     """
     Create a comment on an issue.
@@ -108,7 +119,12 @@ async def create_issue_comment(
             status_code=404,
             detail=f"Issue '{issue_id}' not found",
         )
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
+    board_id = issue.get("board_id", "board-default")
     comment = await repo.create_issue_comment(
         issue_id=issue_id,
         body=request.body,
@@ -116,6 +132,7 @@ async def create_issue_comment(
         author_name=request.authorName,
         comment_type=request.commentType,
         metadata=request.metadata,
+        board_id=board_id,
     )
 
     # Also create an event for the timeline
@@ -126,6 +143,7 @@ async def create_issue_comment(
         actor_id=request.authorId,
         actor_name=request.authorName,
         details={"commentId": comment["id"], "commentType": request.commentType},
+        board_id=board_id,
     )
 
     return comment
@@ -152,6 +170,10 @@ async def list_issue_artifacts(
             status_code=404,
             detail=f"Issue '{issue_id}' not found",
         )
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     artifacts = await repo.list_issue_artifacts(issue_id, limit=limit)
     return {"artifacts": artifacts, "total": len(artifacts)}
@@ -161,6 +183,7 @@ async def list_issue_artifacts(
 async def create_issue_artifact(
     issue_id: str,
     request: ArtifactCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     """
     Create artifact metadata for an issue.
@@ -173,7 +196,12 @@ async def create_issue_artifact(
             status_code=404,
             detail=f"Issue '{issue_id}' not found",
         )
+    try:
+        assert_board_id_allowed(issue.get("board_id", "board-default"))
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
+    board_id = issue.get("board_id", "board-default")
     artifact = await repo.create_issue_artifact(
         issue_id=issue_id,
         title=request.title,
@@ -186,6 +214,7 @@ async def create_issue_artifact(
         metadata=request.metadata,
         created_by_id=request.createdById,
         created_by_name=request.createdByName,
+        board_id=board_id,
     )
 
     # Also create an event for the timeline
@@ -194,8 +223,22 @@ async def create_issue_artifact(
         event_type="artifact_added",
         summary=f"Artifact '{request.title}' added",
         actor_id=request.createdById,
+        board_id=board_id,
         actor_name=request.createdByName,
         details={"artifactId": artifact["id"], "artifactType": request.artifactType},
     )
+
+    # Plan F: notify live-board subscribers so the Deliverables
+    # section + status pill refresh without a manual reload.
+    # Best-effort — if WS is down the next manual refetch catches up.
+    try:
+        from api.v1.endpoints.ws import broadcast_issue_updated
+        await broadcast_issue_updated(issue_id, "artifact")
+    except Exception as ws_exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "Plan F: artifact broadcast failed for %s: %s",
+            issue_id, ws_exc,
+        )
 
     return artifact

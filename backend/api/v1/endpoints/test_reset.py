@@ -102,8 +102,55 @@ async def reset_e2e_database():
 
     seeded = await repo.seed_if_empty()
 
+    # Seed E2E test users (admin + member) for auth-gated tests.
+    # These users have fixed credentials so E2E tests can log in reliably.
+    await _seed_e2e_users()
+
     return {
         "status": "reset",
         "seeded": seeded,
         "database": db_name,
     }
+
+
+async def _seed_e2e_users() -> None:
+    """Create or update E2E test users (e2e_admin, e2e_member).
+
+    The admin user is needed for tests that exercise admin-only endpoints
+    (provider config, agent roles CRUD, etc.). The member user is for
+    tests that need a logged-in non-admin user.
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    from db import database as _db
+    from db.models import User
+    from sqlalchemy import select
+
+    from .auth import hash_password
+
+    password_hash, _ = hash_password("testpass123")
+
+    async with _db.AsyncSessionLocal() as session:
+        for username, role in [("e2e_admin", "admin"), ("e2e_member", "member")]:
+            result = await session.execute(
+                select(User).where(User.username == username)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update role if user exists (handles case where member was promoted to admin)
+                existing.role = role
+                logger.info(f"[e2e-reset] updated user {username} role={role}")
+            else:
+                user = User(
+                    id=f"user_{uuid.uuid4().hex[:12]}",
+                    username=username,
+                    password_hash=password_hash,
+                    role=role,
+                    created_at=datetime.now(timezone.utc),
+                )
+                session.add(user)
+                logger.info(f"[e2e-reset] created user {username} role={role}")
+
+        await session.commit()

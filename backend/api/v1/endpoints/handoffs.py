@@ -1,7 +1,10 @@
 """Kanban Protocol — Handoff API."""
+import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+
+logger = logging.getLogger(__name__)
 
 from core.kanban_protocol.board_scope import assert_board_id_allowed
 from core.kanban_protocol.handoff import HandoffService
@@ -14,9 +17,12 @@ from core.kanban_protocol.schemas import (
     HandoffCreateRequest,
     HandoffDispatchRequest,
     HandoffPreviewResponse,
+    HandoffReviewRequest,
 )
+from core.kanban_protocol.payloads import PayloadValidationError
 from core.kanban_protocol.scope_guard import ScopeDeniedError
 from db import repository as repo
+from api.v1.auth_deps import require_auth
 
 router = APIRouter()
 _svc = HandoffService()
@@ -52,6 +58,7 @@ async def create_handoff(
     board_id: str,
     issue_id: str,
     body: HandoffCreateRequest,
+    current_user: dict = Depends(require_auth),
 ):
     _check_board(board_id)
     # Confirm the issue exists; otherwise we'd create orphan handoffs.
@@ -95,6 +102,7 @@ async def accept_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -112,6 +120,7 @@ async def dispatch_handoff(
     handoff_id: str,
     body: HandoffDispatchRequest,
     background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -121,20 +130,24 @@ async def dispatch_handoff(
             issue_key=issue["key"],  # authoritative, not body.issueKey
             profile=body.profile,
             actor=body.actor,
+            execution_mode=body.execution_mode,
+            provider=body.provider,
+            model=body.model,
         )
 
-        # Auto-start safe runner for the created job.
-        # _svc.dispatch creates a DB row via create_job_for_handoff;
-        # we now also register it in the in-memory ecc._jobs registry
-        # and kick off the safe-runner background task.
-        job_data = result.get("job")
-        if job_data and job_data.get("id"):
-            from api.v1.endpoints.ecc import (
-                _execute_safe_runner,
-                _register_job_from_db,
-            )
-            await _register_job_from_db(job_data["id"])
-            background_tasks.add_task(_execute_safe_runner, job_data["id"])
+        # If a run was created (real execution path), the worker handles
+        # execution — no safe-runner background task needed.
+        run_id = result.get("_run_id")
+        if not run_id:
+            # Safe-runner path: register the job and kick off the runner.
+            job_data = result.get("job")
+            if job_data and job_data.get("id"):
+                from api.v1.endpoints.ecc import (
+                    _execute_safe_runner,
+                    _register_job_from_db,
+                )
+                await _register_job_from_db(job_data["id"])
+                background_tasks.add_task(_execute_safe_runner, job_data["id"])
 
         return result
     except (ValueError, ScopeDeniedError, PermissionError) as exc:
@@ -149,13 +162,99 @@ async def complete_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffCompleteRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
-        return await _svc.complete(
+        result = await _svc.complete(
             handoff_id=handoff_id,
             actor=body.actor,
             payload=body.payload,
+        )
+
+        # Auto-create artifacts from typed payload fields.
+        payload = body.payload or {}
+
+        try:
+            for shot in (payload.get("screenshots") or []):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title=shot,
+                    artifact_type="screenshot",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=shot,
+                    summary=f"Screenshot from handoff {handoff_id}",
+                    board_id=board_id,
+                )
+
+            if payload.get("diff_summary"):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title="Diff Summary",
+                    artifact_type="diff_summary",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=None,
+                    summary=payload["diff_summary"],
+                    board_id=board_id,
+                )
+
+            if payload.get("test_results"):
+                await repo.create_issue_artifact(
+                    issue_id=issue_id,
+                    title="Test Results",
+                    artifact_type="test_log",
+                    job_id=None,
+                    source="handoff_complete",
+                    path_or_url=None,
+                    summary=payload["test_results"],
+                    board_id=board_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Artifact creation failed for handoff %s: %s %s",
+                handoff_id,
+                type(exc).__name__,
+                exc,
+            )
+
+        return result
+    except PayloadValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Validation failed for lane '{exc.lane}'",
+                "lane": exc.lane,
+                "errors": exc.errors,
+            },
+        )
+    except (ValueError, ScopeDeniedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Review endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/boards/{board_id}/issues/{issue_id}/handoffs/{handoff_id}/review"
+)
+async def review_handoff(
+    board_id: str,
+    issue_id: str,
+    handoff_id: str,
+    body: HandoffReviewRequest,
+    current_user: dict = Depends(require_auth),
+):
+    await _resolve_handoff(board_id, issue_id, handoff_id)
+    try:
+        return await _svc.review(
+            handoff_id=handoff_id,
+            decision=body.decision,
+            actor=body.actor,
+            comment=body.comment,
         )
     except (ValueError, ScopeDeniedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -173,6 +272,7 @@ async def block_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffBlockRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -197,6 +297,7 @@ async def unblock_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -220,6 +321,7 @@ async def cancel_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffActorRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     try:
@@ -244,6 +346,7 @@ async def comment_handoff(
     issue_id: str,
     handoff_id: str,
     body: HandoffCommentRequest,
+    current_user: dict = Depends(require_auth),
 ):
     await _resolve_handoff(board_id, issue_id, handoff_id)
     return await _svc.comment(
@@ -287,3 +390,4 @@ async def preview_handoff(board_id: str, issue_id: str, handoff_id: str):
         retryPolicy=lane.retry_policy,
         retryMax=lane.retry_max,
     )
+

@@ -7,11 +7,14 @@ ECC job dispatches, quality gate results, and review decisions.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, or_
+
+from api.v1.auth_deps import require_role as _require_role
+require_role_ops = _require_role("ops", "admin")
 
 from db import database as _db
 from db.models import AuditLog
@@ -104,11 +107,13 @@ def _audit_to_dict(entry: AuditLog) -> dict:
 async def list_audit_logs(
     action: Optional[str] = Query(None, description="Filter by action type"),
     resource: Optional[str] = Query(None, description="Filter by resource type"),
+    resource_id: Optional[str] = Query(None, description="Exact match on resource_id column"),
     date_from: Optional[str] = Query(None, description="ISO 8601 start time (inclusive)"),
     date_to: Optional[str] = Query(None, description="ISO 8601 end time (inclusive)"),
     q: Optional[str] = Query(None, description="Keyword search across action, resource, resource_id, agent_name"),
     limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    _ops: Annotated[dict, Depends(require_role_ops)] = None,
 ):
     """List audit log entries, newest first. Supports filtering by action, resource, date range, and keyword search."""
     try:
@@ -124,6 +129,8 @@ async def list_audit_logs(
                 stmt = stmt.where(AuditLog.action == action)
             if resource:
                 stmt = stmt.where(AuditLog.resource == resource)
+            if resource_id:
+                stmt = stmt.where(AuditLog.resource_id == resource_id)
             if parsed_from:
                 stmt = stmt.where(AuditLog.timestamp >= parsed_from)
             if parsed_to:
@@ -148,6 +155,8 @@ async def list_audit_logs(
                 count_stmt = count_stmt.where(AuditLog.action == action)
             if resource:
                 count_stmt = count_stmt.where(AuditLog.resource == resource)
+            if resource_id:
+                count_stmt = count_stmt.where(AuditLog.resource_id == resource_id)
             if parsed_from:
                 count_stmt = count_stmt.where(AuditLog.timestamp >= parsed_from)
             if parsed_to:

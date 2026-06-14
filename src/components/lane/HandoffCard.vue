@@ -19,7 +19,10 @@ const emit = defineEmits<{
   block: [handoffId: string]
   unblock: [handoffId: string]
   cancel: [handoffId: string]
+  review: [payload: { handoffId: string; decision: 'approve' | 'reject' | 'request_changes'; comment?: string }]
 }>()
+
+const reviewComment = ref('')
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   pending: { label: 'Pending', color: 'text-zinc-400 bg-zinc-800' },
@@ -28,6 +31,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   completed: { label: 'Completed', color: 'text-zinc-300 bg-zinc-700' },
   blocked: { label: 'Blocked', color: 'text-red-400 bg-red-900/30' },
   cancelled: { label: 'Cancelled', color: 'text-zinc-500 bg-zinc-800/50' },
+  approved: { label: 'Approved', color: 'text-emerald-400 bg-emerald-900/30' },
+  rejected: { label: 'Rejected', color: 'text-red-400 bg-red-900/30' },
+  rework: { label: 'Rework', color: 'text-amber-400 bg-amber-900/30' },
 }
 
 const cfg = computed(() => STATUS_CONFIG[props.handoff.status] ?? STATUS_CONFIG.pending)
@@ -41,6 +47,21 @@ const relativeTime = computed(() => {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
   return d.toLocaleDateString()
 })
+
+// Evidence display — collapsed by default, completed handoffs only.
+// Component-local state; never read by parent. Refreshes on prop change
+// so a re-fetched Handoff with a populated payload updates the count.
+const expanded = ref(false)
+
+const payloadKeyCount = computed(
+  () => Object.keys(props.handoff.payload ?? {}).length
+)
+
+// accepted / in_progress / blocked / cancelled / pending are
+// intentionally NOT eligible — they have no "evidence" to show.
+const showEvidenceToggle = computed(
+  () => props.handoff.status === 'completed' && payloadKeyCount.value > 0
+)
 </script>
 
 <template>
@@ -69,6 +90,21 @@ const relativeTime = computed(() => {
       {{ handoff.blockReason }}
     </div>
 
+    <!-- Review decision badge -->
+    <div
+      v-if="handoff.decision"
+      class="mb-2 px-2 py-1 rounded text-[11px]"
+      :class="{
+        'bg-emerald-900/20 text-emerald-400': handoff.decision === 'approve',
+        'bg-amber-900/20 text-amber-400': handoff.decision === 'request_changes',
+        'bg-red-900/20 text-red-400': handoff.decision === 'reject',
+      }"
+      data-testid="review-decision-badge"
+    >
+      {{ handoff.decision === 'approve' ? 'Approved' : handoff.decision === 'request_changes' ? 'Rework Requested' : 'Rejected' }}
+      <span v-if="handoff.reviewedBy" class="text-zinc-500"> by {{ handoff.reviewedBy }}</span>
+    </div>
+
     <!-- Payload summary -->
     <div
       v-if="handoff.payload && Object.keys(handoff.payload).length > 0"
@@ -81,6 +117,103 @@ const relativeTime = computed(() => {
       >
         {{ key }}
       </span>
+    </div>
+
+    <!-- Evidence toggle (completed handoffs with non-empty payload only) -->
+    <button
+      v-if="showEvidenceToggle"
+      type="button"
+      data-testid="handoff-evidence-toggle"
+      class="w-full mb-2 flex items-center justify-between px-2 py-1 rounded
+             bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200
+             text-[11px] transition-colors"
+      :aria-expanded="expanded"
+      @click="expanded = !expanded"
+    >
+      <span>{{ expanded ? 'Hide evidence' : `View evidence (${payloadKeyCount} fields)` }}</span>
+      <span aria-hidden="true">{{ expanded ? '−' : '+' }}</span>
+    </button>
+
+    <!-- Evidence body (only when expanded) -->
+    <div
+      v-if="showEvidenceToggle && expanded"
+      data-testid="handoff-evidence-body"
+      class="mb-2 rounded border border-zinc-800 bg-zinc-900/40 p-2 space-y-1.5"
+    >
+      <div
+        v-for="(value, key) in handoff.payload"
+        :key="key"
+        class="text-[11px]"
+      >
+        <div class="text-zinc-500 mb-0.5">{{ key }}</div>
+
+        <!-- list[str] (e.g. screenshots, interfaces, acceptance_criteria) -->
+        <ul
+          v-if="Array.isArray(value)"
+          class="list-disc list-inside text-zinc-300 space-y-0.5"
+        >
+          <li v-for="(item, i) in value" :key="i">{{ item }}</li>
+        </ul>
+
+        <!-- number (e.g. coverage_pct) -->
+        <div v-else-if="typeof value === 'number'" class="text-zinc-300">
+          {{ value }}{{ key === 'coverage_pct' ? '%' : '' }}
+        </div>
+
+        <!-- long string (>= 280 chars OR contains newline) -->
+        <div
+          v-else-if="typeof value === 'string' && (value.length >= 280 || value.includes('\n'))"
+          class="text-zinc-300 max-h-48 overflow-y-auto whitespace-pre-wrap
+                 bg-zinc-950/40 rounded p-1.5 border border-zinc-800/60"
+        >{{ value }}</div>
+
+        <!-- short string -->
+        <div v-else-if="typeof value === 'string'" class="text-zinc-300">
+          {{ value }}
+        </div>
+
+        <!-- fallback (boolean, null, object) -->
+        <div v-else class="text-zinc-300">{{ String(value) }}</div>
+      </div>
+    </div>
+
+    <!-- Review actions — completed review handoffs, not yet decided -->
+    <div
+      v-if="handoff.status === 'completed' && handoff.toLane === 'review' && !handoff.decision"
+      class="mt-2 space-y-2"
+      data-testid="review-actions"
+    >
+      <textarea
+        v-model="reviewComment"
+        placeholder="Review comment (optional)"
+        rows="2"
+        class="w-full px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 text-[11px]
+               placeholder:text-zinc-500 resize-none focus:outline-none focus:border-zinc-500"
+        data-testid="review-comment-input"
+      />
+      <div class="flex flex-wrap gap-1.5">
+        <button
+          class="px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 text-[11px] transition-colors"
+          data-testid="review-approve-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'approve', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Approve
+        </button>
+        <button
+          class="px-2 py-1 rounded bg-amber-900/30 text-amber-400 hover:bg-amber-900/50 text-[11px] transition-colors"
+          data-testid="review-rework-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'request_changes', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Request Rework
+        </button>
+        <button
+          class="px-2 py-1 rounded bg-red-900/20 text-red-400/70 hover:bg-red-900/40 text-[11px] transition-colors"
+          data-testid="review-reject-btn"
+          @click="emit('review', { handoffId: handoff.id, decision: 'reject', comment: reviewComment || undefined }); reviewComment = ''"
+        >
+          Reject
+        </button>
+      </div>
     </div>
 
     <!-- Actions -->
@@ -101,6 +234,7 @@ const relativeTime = computed(() => {
       </button>
       <button
         v-if="handoff.status === 'in_progress' || handoff.status === 'accepted'"
+        data-testid="handoff-complete-btn"
         class="px-2 py-1 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 text-[11px] transition-colors"
         @click="emit('complete', handoff.id)"
       >

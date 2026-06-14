@@ -4,16 +4,16 @@ Read this file before making changes. These rules exist because this project can
 
 ## Current Mission
 
-DevFlow is an AI Kanban control plane. The current priority is **P0 product loop stability**, not full Paperclip architecture and not multi-model infrastructure.
+DevFlow is an AI Kanban control plane. The P0 product loop is stable. Current focus is **P1 feature hardening and next product slices** (Artifacts v1, Review Gate).
 
-The P0 loop is:
+The proven P0 loop:
 
 ```text
 Issue exists
 -> User moves card to In Progress
 -> Backend creates an ECC job
 -> A safe background runner emits logs
--> Frontend can show job/log state
+-> Frontend shows job/log state
 -> Job ends as review_required, completed, or failed
 -> Board reflects the result
 ```
@@ -48,14 +48,16 @@ When documents conflict, follow the higher item in this list.
 
 ## Current Known Problems
 
-Fix these before expanding architecture:
+All P0 issues are resolved. No blocking known problems.
 
-1. `GET /api/v1/board` currently returns empty columns, so the frontend shows zero cards.
-2. Backend startup has a SQLAlchemy async DB initialization warning.
-3. Backend smoke tests currently fail.
-4. ECC dispatch is too close to real adapter execution before the safe P0 runner is stable.
-5. E2E files exist, but Playwright is not installed in `devDependencies`.
-6. There are duplicate sidebar paths: `AppSidebar.vue` and `components/sidebar/Sidebar.vue`.
+- `GET /api/v1/board` returns seed issues ✅
+- Backend startup clean (no DB warnings) ✅
+- Backend tests pass (657/657) ✅
+- E2E suite passes (37/37 desktop, Playwright installed) ✅
+- Single sidebar path (`src/components/sidebar/Sidebar.vue`) ✅
+- P1.5 Handoff typed payload + structured 422 ✅
+- P1.6 Issue Detail evidence display (HandoffCard) ✅
+- Agent Roles DB-backed (8 system roles seeded from WORKER_LANES, CRUD API at /api/v1/agent-roles) ✅
 
 ## Allowed P0 Architecture
 
@@ -91,18 +93,17 @@ This safe runner should be the default until the board/job/log loop is proven.
 
 ## Deferred Architecture
 
-Do not prioritize these until P0 and P1 are verified:
+Do not prioritize these until real execution is stable:
 
-- Codex/Cursor/Gemini/OpenCode execution.
-- Paperclip-style session serialization.
-- Long-running session resume.
+- ~~Real Claude/ECC execution (enable behind env flag; safe runner remains default).~~ ✅
+- ~~Session resume~~ ✅ (AgentSession model + CRUD + adapter protocol + API endpoints)
+- Paperclip-style session serialization (schema designed: `docs/superpowers/specs/2026-06-06-session-resume-schema.md`).
 - Autopilot scheduling.
-- AgentShield/security scan automation.
-- PR/CI automation.
-- Full auth and API-key rollout.
+- ~~PR/CI automation.~~ ✅ (v1 webhook ingestion + v2 outbound API complete)
+- ~~Full auth and API-key rollout.~~ ✅
 - Redis queue.
 
-Adapter classes may remain in the repo, but P0 dispatch must not depend on the full adapter system being complete.
+Real LLM execution is opt-in via `ALLOW_REAL_LLM_EXECUTION=true`. Safe runner remains the default. Handoff dispatch respects the env flag.
 
 ## Scope Guardrails
 
@@ -117,12 +118,22 @@ DevFlow is a Kanban + LLM execution control plane. The following features are **
 - API key rotation UI
 
 **Next milestones (in order):**
-1. Kanban board + issue management
-2. Command Center (dispatch, live logs, job status)
-3. LLM Adapter layer (provider/model/execution_mode)
-4. Job/Logs infrastructure
-5. Review Queue
-6. Delivery Orchestrator
+1. ~~Kanban board + issue management~~ ✅
+2. ~~Command Center (dispatch, live logs, job status)~~ ✅
+3. ~~LLM Adapter layer (safe runner + ClaudeLocalAdapter)~~ ✅
+4. ~~Job/Logs infrastructure~~ ✅
+5. ~~Review Queue~~ ✅
+6. ~~Handoff typed payload (P1.5)~~ ✅
+7. ~~Issue Detail evidence display (P1.6)~~ ✅
+8. ~~Artifacts v1 — typed evidence/artifact references on issues~~ ✅
+9. ~~Review Gate — structured completion result with decision routing~~ ✅
+10. ~~Delivery Orchestrator~~ ✅
+11. ~~Real execution closed loop~~ ✅
+12. ~~Session resume~~ ✅ (schema + implementation: AgentSession model, session CRUD, adapter protocol, API endpoints, 27 tests)
+13. ~~PR/CI automation v1 — GitHub webhook ingestion~~ ✅
+14. ~~PR/CI outbound API v2 — shared client, PR create, label sync, check run~~ ✅
+15. ~~Full auth rollout — RBAC on admin-only endpoints, require_admin dependency, LLM write endpoints admin-gated~~ ✅
+16. ~~Agent Roles CRUD — DB-backed role registry, CRUD API, frontend management (FormModal, DetailDrawer, Matrix upgrade)~~ ✅
 
 Completed spike work (admin keys, retention, sandbox egress) lives on
 `archive/security-scope-spike-2026-06-03` — do not merge into mainline

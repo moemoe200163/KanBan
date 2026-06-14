@@ -16,6 +16,7 @@ e2e/playwright-report/
 __pycache__/
 *.py[cod]
 backend/devflow.db
+backend/e2e_e2e.db
 devflow_e2e.db
 *.png
 *.jpg
@@ -30,3 +31,13 @@ devflow_e2e.db
 venv/
 *.egg-info/
 .claude/
+file::memory:
+.agents/
+skills-lock.json
+backend/scripts/snake_game.py
+.verify-*.mjs
+.probe-cc.mjs
+.mavis/
+# Plan D: ignore build artifacts but keep .gitkeep
+deliveries/*
+!deliveries/.gitkeep

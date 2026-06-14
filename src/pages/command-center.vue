@@ -4,6 +4,7 @@ import { useBoardStore } from '~/stores/board'
 import JobDetailDrawer from '~/components/common/JobDetailDrawer.vue'
 import JobMonitor from '~/components/command/JobMonitor.vue'
 import ReviewQueuePanel from '~/components/command/ReviewQueuePanel.vue'
+import DevStats from '~/components/command/DevStats.vue'
 
 const boardStore = useBoardStore()
 
@@ -31,6 +32,7 @@ onMounted(async () => {
         <ReviewQueuePanel class="command-center__review" />
       </div>
       <div class="command-center__col command-center__col--right">
+        <DevStats />
         <JobMonitor />
       </div>
     </div>
@@ -43,7 +45,8 @@ onMounted(async () => {
 .command-center {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
   padding: 22px;
   gap: 18px;
@@ -94,6 +97,27 @@ onMounted(async () => {
 @media (max-width: 1024px) {
   .command-center__grid {
     grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .command-center {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .command-center__title h1 {
+    font-size: 1.25rem;
+  }
+
+  .command-center__title p {
+    display: none;
+  }
+
+  .command-center__grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 }
 </style>

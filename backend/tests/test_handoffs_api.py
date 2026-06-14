@@ -2,12 +2,12 @@ import pytest
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, select as sa_select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 import main
 from db import database as db_module
-from db.models import Base, Issue as IssueModel
+from db.models import Base, Issue as IssueModel, User as UserModel
 from core.kanban_protocol.handoff import HandoffService
 
 
@@ -60,8 +60,24 @@ def fresh_db(tmp_path, monkeypatch):
             await session.commit()
         db_module._db_initialized = True
 
-    asyncio.run(_setup())
-    yield
+        # Create a test user for JWT auth
+        from api.v1.endpoints.auth import hash_password, create_jwt_token
+        now_u = datetime.now(timezone.utc)
+        async with new_sessionmaker() as session:
+            result = await session.execute(sa_select(UserModel).where(UserModel.username == "testuser"))
+            if not result.scalar_one_or_none():
+                pwd_hash, _ = hash_password("testpass123")
+                session.add(UserModel(
+                    id="user_test_1", username="testuser", email="test@example.com",
+                    password_hash=pwd_hash, role="admin",
+                    created_at=now_u, updated_at=now_u,
+                ))
+                await session.commit()
+        token, _ = create_jwt_token("user_test_1", "testuser")
+        return {"Authorization": f"Bearer {token}"}
+
+    headers = asyncio.run(_setup())
+    yield headers
     new_engine.sync_engine.dispose()
 
 
@@ -69,6 +85,7 @@ def test_create_handoff_returns_pending(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
         json={"toLane": "frontend", "payload": {"diff_summary": "wip"}},
+        headers=fresh_db,
     )
     assert response.status_code == 201
     body = response.json()
@@ -81,6 +98,7 @@ def test_create_handoff_rejects_unknown_lane(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
         json={"toLane": "not-a-lane"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -124,8 +142,13 @@ def test_get_one_handoff(fresh_db):
 
 
 def test_unknown_board_id_returns_404(fresh_db):
+    # After the multi-board relaxation, the board scope check rejects
+    # syntactically invalid ids (empty / whitespace / overlong) rather
+    # than a hard-coded allowlist. An empty path segment surfaces as
+    # a 404 from FastAPI's path matcher; whitespace and overlong ids
+    # come back as 404 from the _check_board guard.
     response = client.get(
-        "/api/v1/boards/some-other-board/issues/issue-api-1/handoffs"
+        "/api/v1/boards/" + "x" * 200 + "/issues/issue-api-1/handoffs"
     )
     assert response.status_code == 404
 
@@ -137,6 +160,7 @@ def test_create_handoff_rejects_denied_payload_key(fresh_db):
             "toLane": "frontend",
             "payload": {"sandbox_egress": "open"},
         },
+        headers=fresh_db,
     )
     assert response.status_code == 422
     assert "Scope denied" in response.json()["detail"]
@@ -178,6 +202,7 @@ def test_accept_handoff_happy_path(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/accept",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -202,6 +227,7 @@ def test_accept_handoff_rejects_wrong_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/accept",
         json={"actor": "carol"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -210,6 +236,7 @@ def test_accept_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/accept",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -233,6 +260,7 @@ def test_dispatch_handoff_happy_path(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
         json={"issueKey": "DEV-100", "profile": "frontend", "actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -255,6 +283,7 @@ def test_dispatch_handoff_rejects_wrong_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
         json={"issueKey": "DEV-100", "profile": "frontend"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -263,6 +292,7 @@ def test_dispatch_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/dispatch",
         json={"issueKey": "DEV-100", "profile": "frontend"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -284,6 +314,7 @@ def test_dispatch_handoff_requires_approval(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/dispatch",
         json={"issueKey": "DEV-100", "profile": "general", "actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
     assert "human approval" in response.json()["detail"].lower()
@@ -313,6 +344,7 @@ def test_complete_handoff_happy_path(fresh_db):
             "actor": "bob",
             "payload": {"diff_summary": "done", "screenshots": []},
         },
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -335,6 +367,7 @@ def test_complete_handoff_rejects_wrong_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
         json={"payload": {"diff_summary": "done", "screenshots": []}},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -343,6 +376,7 @@ def test_complete_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/complete",
         json={"payload": {"diff_summary": "done", "screenshots": []}},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -393,6 +427,7 @@ def test_accept_handoff_wrong_issue_returns_404(fresh_db, monkeypatch):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/accept",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -417,6 +452,7 @@ def test_dispatch_handoff_wrong_issue_returns_404(fresh_db, monkeypatch):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/dispatch",
         json={"issueKey": "DEV-100", "profile": "frontend", "actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -439,6 +475,7 @@ def test_block_handoff_happy_path(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/block",
         json={"actor": "bob", "blockReason": "waiting on design"},
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -461,6 +498,7 @@ def test_block_handoff_rejects_terminal_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/block",
         json={"actor": "bob", "blockReason": "too late"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -469,6 +507,7 @@ def test_block_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/block",
         json={"actor": "bob", "blockReason": "missing"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -494,6 +533,7 @@ def test_unblock_handoff_happy_path(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/unblock",
         json={"actor": "carol"},
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -516,6 +556,7 @@ def test_unblock_handoff_rejects_wrong_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/unblock",
         json={"actor": "carol"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -524,6 +565,7 @@ def test_unblock_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/unblock",
         json={"actor": "carol"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -546,6 +588,7 @@ def test_cancel_handoff_happy_path(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/cancel",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 200
     body = response.json()
@@ -569,6 +612,7 @@ def test_cancel_handoff_rejects_terminal_state(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/cancel",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 422
 
@@ -577,6 +621,7 @@ def test_cancel_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/cancel",
         json={"actor": "bob"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -604,6 +649,7 @@ def test_comment_handoff_happy_path(fresh_db):
             "authorName": "Alice",
             "commentType": "handoff",
         },
+        headers=fresh_db,
     )
     assert response.status_code == 201
     body = response.json()
@@ -616,6 +662,7 @@ def test_comment_handoff_not_found(fresh_db):
     response = client.post(
         "/api/v1/boards/board-default/issues/issue-api-1/handoffs/h_nonexistent/comment",
         json={"body": "orphan comment"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -636,6 +683,7 @@ def test_comment_handoff_wrong_issue_returns_404(fresh_db):
     response = client.post(
         f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/comment",
         json={"body": "wrong issue"},
+        headers=fresh_db,
     )
     assert response.status_code == 404
 
@@ -723,3 +771,165 @@ def test_preview_handoff_wrong_issue_returns_404(fresh_db):
         f"/api/v1/boards/board-default/issues/issue-api-2/handoffs/{handoff['id']}/preview"
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 7: structured 422 response shape for /complete endpoint
+# ---------------------------------------------------------------------------
+
+import asyncio
+from typing import Optional
+
+
+def _create_and_accept(to_lane: str, initial_payload: Optional[dict] = None, headers: Optional[dict] = None) -> dict:
+    """Helper for the new tests: create a handoff and accept it via the service."""
+    create = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
+        json={"toLane": to_lane, "payload": initial_payload or {}},
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    handoff = create.json()
+    asyncio.run(HandoffService().accept(handoff["id"], actor="bob"))
+    return handoff
+
+
+def test_complete_returns_structured_422_on_type_error(fresh_db):
+    """coverage_pct: 'abc' must trigger the typed 422 with detail.lane='qa'."""
+    handoff = _create_and_accept("qa", initial_payload={"test_results": "ok"}, headers=fresh_db)
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {"test_results": "ok", "coverage_pct": "abc"}},
+        headers=fresh_db,
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "detail" in body
+    assert isinstance(body["detail"], dict)
+    assert body["detail"]["lane"] == "qa"
+    assert body["detail"]["message"].startswith("Validation failed for lane 'qa'")
+    assert isinstance(body["detail"]["errors"], list)
+    assert any(
+        e["loc"] == ["coverage_pct"] for e in body["detail"]["errors"]
+    )
+
+
+def test_complete_returns_422_with_per_field_loc(fresh_db):
+    """Multiple bad fields should all appear in detail.errors[].loc."""
+    handoff = _create_and_accept("qa", headers=fresh_db)
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {}},  # both required fields missing
+        headers=fresh_db,
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["detail"]["lane"] == "qa"
+    locs = {tuple(e["loc"]) for e in body["detail"]["errors"]}
+    assert ("test_results",) in locs
+    assert ("coverage_pct",) in locs
+
+
+def test_complete_existing_422_value_error_unchanged(fresh_db):
+    """Legacy ValueError path (status check) still returns a string detail."""
+    # Create a handoff but DO NOT accept it — completion must 422 with
+    # a string detail (legacy ValueError), not the new structured dict.
+    create = client.post(
+        "/api/v1/boards/board-default/issues/issue-api-1/handoffs",
+        json={"toLane": "frontend", "payload": {"diff_summary": "x"}},
+        headers=fresh_db,
+    )
+    assert create.status_code == 201
+    handoff = create.json()
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/complete",
+        json={"actor": "tester", "payload": {"diff_summary": "x"}},
+        headers=fresh_db,
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, str)
+    assert "cannot complete" in detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# Review Gate — approve auto-routing and issue status sync
+# ---------------------------------------------------------------------------
+
+def test_approve_auto_creates_next_handoff(fresh_db):
+    """Verify approve routing creates the next handoff in one step."""
+    import asyncio
+    svc = HandoffService()
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane="backend",
+        to_lane="review",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    asyncio.run(svc.complete(
+        handoff_id=handoff["id"],
+        actor="bob",
+        payload={"reviewer": "carol", "decision": "approve", "approver": "lead-dev"},
+    ))
+    response = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/review",
+        json={"decision": "approve", "actor": "carol"},
+        headers=fresh_db,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # Review created next handoff automatically
+    assert body["routing"]["action"] == "approve"
+    next_h = body["routing"]["next_handoff"]
+    assert next_h is not None
+    assert next_h["toLane"] == "delivery"
+    assert next_h["fromLane"] == "review"
+    assert next_h["status"] == "pending"
+    # The original handoff is now "approved"
+    assert body["handoff"]["status"] == "approved"
+    assert body["handoff"]["decision"] == "approve"
+
+
+def test_review_syncs_issue_status(fresh_db):
+    """After review decision, issue status is updated: approve → in_progress, reject → backlog."""
+    import asyncio
+    from db import repository as repo
+    svc = HandoffService()
+
+    # Set issue to in_progress first
+    asyncio.run(repo.upsert_issue({
+        "id": "issue-api-1",
+        "key": "DEV-900",
+        "board_id": "board-default",
+        "title": "Status sync test",
+        "status": "in_progress",
+    }))
+
+    # Create + complete a handoff to review
+    handoff = asyncio.run(svc.create(
+        issue_id="issue-api-1",
+        board_id="board-default",
+        from_lane="backend",
+        to_lane="review",
+        payload={},
+        created_by="alice",
+    ))
+    asyncio.run(svc.accept(handoff["id"], actor="bob"))
+    asyncio.run(svc.complete(
+        handoff_id=handoff["id"],
+        actor="bob",
+        payload={"reviewer": "carol", "decision": "approve", "approver": "lead-dev"},
+    ))
+
+    # Approve — should sync issue status to in_progress (delivery lane)
+    resp = client.post(
+        f"/api/v1/boards/board-default/issues/issue-api-1/handoffs/{handoff['id']}/review",
+        json={"decision": "approve", "actor": "carol"},
+        headers=fresh_db,
+    )
+    assert resp.status_code == 200
+    issue = asyncio.run(repo.get_issue("issue-api-1"))
+    assert issue["status"] == "in_progress"

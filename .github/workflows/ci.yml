@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs of the same branch — saves minutes when a
+# push supersedes a pending PR build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  schema-drift:
+    name: Schema drift audit
+    runs-on: ubuntu-latest
+
+    # The audit needs a live Postgres + Redis + backend image that has
+    # the latest migrations applied. We bring the stack up with the
+    # same docker-compose.yml the developer uses, run the audit, and
+    # tear down on exit. ``make audit-drift`` does the work.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow_secret
+          POSTGRES_DB: devflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Apply migrations + seed dev data
+        env:
+          DATABASE_URL: postgresql+asyncpg://devflow:devflow_secret@localhost:5432/devflow
+          JWT_SECRET: ci-jwt-secret-do-not-use-in-prod
+          PYTHONUNBUFFERED: "1"
+        run: |
+          pip install --quiet -r backend/requirements.txt
+          cd backend
+          python -c "from db.database import init_db; import asyncio; asyncio.run(init_db())"
+          alembic upgrade head
+
+      - name: Schema drift gate
+        env:
+          AUDIT_DATABASE_URL: postgresql+psycopg2://devflow:devflow_secret@localhost:5432/devflow
+        run: |
+          make audit-drift
+
+  e2e-smoke:
+    name: E2E smoke (board renders, real data, no mock)
+    runs-on: ubuntu-latest
+    needs: schema-drift
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow_secret
+          POSTGRES_DB: devflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Bring the stack up
+        env:
+          SEED_DEV_DATA: "false"
+          JWT_SECRET: ci-jwt-secret-do-not-use-in-prod
+        run: docker compose up -d --build backend frontend nginx
+
+      - name: Wait for the board endpoint
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1/api/v1/board > /dev/null; then
+              echo "board is up"
+              exit 0
+            fi
+            echo "waiting for backend… ($i)"
+            sleep 2
+          done
+          echo "backend never came up"
+          docker logs devflow-backend --tail 30
+          exit 1
+
+      - name: Smoke check — no mock data leaks
+        run: |
+          # The board must return 5 empty columns on a fresh DB (we
+          # seeded nothing). If the response contains any of the
+          # known mock phrases, host-side mock data has leaked into
+          # the bundle and the change is breaking.
+          body=$(curl -s http://127.0.0.1/api/v1/board)
+          echo "$body" > board.json
+          python3 -c "
+          import json
+          with open('board.json') as f: d = json.load(f)
+          cols = d.get('columns', [])
+          assert len(cols) == 5, f'expected 5 columns, got {len(cols)}'
+          for c in cols:
+              assert c.get('issues') == [], f'column {c[\"id\"]} not empty on fresh DB: {c}'
+          print('fresh board has 5 empty columns — no mock leak')
+          "
+
+      - name: Install Playwright Chromium
+        run: npm run e2e:install
+
+      - name: Run Playwright smoke suite
+        # The stack is already up from "Bring the stack up". The smoke
+        # config is read-only — no DB reset, no destructive actions.
+        # 5-minute ceiling matches the worst-case first-run install.
+        timeout-minutes: 5
+        run: npm run e2e:smoke

@@ -5,20 +5,39 @@
  */
 
 import { useBoardStore } from '~/stores/board'
-import type { Handoff, WorkerLane } from '~/types'
+import type { Handoff, HandoffPreview, WorkerLane } from '~/types'
+// Explicit import: HandoffCard lives in the same `lane/` directory, so
+// Nuxt's auto-import registers it as `LaneHandoffCard`. IssueDetail.vue
+// imports HandoffSection the same way for the same reason — see its
+// top-of-file `import HandoffSection from './lane/HandoffSection.vue'`.
+// Without this, `<HandoffCard>` falls through to a literal custom
+// element (`<handoffcard>`) and the per-handoff UI never renders.
+import HandoffCard from './HandoffCard.vue'
 
 const boardStore = useBoardStore()
 const issue = computed(() => boardStore.selectedIssue)
+const config = useRuntimeConfig()
 
 const showCreateForm = ref(false)
 const targetLane = ref('')
 const isSubmitting = ref(false)
 
+// Completion-with-details form state. When the user clicks Complete on a
+// handoff whose lane requires fields the existing payload doesn't carry,
+// we open an inline form so they can fill them in. See backend
+// core/kanban_protocol/lanes.py:required_completion_fields and
+// handoff.py::HandoffService.complete — the backend rejects with 422
+// if any required field is missing, which was the P4 PARTIAL gap.
+const completingHandoffId = ref<string | null>(null)
+const completionPreview = ref<HandoffPreview | null>(null)
+const completionValues = ref<Record<string, string>>({})
+const completionError = ref<string | null>(null)
+const isCompleting = ref(false)
+
 // Load worker lanes from the backend on mount
 const lanes = ref<WorkerLane[]>([])
 onMounted(async () => {
   try {
-    const config = useRuntimeConfig()
     const data = await $fetch<{ lanes: WorkerLane[] }>(`${config.public.apiBase}/lanes`)
     lanes.value = data.lanes
   } catch {
@@ -69,7 +88,88 @@ async function handleDispatch(handoffId: string) {
 
 async function handleComplete(handoffId: string) {
   if (!issue.value) return
-  await boardStore.completeHandoff(issue.value.id, handoffId, {}, 'user')
+  completionError.value = null
+  // Probe the lane's required completion fields. The backend will
+  // 422 on missing fields, so we pre-flight via /preview and either
+  // submit directly (already-satisfied) or open the form.
+  try {
+    const preview = await $fetch<HandoffPreview>(
+      `${config.public.apiBase}/boards/board-default/issues/${issue.value.id}/handoffs/${handoffId}/preview`
+    )
+    if (preview.missingFields.length === 0) {
+      await boardStore.completeHandoff(issue.value.id, handoffId, {}, 'user')
+      return
+    }
+    completionPreview.value = preview
+    completionValues.value = Object.fromEntries(
+      preview.missingFields.map((f) => [f, ''])
+    )
+    completingHandoffId.value = handoffId
+  } catch (err) {
+    completionError.value = (err as Error)?.message || 'Failed to load handoff preview'
+  }
+}
+
+async function submitCompletion() {
+  if (!issue.value || !completingHandoffId.value || !completionPreview.value) return
+  isCompleting.value = true
+  completionError.value = null
+  try {
+    // Send only the fields the user actually filled in. Backend
+    // merges with the existing payload, so partial submissions are
+    // fine — but the user must cover all required fields, otherwise
+    // the service will 422 again.
+    //
+    // List-typed fields (e.g. `screenshots: list[str]`) need a real
+    // JSON array on the wire. The form's input is a text field, so we
+    // try `JSON.parse` on each value: if the user typed a valid JSON
+    // array (e.g. `["a.png","b.png"]`), pass it through as the array.
+    // Otherwise the raw string is sent and the backend can surface a
+    // 422 for any type mismatch it catches (P1.5 typed payload).
+    const payload: Record<string, unknown> = {}
+    for (const field of completionPreview.value.missingFields) {
+      const v = completionValues.value[field]?.trim()
+      if (!v) continue
+      try {
+        const parsed = JSON.parse(v)
+        if (Array.isArray(parsed)) {
+          payload[field] = parsed
+          continue
+        }
+      } catch {
+        // not JSON — fall through to plain string
+      }
+      payload[field] = v
+    }
+    await boardStore.completeHandoff(
+      issue.value.id,
+      completingHandoffId.value,
+      payload,
+      'user'
+    )
+    cancelCompletion()
+  } catch (err: any) {
+    // Structured 422 from P1.5 typed payload validation.
+    const detail = err?.data?.detail
+    if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+      const items = detail.errors.map(
+        (e: any) => `${e.loc.join('.')}: ${e.msg}`
+      )
+      completionError.value = `${detail.message} — ${items.join('; ')}`
+    } else {
+      completionError.value =
+        err?.data?.detail || err?.message || 'Failed to complete handoff'
+    }
+  } finally {
+    isCompleting.value = false
+  }
+}
+
+function cancelCompletion() {
+  completingHandoffId.value = null
+  completionPreview.value = null
+  completionValues.value = {}
+  completionError.value = null
 }
 
 async function handleBlock(handoffId: string) {
@@ -87,6 +187,19 @@ async function handleUnblock(handoffId: string) {
 async function handleCancel(handoffId: string) {
   if (!issue.value) return
   await boardStore.cancelHandoff(issue.value.id, handoffId, 'user')
+}
+
+async function handleReview(payload: { handoffId: string; decision: 'approve' | 'reject' | 'request_changes'; comment?: string }) {
+  if (!issue.value) return
+  const confirmed = window.confirm(
+    `Are you sure you want to ${payload.decision} this handoff? This action cannot be undone.`
+  )
+  if (!confirmed) return
+  await boardStore.reviewHandoff(issue.value.id, payload.handoffId, {
+    decision: payload.decision,
+    actor: 'user',
+    comment: payload.comment,
+  })
 }
 </script>
 
@@ -112,6 +225,7 @@ async function handleCancel(handoffId: string) {
     >
       <select
         v-model="targetLane"
+        data-testid="handoff-lane-select"
         class="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-500"
       >
         <option value="" disabled>Select target role</option>
@@ -132,6 +246,51 @@ async function handleCancel(handoffId: string) {
       </button>
     </div>
 
+    <!-- Completion form (shown when lane requires fields) -->
+    <div
+      v-if="completingHandoffId && completionPreview"
+      class="rounded-md border border-zinc-700 p-3 space-y-2"
+    >
+      <p class="text-[11px] text-zinc-400">
+        This lane requires additional fields to complete the handoff.
+      </p>
+      <div
+        v-for="field in completionPreview.missingFields"
+        :key="field"
+        class="space-y-1"
+      >
+        <label class="text-[11px] text-zinc-500 uppercase tracking-wider">
+          {{ field.replace(/_/g, ' ') }}
+        </label>
+        <input
+          :data-testid="`completion-field-${field}`"
+          v-model="completionValues[field]"
+          class="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-500"
+          :placeholder="`Enter ${field.replace(/_/g, ' ')}`"
+        />
+      </div>
+      <p v-if="completionError" class="text-[11px] text-red-400">
+        {{ completionError }}
+      </p>
+      <div class="flex gap-2">
+        <button
+          :disabled="isCompleting"
+          data-testid="submit-completion"
+          class="flex-1 px-2 py-1.5 rounded text-[11px] bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          @click="submitCompletion"
+        >
+          {{ isCompleting ? 'Submitting...' : 'Complete Handoff' }}
+        </button>
+        <button
+          data-testid="cancel-completion"
+          class="px-2 py-1.5 rounded text-[11px] bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+          @click="cancelCompletion"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+
     <!-- Handoff list -->
     <div v-if="handoffs.length > 0" class="space-y-2">
       <HandoffCard
@@ -144,11 +303,12 @@ async function handleCancel(handoffId: string) {
         @block="handleBlock"
         @unblock="handleUnblock"
         @cancel="handleCancel"
+        @review="handleReview"
       />
     </div>
 
     <p
-      v-else-if="!showCreateForm"
+      v-else-if="!showCreateForm && !completingHandoffId"
       class="text-[11px] text-zinc-600 italic"
     >
       No handoffs yet.

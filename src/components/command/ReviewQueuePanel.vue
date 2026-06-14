@@ -11,19 +11,30 @@ const reviewJobs = computed<ECCDispatchJob[]>(() =>
 )
 
 const approve = async (job: ECCDispatchJob) => {
-  await boardStore.updateECCJobStatus(
-    boardStore.getIssueById(job.issue_id) ?? boardStore._synthIssue(job),
-    'completed',
-    'Approved via Review Queue'
-  )
+  const issue = boardStore.getIssueById(job.issue_id)
+  if (issue) {
+    await boardStore.approveReview(issue.id)
+  } else {
+    // Fallback: synthesize an issue so the job status is at least updated
+    await boardStore.updateECCJobStatus(
+      boardStore._synthIssue(job),
+      'completed',
+      'Approved via Review Queue'
+    )
+  }
 }
 
 const requestChanges = async (job: ECCDispatchJob) => {
-  await boardStore.updateECCJobStatus(
-    boardStore.getIssueById(job.issue_id) ?? boardStore._synthIssue(job),
-    'failed',
-    'Changes requested via Review Queue'
-  )
+  const issue = boardStore.getIssueById(job.issue_id)
+  if (issue) {
+    await boardStore.requestChanges(issue.id, 'Changes requested via Review Queue')
+  } else {
+    await boardStore.updateECCJobStatus(
+      boardStore._synthIssue(job),
+      'failed',
+      'Changes requested via Review Queue'
+    )
+  }
 }
 </script>
 
@@ -206,5 +217,20 @@ const requestChanges = async (job: ECCDispatchJob) => {
 .review-queue__btn--reject:hover {
   color: var(--on-primary);
   background: var(--clay-red);
+}
+
+@media (max-width: 640px) {
+  .review-queue__item {
+    flex-wrap: wrap;
+  }
+
+  .review-queue__actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .review-queue__actions button {
+    flex: 1;
+  }
 }
 </style>

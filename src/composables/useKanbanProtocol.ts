@@ -12,7 +12,9 @@ import type {
   HandoffCreateRequest,
   HandoffDispatchRequest,
   HandoffBlockRequest,
+  HandoffReviewRequest,
 } from '~/types'
+import { authHeaders } from '~/utils/authHeaders'
 
 const BOARD_ID = 'board-default'
 
@@ -29,6 +31,14 @@ export function useKanbanProtocol(issueId: string) {
     return await $fetch<T>(path, {
       method: 'POST',
       body: body ?? {},
+      headers: authHeaders(),
+    })
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function _get<T>(path: string): Promise<T> {
+    return await $fetch<T>(path, {
+      headers: authHeaders(),
     })
   }
 
@@ -39,13 +49,11 @@ export function useKanbanProtocol(issueId: string) {
   }
 
   function listHandoffs(): Promise<{ handoffs: Handoff[]; total: number }> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return ($fetch as any)(base.value)
+    return _get(base.value)
   }
 
   function getHandoff(handoffId: string): Promise<Handoff> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return ($fetch as any)(`${base.value}/${handoffId}`)
+    return _get(`${base.value}/${handoffId}`)
   }
 
   // ---- state transitions ----
@@ -88,6 +96,13 @@ export function useKanbanProtocol(issueId: string) {
     return _post<Handoff>(`${base.value}/${handoffId}/cancel`, { actor })
   }
 
+  function reviewHandoff(
+    handoffId: string,
+    req: HandoffReviewRequest,
+  ): Promise<Handoff> {
+    return _post<Handoff>(`${base.value}/${handoffId}/review`, req)
+  }
+
   // ---- comments ----
 
   function addComment(
@@ -106,8 +121,7 @@ export function useKanbanProtocol(issueId: string) {
   // ---- preview ----
 
   function previewHandoff(handoffId: string): Promise<HandoffPreview> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return ($fetch as any)(`${base.value}/${handoffId}/preview`)
+    return _get(`${base.value}/${handoffId}/preview`)
   }
 
   return {
@@ -120,6 +134,7 @@ export function useKanbanProtocol(issueId: string) {
     blockHandoff,
     unblockHandoff,
     cancelHandoff,
+    reviewHandoff,
     addComment,
     previewHandoff,
   }

@@ -5,7 +5,7 @@ test.describe('Sidebar navigation', () => {
     test.skip(isMobile, 'sidebar navigation is desktop-only')
     await page.goto('/')
 
-    // Board is the default
+    // Board is the default page (Kanban workspace)
     await expect(page.getByRole('heading', { name: 'AI Delivery Board' })).toBeVisible()
 
     // Command Center
@@ -23,6 +23,11 @@ test.describe('Sidebar navigation', () => {
     await expect(page).toHaveURL(/\/agents/)
     await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible()
 
+    // Lanes
+    await page.locator('.sidebar__nav-item', { hasText: 'Lanes' }).click()
+    await expect(page).toHaveURL(/\/lanes/)
+    await expect(page.getByRole('heading', { name: 'Worker Lanes' })).toBeVisible()
+
     // Runs
     await page.locator('.sidebar__nav-item', { hasText: 'Runs' }).click()
     await expect(page).toHaveURL(/\/runs/)
@@ -38,13 +43,28 @@ test.describe('Sidebar navigation', () => {
     await expect(page).toHaveURL(/\/activity/)
     await expect(page.getByRole('heading', { name: 'Activity Log' })).toBeVisible()
 
+    // Uploads
+    await page.locator('.sidebar__nav-item', { hasText: 'Uploads' }).click()
+    await expect(page).toHaveURL(/\/artifacts/)
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible()
+
+    // Deliveries
+    await page.locator('.sidebar__nav-item', { hasText: 'Deliveries' }).click()
+    await expect(page).toHaveURL(/\/deliveries/)
+    await expect(page.getByRole('heading', { name: 'Deliveries' })).toBeVisible()
+
     // Settings
     await page.locator('.sidebar__nav-item', { hasText: 'Settings' }).click()
     await expect(page).toHaveURL(/\/settings/)
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
 
-    // Back to Board
-    await page.locator('.sidebar__nav-item', { hasText: 'Board' }).click()
+    // Back to Dashboard
+    await page.locator('.sidebar__nav-item', { hasText: 'Dashboard' }).click()
+    await expect(page).toHaveURL('/dashboard')
+    await expect(page.getByRole('heading', { name: 'Delivery Dashboard' })).toBeVisible()
+
+    // Board nav item → /
+    await page.getByRole('button', { name: 'Board Issues' }).click()
     await expect(page).toHaveURL('/')
     await expect(page.getByRole('heading', { name: 'AI Delivery Board' })).toBeVisible()
   })
@@ -64,6 +84,12 @@ test.describe('MVP pages', () => {
     await page.goto('/agents')
     await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible()
     await expect(page.locator('.agents-matrix')).toBeVisible()
+  })
+
+  test('Lanes page shows worker lanes heading', async ({ page }) => {
+    await page.goto('/lanes')
+    await expect(page.getByRole('heading', { name: 'Worker Lanes' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Agent Roles' })).toBeVisible()
   })
 
   test('Runs page shows job list with filters', async ({ page }) => {
@@ -94,5 +120,36 @@ test.describe('MVP pages', () => {
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
     await expect(page.locator('.settings-card', { hasText: 'Backend Status' })).toBeVisible()
     await expect(page.locator('.settings-card', { hasText: 'Active Harness' })).toBeVisible()
+  })
+
+  test('redirect /agents/roles to /lanes', async ({ page }) => {
+    await page.goto('/agents/roles')
+    await expect(page).toHaveURL(/\/lanes/)
+    await expect(page.getByRole('heading', { name: 'Worker Lanes' })).toBeVisible()
+  })
+
+  test('redirect /board to /dashboard', async ({ page }) => {
+    await page.goto('/board')
+    await expect(page).toHaveURL(/\/dashboard/)
+    await expect(page.getByRole('heading', { name: 'Delivery Dashboard' })).toBeVisible()
+  })
+
+  test('Uploads page shows file list or empty state', async ({ page }) => {
+    await page.goto('/artifacts')
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible()
+    // Should show upload button and either file list or empty state
+    await expect(page.getByTestId('uploads-open')).toBeVisible()
+    await expect(
+      page.locator('.uploads-page__list, .uploads-page__empty')
+    ).toBeVisible()
+  })
+
+  test('Deliveries page shows delivery list or empty state', async ({ page }) => {
+    await page.goto('/deliveries')
+    await expect(page.getByRole('heading', { name: 'Deliveries' })).toBeVisible()
+    // Should show either delivery entries or empty state
+    await expect(
+      page.locator('.deliveries-page__list, .deliveries-page__empty')
+    ).toBeVisible()
   })
 })

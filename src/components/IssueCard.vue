@@ -13,6 +13,8 @@ const emit = defineEmits<{
   select: [issue: Issue]
   retry: [issueId: string]
   start: [issueId: string]
+  archive: [issueId: string]
+  unarchive: [issueId: string]
 }>()
 
 const priorityConfig = computed(() => PRIORITY_CONFIG[props.issue.priority])
@@ -26,7 +28,13 @@ const ciStatusConfig = computed(() => {
   return {
     pending: { label: 'CI pending', className: 'issue-card__ci--pending' },
     passed: { label: 'CI passed', className: 'issue-card__ci--passed' },
-    failed: { label: 'CI failed', className: 'issue-card__ci--failed' }
+    failed: { label: 'CI failed', className: 'issue-card__ci--failed' },
+    // ``error`` is the new state written by the PR/CI webhook
+    // auto-fill path when the CI provider reports a system-level
+    // error (timeout, infra outage, etc.) — distinct from a normal
+    // test failure. Orange dot so the leader can spot it at a
+    // glance without hovering.
+    error: { label: 'CI error', className: 'issue-card__ci--error' }
   }[props.issue.ciStatus]
 })
 
@@ -79,10 +87,53 @@ const handleStart = (event: Event) => {
     @dragstart="handleDragStart"
   >
     <div class="issue-card__top">
-      <span class="issue-card__key">{{ issue.key }}</span>
+      <span class="issue-card__key">
+        <!-- Epic-subtask marker. Clickable so the leader can jump
+             from any child card straight to the epic tree view.
+             We stop propagation so the click doesn't also open
+             the issue drawer (the card's outer click handler). -->
+        <NuxtLink
+          v-if="issue.parentId"
+          :to="`/board/epic/${issue.parentId}`"
+          class="issue-card__epic-marker-link"
+          title="Open epic tree"
+          @click.stop
+        >
+          <svg
+            class="issue-card__epic-marker"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+            <rect x="9" y="3" width="6" height="4" rx="1" />
+            <path d="M9 13h6M9 17h4" />
+          </svg>
+        </NuxtLink>
+        {{ issue.key }}
+      </span>
       <span class="issue-card__priority" :title="priorityConfig.label">
         {{ priorityConfig.label }}
       </span>
+      <span
+        v-if="issue.isArchived"
+        class="issue-card__archived-pill"
+        title="Archived — hidden from default board view"
+      >
+        ARCHIVED
+      </span>
+      <button
+        class="issue-card__archive-btn"
+        :title="issue.isArchived ? 'Unarchive' : 'Archive'"
+        @click.stop="emit(issue.isArchived ? 'unarchive' : 'archive', issue.id)"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+          <path d="M21 8v13H3V8" />
+          <path d="M1 3h22v5H1z" />
+          <line x1="10" y1="12" x2="14" y2="12" />
+        </svg>
+      </button>
     </div>
 
     <h3 class="issue-card__title">{{ issue.title }}</h3>
@@ -123,14 +174,29 @@ const handleStart = (event: Event) => {
           Start
         </button>
         <span v-if="issue.storyPoints" class="issue-card__points">{{ issue.storyPoints }}pt</span>
-        <span v-if="issue.prUrl" class="issue-card__signal" title="Pull request">
+        <!-- PR icon — wrapped in an anchor so the leader can jump
+             straight to the PR without opening the detail drawer.
+             We stop propagation in the click handler so the anchor
+             click doesn't also fire the card's outer click (which
+             would open the drawer and then immediately close it). -->
+        <a
+          v-if="issue.prUrl"
+          :href="issue.prUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="issue-card__signal issue-card__signal--link"
+          :title="`Open PR: ${issue.prUrl}`"
+          data-testid="pr-link"
+          @click.stop
+        >
           <GitPullRequest :size="13" />
-        </span>
+        </a>
         <span
           v-if="ciStatusConfig"
           class="issue-card__ci"
           :class="ciStatusConfig.className"
           :title="ciStatusConfig.label"
+          :data-testid="`ci-status-${issue.ciStatus}`"
         />
       </div>
     </div>
@@ -217,6 +283,59 @@ const handleStart = (event: Event) => {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.issue-card__epic-marker-link {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  color: var(--ink-muted);
+  text-decoration: none;
+  vertical-align: -1px;
+  border-radius: var(--radius-sm);
+  padding: 0 2px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+.issue-card__epic-marker-link:hover {
+  color: var(--ink);
+  background: rgba(125, 158, 125, 0.18);
+}
+.issue-card__epic-marker {
+  width: 11px;
+  height: 11px;
+  display: inline-block;
+}
+
+.issue-card__archive-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast), border-color var(--duration-fast);
+}
+.issue-card__archive-btn:hover {
+  color: #B85C4D;
+  background: rgba(184, 92, 77, 0.10);
+  border-color: rgba(184, 92, 77, 0.3);
+}
+
+.issue-card__archived-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(140, 130, 121, 0.20);
+  color: #6B6660;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .issue-card__priority {
@@ -341,6 +460,30 @@ const handleStart = (event: Event) => {
 
 .issue-card__ci--failed {
   background: var(--clay-red);
+}
+
+/* Orange dot for system-level CI errors (timeout, infra outage).
+   Distinct from failed (which is a code/test failure) so the
+   leader can triage at a glance. */
+.issue-card__ci--error {
+  background: #E08A3C;
+}
+
+/* The PR anchor — same inline-flex baseline as the span it
+   replaced, but with hover affordance + a subtle colour shift
+   so it reads as clickable. ``color: inherit`` keeps the muted
+   ink from the .issue-card__signals parent. */
+.issue-card__signal--link {
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  padding: 1px 2px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.issue-card__signal--link:hover {
+  color: var(--primary-active);
+  background: rgba(204, 120, 92, 0.10);
 }
 
 .issue-card__execution,

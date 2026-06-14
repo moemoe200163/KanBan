@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useCollaborationStore } from '~/stores/collaboration'
 import type { IssueEvent, IssueComment, IssueArtifact } from '~/types'
-import { MessageSquare, Clock, Package, Send } from 'lucide-vue-next'
+import { MessageSquare, Clock, Package, Plus, Send } from 'lucide-vue-next'
+import AddArtifactModal from '~/components/AddArtifactModal.vue'
 
 const props = defineProps<{
   issueId: string
@@ -11,6 +12,7 @@ const collaborationStore = useCollaborationStore()
 
 const newComment = ref('')
 const isSubmitting = ref(false)
+const showAddArtifact = ref(false)
 
 // Fetch data when component mounts
 onMounted(async () => {
@@ -152,6 +154,10 @@ const submitComment = async () => {
         <Package :size="14" />
         Artifacts
         <span v-if="artifacts.length > 0" class="collab-section__count">{{ artifacts.length }}</span>
+        <button class="collab-section__add" data-testid="add-artifact-btn" @click="showAddArtifact = true">
+          <Plus :size="12" />
+          Add Artifact
+        </button>
       </h4>
       <div v-if="artifacts.length === 0" class="collab-empty">No artifacts yet</div>
       <div v-else class="collab-artifacts">
@@ -173,6 +179,12 @@ const submitComment = async () => {
         </div>
       </div>
     </div>
+
+    <AddArtifactModal
+      v-if="showAddArtifact"
+      :issue-id="issueId"
+      @close="showAddArtifact = false"
+    />
 
     <!-- Comment Input -->
     <div class="collab-input">
@@ -220,6 +232,27 @@ const submitComment = async () => {
   padding: 1px 6px;
   border-radius: 10px;
   font-size: 11px;
+}
+.collab-section__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 2px 8px;
+  color: var(--color-accent);
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  transition: opacity 0.15s;
+}
+
+.collab-section__add:hover {
+  opacity: 0.8;
 }
 
 .collab-empty {
